@@ -25,6 +25,8 @@ import (
 	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/shipping"
@@ -120,17 +122,41 @@ func main() {
 		Currency:       cfg.CurrencyCode,
 	}
 
+	notifyStore := notify.NewStore(queries)
+	dispatcher := &notify.Dispatcher{
+		Store:              notifyStore,
+		Client:             notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS),
+		BackoffBaseSec:     cfg.WebhookBackoffBaseSec,
+		DefaultMaxAttempts: cfg.WebhookDefaultMaxAttempts,
+		Enabled:            cfg.WebhookDeliveryEnabled,
+		Replay:             notify.RedisReplayProtector{Client: redisClient},
+		ReplayTTL:          cfg.WebhookReplayTTL,
+	}
+	emailNotifier := notify.EmailNotifier{
+		Mail:         mailer,
+		Enabled:      cfg.NotifyEmailEnabled,
+		From:         cfg.NotifyEmailFrom,
+		TopicToggles: cfg.NotifyEmailTopics,
+	}
+	bus := &events.Bus{
+		Store:     queries,
+		Scheduler: dispatcher,
+		Notifiers: []events.Notifier{emailNotifier},
+	}
+
 	checkoutSvc := &checkout.Service{
 		Q:        queries,
 		Pool:     pool,
 		CartSvc:  cartSvc,
 		TaxBps:   cfg.PricingTaxRateBPS,
 		Currency: cfg.CurrencyCode,
+		Events:   bus,
 	}
 	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
 
 	orderHandler := &order.Handler{Q: queries}
 	orderAdmin := &order.AdminHandler{Q: queries}
+	notifyAdmin := &notify.AdminHandler{Store: notifyStore, Disp: dispatcher}
 
 	var shipProvider shipping.Provider
 	switch cfg.ShippingProvider {
@@ -146,6 +172,7 @@ func main() {
 		NotifyOnShipped:        cfg.NotifyOnShipped,
 		NotifyOnOutForDelivery: cfg.NotifyOnOutForDelivery,
 		NotifyOnDelivered:      cfg.NotifyOnDelivered,
+		Events:                 bus,
 	}
 	shipHandler := &shipping.Handler{Svc: shipSvc, Q: queries}
 	shipWebhook := shipping.Webhook{Svc: shipSvc, Replay: redisClient, ReplayTTL: cfg.ShippingTrackReplayTTL}
@@ -179,6 +206,7 @@ func main() {
 		Replay:    redisClient,
 		ReplayTTL: cfg.WebhookReplayTTL,
 		Voucher:   voucherSvc,
+		Events:    bus,
 	}
 
 	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange}
@@ -277,6 +305,12 @@ func main() {
 			admin.Post("/vouchers/preview", voucherHandler.Preview)
 			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
 			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
+			admin.Post("/webhooks", notifyAdmin.CreateEndpoint)
+			admin.Put("/webhooks/{id}", notifyAdmin.UpdateEndpoint)
+			admin.Get("/webhooks", notifyAdmin.ListEndpoints)
+			admin.Delete("/webhooks/{id}", notifyAdmin.DeleteEndpoint)
+			admin.Get("/webhook-deliveries", notifyAdmin.ListDeliveries)
+			admin.Post("/webhook-deliveries/{id}/replay", notifyAdmin.ReplayDelivery)
 		})
 
 		v.Route("/analytics", func(an chi.Router) {
@@ -299,6 +333,20 @@ func main() {
 		v.Post("/webhooks/shipping/{courier}", shipWebhook.Handle)
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
+
+	if cfg.WebhookDeliveryEnabled {
+		for i := 0; i < cfg.EventWorkerConcurrency; i++ {
+			go func() {
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					if err := dispatcher.WorkOnce(context.Background(), 50); err != nil {
+						logger.Error().Err(err).Msg("dispatch webhook")
+					}
+				}
+			}()
+		}
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr(),

@@ -15,6 +15,7 @@ type Querier interface {
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
 	CountVoucherUsageByUser(ctx context.Context, arg CountVoucherUsageByUserParams) (int64, error)
+	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
 	CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error)
 	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
@@ -26,13 +27,18 @@ type Querier interface {
 	CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
+	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
+	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
+	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
+	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
+	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
 	GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (Cart, error)
 	GetActiveCartByUser(ctx context.Context, userID pgtype.UUID) (Cart, error)
@@ -43,6 +49,8 @@ type Querier interface {
 	GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem, error)
 	GetCategoryByID(ctx context.Context, id pgtype.UUID) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
+	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
+	GetDomainEvent(ctx context.Context, id pgtype.UUID) (DomainEvent, error)
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
@@ -60,15 +68,20 @@ type Querier interface {
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
 	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
 	GetVoucherUsageByOrder(ctx context.Context, arg GetVoucherUsageByOrderParams) (VoucherUsage, error)
+	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (WebhookEndpoint, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
+	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error)
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
+	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
+	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
 	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
+	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]DomainEvent, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
 	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
 	ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUID) ([]ListOrderItemsForStockRow, error)
@@ -78,9 +91,16 @@ type Querier interface {
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
+	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
+	ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
+	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error
+	MarkDelivering(ctx context.Context, id pgtype.UUID) error
+	MarkFailedWithBackoff(ctx context.Context, arg MarkFailedWithBackoffParams) error
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
+	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
+	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
@@ -95,6 +115,7 @@ type Querier interface {
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
+	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
 	UsePasswordReset(ctx context.Context, token string) error
 }
 

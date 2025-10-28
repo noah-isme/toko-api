@@ -150,6 +150,22 @@ paths:
   /api/v1/admin/vouchers/preview:
     post:
       summary: Preview voucher discount (dry-run)
+  /api/v1/admin/webhooks:
+    post:
+      summary: Create webhook endpoint
+    get:
+      summary: List webhook endpoints
+  /api/v1/admin/webhooks/{id}:
+    put:
+      summary: Update webhook endpoint
+    delete:
+      summary: Delete webhook endpoint
+  /api/v1/admin/webhook-deliveries:
+    get:
+      summary: List webhook deliveries
+  /api/v1/admin/webhook-deliveries/{id}/replay:
+    post:
+      summary: Replay a webhook delivery
   /api/v1/analytics/sales:
     get:
       summary: Sales trend (daily)

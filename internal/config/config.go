@@ -12,56 +12,67 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/noah-isme/backend-toko/internal/events"
 )
 
 // Config holds application configuration loaded from the environment.
 type Config struct {
-	AppEnv                  string
-	Port                    string
-	DatabaseURL             string
-	RedisURL                string
-	JWTSecret               string
-	CORSAllowedOrigins      []string
-	MidtransServerKey       string
-	MidtransClientKey       string
-	MidtransBaseURL         string
-	XenditSecretKey         string
-	XenditBaseURL           string
-	PaymentProvider         string
-	PaymentSandbox          bool
-	PaymentIntentTTL        time.Duration
-	PaymentCallbackBaseURL  string
-	WebhookReplayTTL        time.Duration
-	RajaOngkirAPIKey        string
-	ShippingOriginCode      string
-	ShippingTrackReplayTTL  time.Duration
-	ShippingProvider        string
-	ShippingCallbackBaseURL string
-	NotifyOnShipped         bool
-	NotifyOnOutForDelivery  bool
-	NotifyOnDelivered       bool
-	AccessTokenTTL          time.Duration
-	RefreshTokenTTL         time.Duration
-	PasswordResetTTL        time.Duration
-	RefreshCookieName       string
-	RefreshCookieDomain     string
-	RefreshCookieSecure     bool
-	RefreshCookieSameSite   http.SameSite
-	PublicBaseURL           string
-	CatalogDefaultPage      int
-	CatalogDefaultLimit     int
-	CatalogMaxLimit         int
-	CatalogCacheTTL         time.Duration
-	CartTTL                 time.Duration
-	PricingTaxRateBPS       int
-	CurrencyCode            string
-	CurrencyMinorUnit       int
-	IdempotencyTTL          time.Duration
-	VoucherMaxStack         int
-	VoucherDefaultPriority  int
-	VoucherPerUserLimit     int
-	AnalyticsCacheTTL       time.Duration
-	AnalyticsDefaultRange   int
+	AppEnv                    string
+	Port                      string
+	DatabaseURL               string
+	RedisURL                  string
+	JWTSecret                 string
+	CORSAllowedOrigins        []string
+	MidtransServerKey         string
+	MidtransClientKey         string
+	MidtransBaseURL           string
+	XenditSecretKey           string
+	XenditBaseURL             string
+	PaymentProvider           string
+	PaymentSandbox            bool
+	PaymentIntentTTL          time.Duration
+	PaymentCallbackBaseURL    string
+	RajaOngkirAPIKey          string
+	ShippingOriginCode        string
+	ShippingTrackReplayTTL    time.Duration
+	ShippingProvider          string
+	ShippingCallbackBaseURL   string
+	NotifyOnShipped           bool
+	NotifyOnOutForDelivery    bool
+	NotifyOnDelivered         bool
+	AccessTokenTTL            time.Duration
+	RefreshTokenTTL           time.Duration
+	PasswordResetTTL          time.Duration
+	RefreshCookieName         string
+	RefreshCookieDomain       string
+	RefreshCookieSecure       bool
+	RefreshCookieSameSite     http.SameSite
+	PublicBaseURL             string
+	CatalogDefaultPage        int
+	CatalogDefaultLimit       int
+	CatalogMaxLimit           int
+	CatalogCacheTTL           time.Duration
+	CartTTL                   time.Duration
+	PricingTaxRateBPS         int
+	CurrencyCode              string
+	CurrencyMinorUnit         int
+	IdempotencyTTL            time.Duration
+	VoucherMaxStack           int
+	VoucherDefaultPriority    int
+	VoucherPerUserLimit       int
+	AnalyticsCacheTTL         time.Duration
+	AnalyticsDefaultRange     int
+	NotifyEmailEnabled        bool
+	NotifyEmailFrom           string
+	NotifyEmailTopics         map[string]bool
+	WebhookDeliveryEnabled    bool
+	WebhookDefaultMaxAttempts int
+	WebhookBackoffBaseSec     int
+	WebhookRequestTimeout     time.Duration
+	WebhookAllowInsecureTLS   bool
+	WebhookReplayTTL          time.Duration
+	EventWorkerConcurrency    int
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -74,52 +85,61 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AppEnv:                  valueOrDefault(k.String("APP_ENV"), "development"),
-		Port:                    valueOrDefault(k.String("PORT"), "8080"),
-		DatabaseURL:             k.String("DATABASE_URL"),
-		RedisURL:                k.String("REDIS_URL"),
-		JWTSecret:               k.String("JWT_SECRET"),
-		CORSAllowedOrigins:      splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
-		MidtransServerKey:       k.String("MIDTRANS_SERVER_KEY"),
-		MidtransClientKey:       k.String("MIDTRANS_CLIENT_KEY"),
-		MidtransBaseURL:         strings.TrimSpace(k.String("MIDTRANS_BASE_URL")),
-		XenditSecretKey:         k.String("XENDIT_SECRET_KEY"),
-		XenditBaseURL:           strings.TrimSpace(k.String("XENDIT_BASE_URL")),
-		PaymentProvider:         strings.ToLower(valueOrDefault(k.String("PAYMENT_PROVIDER"), "midtrans")),
-		PaymentSandbox:          parseBool(k.String("PAYMENT_SANDBOX")),
-		PaymentIntentTTL:        time.Duration(parsePositiveInt(k.String("PAYMENT_INTENT_EXPIRES_MIN"), 15)) * time.Minute,
-		PaymentCallbackBaseURL:  strings.TrimSpace(k.String("PAYMENT_CALLBACK_BASE_URL")),
-		WebhookReplayTTL:        time.Duration(parsePositiveInt(k.String("WEBHOOK_REPLAY_TTL_SEC"), 600)) * time.Second,
-		RajaOngkirAPIKey:        k.String("RAJAONGKIR_API_KEY"),
-		ShippingOriginCode:      valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
-		ShippingTrackReplayTTL:  time.Duration(parsePositiveInt(k.String("SHIPPING_TRACK_REPLAY_TTL_SEC"), 600)) * time.Second,
-		ShippingProvider:        strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir-mock")),
-		ShippingCallbackBaseURL: strings.TrimSpace(k.String("SHIPPING_CALLBACK_BASE_URL")),
-		NotifyOnShipped:         parseBoolWithDefault(k.String("NOTIFY_ON_SHIPPED"), true),
-		NotifyOnOutForDelivery:  parseBoolWithDefault(k.String("NOTIFY_ON_OUT_FOR_DELIVERY"), true),
-		NotifyOnDelivered:       parseBoolWithDefault(k.String("NOTIFY_ON_DELIVERED"), true),
-		AccessTokenTTL:          parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
-		RefreshTokenTTL:         parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
-		PasswordResetTTL:        parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
-		RefreshCookieName:       valueOrDefault(k.String("REFRESH_COOKIE_NAME"), "rt"),
-		RefreshCookieDomain:     strings.TrimSpace(k.String("REFRESH_COOKIE_DOMAIN")),
-		RefreshCookieSecure:     parseBool(k.String("REFRESH_COOKIE_SECURE")),
-		RefreshCookieSameSite:   parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
-		PublicBaseURL:           strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
-		CatalogDefaultPage:      parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
-		CatalogDefaultLimit:     parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
-		CatalogMaxLimit:         parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
-		CatalogCacheTTL:         time.Duration(parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)) * time.Second,
-		CartTTL:                 time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
-		PricingTaxRateBPS:       parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
-		CurrencyCode:            valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
-		CurrencyMinorUnit:       parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
-		IdempotencyTTL:          time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
-		VoucherMaxStack:         parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
-		VoucherDefaultPriority:  parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
-		VoucherPerUserLimit:     parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
-		AnalyticsCacheTTL:       time.Duration(parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)) * time.Second,
-		AnalyticsDefaultRange:   parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
+		AppEnv:                    valueOrDefault(k.String("APP_ENV"), "development"),
+		Port:                      valueOrDefault(k.String("PORT"), "8080"),
+		DatabaseURL:               k.String("DATABASE_URL"),
+		RedisURL:                  k.String("REDIS_URL"),
+		JWTSecret:                 k.String("JWT_SECRET"),
+		CORSAllowedOrigins:        splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
+		MidtransServerKey:         k.String("MIDTRANS_SERVER_KEY"),
+		MidtransClientKey:         k.String("MIDTRANS_CLIENT_KEY"),
+		MidtransBaseURL:           strings.TrimSpace(k.String("MIDTRANS_BASE_URL")),
+		XenditSecretKey:           k.String("XENDIT_SECRET_KEY"),
+		XenditBaseURL:             strings.TrimSpace(k.String("XENDIT_BASE_URL")),
+		PaymentProvider:           strings.ToLower(valueOrDefault(k.String("PAYMENT_PROVIDER"), "midtrans")),
+		PaymentSandbox:            parseBool(k.String("PAYMENT_SANDBOX")),
+		PaymentIntentTTL:          time.Duration(parsePositiveInt(k.String("PAYMENT_INTENT_EXPIRES_MIN"), 15)) * time.Minute,
+		PaymentCallbackBaseURL:    strings.TrimSpace(k.String("PAYMENT_CALLBACK_BASE_URL")),
+		RajaOngkirAPIKey:          k.String("RAJAONGKIR_API_KEY"),
+		ShippingOriginCode:        valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
+		ShippingTrackReplayTTL:    time.Duration(parsePositiveInt(k.String("SHIPPING_TRACK_REPLAY_TTL_SEC"), 600)) * time.Second,
+		ShippingProvider:          strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir-mock")),
+		ShippingCallbackBaseURL:   strings.TrimSpace(k.String("SHIPPING_CALLBACK_BASE_URL")),
+		NotifyOnShipped:           parseBoolWithDefault(k.String("NOTIFY_ON_SHIPPED"), true),
+		NotifyOnOutForDelivery:    parseBoolWithDefault(k.String("NOTIFY_ON_OUT_FOR_DELIVERY"), true),
+		NotifyOnDelivered:         parseBoolWithDefault(k.String("NOTIFY_ON_DELIVERED"), true),
+		AccessTokenTTL:            parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
+		RefreshTokenTTL:           parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
+		PasswordResetTTL:          parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
+		RefreshCookieName:         valueOrDefault(k.String("REFRESH_COOKIE_NAME"), "rt"),
+		RefreshCookieDomain:       strings.TrimSpace(k.String("REFRESH_COOKIE_DOMAIN")),
+		RefreshCookieSecure:       parseBool(k.String("REFRESH_COOKIE_SECURE")),
+		RefreshCookieSameSite:     parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
+		PublicBaseURL:             strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
+		CatalogDefaultPage:        parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
+		CatalogDefaultLimit:       parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
+		CatalogMaxLimit:           parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
+		CatalogCacheTTL:           time.Duration(parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)) * time.Second,
+		CartTTL:                   time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
+		PricingTaxRateBPS:         parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
+		CurrencyCode:              valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
+		CurrencyMinorUnit:         parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
+		IdempotencyTTL:            time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
+		VoucherMaxStack:           parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
+		VoucherDefaultPriority:    parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
+		VoucherPerUserLimit:       parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
+		AnalyticsCacheTTL:         time.Duration(parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)) * time.Second,
+		AnalyticsDefaultRange:     parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
+		NotifyEmailEnabled:        parseBoolWithDefault(k.String("NOTIFY_EMAIL_ENABLED"), true),
+		NotifyEmailFrom:           valueOrDefault(k.String("NOTIFY_FROM_EMAIL"), "no-reply@toko.local"),
+		NotifyEmailTopics:         parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true),
+		WebhookDeliveryEnabled:    parseBoolWithDefault(k.String("WEBHOOK_DELIVERY_ENABLED"), true),
+		WebhookDefaultMaxAttempts: parsePositiveIntAllowZero(k.String("WEBHOOK_DEFAULT_MAX_ATTEMPTS"), 6),
+		WebhookBackoffBaseSec:     parsePositiveIntAllowZero(k.String("WEBHOOK_BACKOFF_BASE_SEC"), 5),
+		WebhookRequestTimeout:     time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REQUEST_TIMEOUT_MS"), 5000)) * time.Millisecond,
+		WebhookAllowInsecureTLS:   parseBool(k.String("WEBHOOK_ALLOW_INSECURE_TLS")),
+		WebhookReplayTTL:          time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REPLAY_TTL_SEC"), 600)) * time.Second,
+		EventWorkerConcurrency:    parsePositiveIntAllowZero(k.String("EVENT_WORKER_CONCURRENCY"), 1),
 	}
 
 	if cfg.VoucherMaxStack < 1 {
@@ -133,6 +153,19 @@ func Load() (*Config, error) {
 	}
 	if cfg.AnalyticsDefaultRange <= 0 {
 		cfg.AnalyticsDefaultRange = 30
+	}
+
+	if cfg.WebhookDefaultMaxAttempts <= 0 {
+		cfg.WebhookDefaultMaxAttempts = 6
+	}
+	if cfg.WebhookBackoffBaseSec <= 0 {
+		cfg.WebhookBackoffBaseSec = 5
+	}
+	if cfg.EventWorkerConcurrency <= 0 {
+		cfg.EventWorkerConcurrency = 1
+	}
+	if cfg.NotifyEmailTopics == nil {
+		cfg.NotifyEmailTopics = parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true)
 	}
 
 	if cfg.ShippingOriginCode == "" {
@@ -220,6 +253,16 @@ func splitAndTrim(value string) []string {
 		}
 	}
 	return result
+}
+
+func parseTopicToggles(k *koanf.Koanf, prefix string, fallback bool) map[string]bool {
+	topics := events.DefaultTopics()
+	toggles := make(map[string]bool, len(topics))
+	for _, topic := range topics {
+		key := prefix + strings.ToUpper(strings.ReplaceAll(topic, ".", "_"))
+		toggles[topic] = parseBoolWithDefault(k.String(key), fallback)
+	}
+	return toggles
 }
 
 func valueOrDefault(value, fallback string) string {

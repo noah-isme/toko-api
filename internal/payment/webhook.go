@@ -19,6 +19,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 )
 
 // Webhook handles payment provider callbacks, including signature verification and settlement.
@@ -29,6 +30,7 @@ type Webhook struct {
 	Replay    *redis.Client
 	ReplayTTL time.Duration
 	Voucher   VoucherSettler
+	Events    *events.Bus
 }
 
 // VoucherSettler records voucher usage as part of order settlement.
@@ -131,6 +133,7 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "ORDER_FETCH_ERROR", err.Error(), nil)
 		return
 	}
+	orderCanceled := false
 	switch newStatus {
 	case dbgen.PaymentStatusPAID:
 		if shouldSettle {
@@ -167,7 +170,10 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	case dbgen.PaymentStatusFAILED, dbgen.PaymentStatusEXPIRED:
 		if order.Status == dbgen.OrderStatusPENDINGPAYMENT {
-			_ = q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELED})
+			if err := q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELED}); err == nil {
+				orderCanceled = true
+				order.Status = dbgen.OrderStatusCANCELED
+			}
 		}
 	}
 
@@ -175,6 +181,33 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		if err := tx.Commit(ctx); err != nil {
 			common.JSONError(w, http.StatusInternalServerError, "TX_COMMIT_ERROR", err.Error(), nil)
 			return
+		}
+	}
+	if h.Events != nil {
+		payload := map[string]any{
+			"orderId":   cart.UUIDString(order.ID),
+			"paymentId": cart.UUIDString(payment.ID),
+			"status":    string(newStatus),
+		}
+		if order.UserID.Valid {
+			payload["userId"] = cart.UUIDString(order.UserID)
+		}
+		if user, err := h.Q.GetUserByID(ctx, order.UserID); err == nil && user.Email != "" {
+			payload["email"] = user.Email
+		}
+		switch newStatus {
+		case dbgen.PaymentStatusPAID:
+			_, _ = h.Events.Emit(ctx, events.TopicOrderPaid, order.ID, payload)
+		case dbgen.PaymentStatusFAILED:
+			_, _ = h.Events.Emit(ctx, events.TopicPaymentFailed, order.ID, payload)
+			if orderCanceled {
+				_, _ = h.Events.Emit(ctx, events.TopicOrderCanceled, order.ID, payload)
+			}
+		case dbgen.PaymentStatusEXPIRED:
+			_, _ = h.Events.Emit(ctx, events.TopicPaymentExpired, order.ID, payload)
+			if orderCanceled {
+				_, _ = h.Events.Emit(ctx, events.TopicOrderCanceled, order.ID, payload)
+			}
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

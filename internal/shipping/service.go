@@ -2,6 +2,7 @@ package shipping
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 )
 
 var (
@@ -40,6 +42,7 @@ type Service struct {
 	NotifyOnShipped        bool
 	NotifyOnOutForDelivery bool
 	NotifyOnDelivered      bool
+	Events                 *events.Bus
 }
 
 // Create initialises a shipment for the provided order and records courier metadata.
@@ -120,6 +123,7 @@ func (s *Service) AppendEvent(ctx context.Context, orderID pgtype.UUID, status d
 		return event, shipment, err
 	}
 	s.notify(ctx, orderID, status)
+	s.emit(ctx, orderID, shipment.ID, status, payload)
 	return event, shipment, nil
 }
 
@@ -172,6 +176,46 @@ func (s *Service) notify(ctx context.Context, orderID pgtype.UUID, status dbgen.
 	}
 	subject, body := notificationContent(status)
 	_ = s.Mail.Send(user.Email, subject, body)
+}
+
+func (s *Service) emit(ctx context.Context, orderID, shipmentID pgtype.UUID, status dbgen.ShipmentStatus, raw []byte) {
+	if s.Events == nil {
+		return
+	}
+	topic, ok := shipmentTopic(status)
+	if !ok {
+		return
+	}
+	data := map[string]any{
+		"orderId":    uuidString(orderID),
+		"shipmentId": uuidString(shipmentID),
+		"status":     string(status),
+	}
+	if len(raw) > 0 {
+		var parsed any
+		if err := json.Unmarshal(raw, &parsed); err == nil {
+			data["payload"] = parsed
+		}
+	}
+	if order, err := s.Q.GetOrderByID(ctx, orderID); err == nil {
+		if user, err := s.Q.GetUserByID(ctx, order.UserID); err == nil && user.Email != "" {
+			data["email"] = user.Email
+		}
+	}
+	_, _ = s.Events.Emit(ctx, topic, shipmentID, data)
+}
+
+func shipmentTopic(status dbgen.ShipmentStatus) (string, bool) {
+	switch status {
+	case dbgen.ShipmentStatusSHIPPED:
+		return events.TopicShipmentShipped, true
+	case dbgen.ShipmentStatusOUTFORDELIVERY:
+		return events.TopicShipmentOutForDelivery, true
+	case dbgen.ShipmentStatusDELIVERED:
+		return events.TopicShipmentDelivered, true
+	default:
+		return "", false
+	}
 }
 
 func allowedShipmentTransition(current, next dbgen.ShipmentStatus) bool {

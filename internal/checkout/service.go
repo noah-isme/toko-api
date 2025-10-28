@@ -12,6 +12,7 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/cart"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/pricing"
 )
 
@@ -57,6 +58,7 @@ type Service struct {
 	CartSvc  *cart.Service
 	TaxBps   int
 	Currency string
+	Events   *events.Bus
 }
 
 func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output, error) {
@@ -149,6 +151,18 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Output{}, err
+	}
+	if s.Events != nil {
+		user, _ := s.Q.GetUserByID(ctx, uID)
+		payload := map[string]any{
+			"orderId": cart.UUIDString(order.ID),
+			"userId":  *userID,
+			"total":   summary.Total,
+		}
+		if user.Email != "" {
+			payload["email"] = user.Email
+		}
+		_, _ = s.Events.Emit(ctx, events.TopicOrderCreated, order.ID, payload)
 	}
 	var out Output
 	out.OrderID = cart.UUIDString(order.ID)
