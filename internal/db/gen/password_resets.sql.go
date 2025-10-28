@@ -85,8 +85,8 @@ WHERE id = $1 AND used_at IS NULL
 `
 
 func (q *Queries) MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error {
-        _, err := q.db.Exec(ctx, markPasswordResetUsed, id)
-        return err
+	_, err := q.db.Exec(ctx, markPasswordResetUsed, id)
+	return err
 }
 
 const usePasswordReset = `-- name: UsePasswordReset :exec
@@ -96,6 +96,6 @@ WHERE token = $1 AND used_at IS NULL
 `
 
 func (q *Queries) UsePasswordReset(ctx context.Context, token string) error {
-        _, err := q.db.Exec(ctx, usePasswordReset, token)
-        return err
+	_, err := q.db.Exec(ctx, usePasswordReset, token)
+	return err
 }

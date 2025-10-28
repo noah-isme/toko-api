@@ -14,8 +14,10 @@ import (
 	"github.com/rs/zerolog/hlog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	redis "github.com/redis/go-redis/v9"
 
 	"github.com/noah-isme/backend-toko/internal/auth"
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -44,6 +46,32 @@ func main() {
 	}
 
 	queries := dbgen.New(pool)
+
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("parse redis url")
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Error().Err(err).Msg("close redis")
+		}
+	}()
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		logger.Fatal().Err(err).Msg("ping redis")
+	}
+	catalogService, err := catalog.NewService(catalog.ServiceConfig{
+		Queries:      queries,
+		Cache:        catalog.NewCache(redisClient, cfg.CatalogCacheTTL),
+		DefaultPage:  cfg.CatalogDefaultPage,
+		DefaultLimit: cfg.CatalogDefaultLimit,
+		MaxLimit:     cfg.CatalogMaxLimit,
+	})
+	if err != nil {
+		logger.Fatal().Err(err).Msg("initialise catalog service")
+	}
+	catalogHandler := catalog.NewHandler(catalog.HandlerConfig{Service: catalogService})
+
 	authService, err := auth.NewService(auth.Config{
 		Queries:         queries,
 		Secret:          cfg.JWTSecret,
@@ -97,6 +125,12 @@ func main() {
 	})
 
 	r.Route("/api/v1", func(v chi.Router) {
+		v.Get("/categories", catalogHandler.Categories)
+		v.Get("/brands", catalogHandler.Brands)
+		v.Get("/products", catalogHandler.Products)
+		v.Get("/products/{slug}", catalogHandler.ProductDetail)
+		v.Get("/products/{slug}/related", catalogHandler.Related)
+
 		v.Route("/auth", func(a chi.Router) {
 			a.Post("/register", authHandler.Register)
 			a.Post("/login", authHandler.Login)

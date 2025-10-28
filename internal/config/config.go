@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ type Config struct {
 	RefreshCookieSecure   bool
 	RefreshCookieSameSite http.SameSite
 	PublicBaseURL         string
+	CatalogDefaultPage    int
+	CatalogDefaultLimit   int
+	CatalogMaxLimit       int
+	CatalogCacheTTL       time.Duration
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -61,6 +66,23 @@ func Load() (*Config, error) {
 		RefreshCookieSecure:   parseBool(k.String("REFRESH_COOKIE_SECURE")),
 		RefreshCookieSameSite: parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
 		PublicBaseURL:         strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
+		CatalogDefaultPage:    parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
+		CatalogDefaultLimit:   parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
+		CatalogMaxLimit:       parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
+		CatalogCacheTTL:       time.Duration(parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)) * time.Second,
+	}
+
+	if cfg.CatalogDefaultPage < 1 {
+		cfg.CatalogDefaultPage = 1
+	}
+	if cfg.CatalogMaxLimit < 1 {
+		cfg.CatalogMaxLimit = 100
+	}
+	if cfg.CatalogDefaultLimit < 1 {
+		cfg.CatalogDefaultLimit = 20
+	}
+	if cfg.CatalogDefaultLimit > cfg.CatalogMaxLimit {
+		cfg.CatalogDefaultLimit = cfg.CatalogMaxLimit
 	}
 
 	if cfg.RefreshCookieSameSite == http.SameSiteDefaultMode {
@@ -130,6 +152,18 @@ func parseDuration(value, fallback string) time.Duration {
 		d, _ = time.ParseDuration(fallback)
 	}
 	return d
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseBool(value string) bool {
