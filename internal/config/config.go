@@ -25,6 +25,7 @@ type Config struct {
 	MidtransServerKey     string
 	MidtransClientKey     string
 	RajaOngkirAPIKey      string
+	ShippingOriginCode    string
 	AccessTokenTTL        time.Duration
 	RefreshTokenTTL       time.Duration
 	PasswordResetTTL      time.Duration
@@ -37,6 +38,11 @@ type Config struct {
 	CatalogDefaultLimit   int
 	CatalogMaxLimit       int
 	CatalogCacheTTL       time.Duration
+	CartTTL               time.Duration
+	PricingTaxRateBPS     int
+	CurrencyCode          string
+	CurrencyMinorUnit     int
+	IdempotencyTTL        time.Duration
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -58,6 +64,7 @@ func Load() (*Config, error) {
 		MidtransServerKey:     k.String("MIDTRANS_SERVER_KEY"),
 		MidtransClientKey:     k.String("MIDTRANS_CLIENT_KEY"),
 		RajaOngkirAPIKey:      k.String("RAJAONGKIR_API_KEY"),
+		ShippingOriginCode:    valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
 		AccessTokenTTL:        parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
 		RefreshTokenTTL:       parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
 		PasswordResetTTL:      parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
@@ -70,6 +77,15 @@ func Load() (*Config, error) {
 		CatalogDefaultLimit:   parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
 		CatalogMaxLimit:       parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
 		CatalogCacheTTL:       time.Duration(parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)) * time.Second,
+		CartTTL:               time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
+		PricingTaxRateBPS:     parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
+		CurrencyCode:          valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
+		CurrencyMinorUnit:     parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
+		IdempotencyTTL:        time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
+	}
+
+	if cfg.ShippingOriginCode == "" {
+		cfg.ShippingOriginCode = "KOTA_KEDIRI"
 	}
 
 	if cfg.CatalogDefaultPage < 1 {
@@ -93,6 +109,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.PublicBaseURL != "" {
 		cfg.PublicBaseURL = strings.TrimRight(cfg.PublicBaseURL, "/")
+	}
+
+	if cfg.CurrencyCode == "" {
+		cfg.CurrencyCode = "IDR"
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -161,6 +181,18 @@ func parsePositiveInt(value string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(trimmed)
 	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func parsePositiveIntAllowZero(value string, fallback int) int {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed

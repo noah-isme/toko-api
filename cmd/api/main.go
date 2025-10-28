@@ -17,10 +17,14 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/noah-isme/backend-toko/internal/auth"
+	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/catalog"
+	"github.com/noah-isme/backend-toko/internal/checkout"
 	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/order"
+	"github.com/noah-isme/backend-toko/internal/shipping"
 	"github.com/noah-isme/backend-toko/internal/user"
 )
 
@@ -96,6 +100,29 @@ func main() {
 	addressService := user.NewService(pool)
 	addressHandler := &user.Handler{Service: addressService}
 
+	idem := common.Idem{R: redisClient, TTL: cfg.IdempotencyTTL}
+
+	cartSvc := &cart.Service{Q: queries, TTL: cfg.CartTTL}
+	cartHandler := &cart.Handler{
+		Q:              queries,
+		Svc:            cartSvc,
+		ShippingClient: shipping.MockClient{},
+		ShippingOrigin: cfg.ShippingOriginCode,
+		TaxBps:         cfg.PricingTaxRateBPS,
+		Currency:       cfg.CurrencyCode,
+	}
+
+	checkoutSvc := &checkout.Service{
+		Q:        queries,
+		Pool:     pool,
+		CartSvc:  cartSvc,
+		TaxBps:   cfg.PricingTaxRateBPS,
+		Currency: cfg.CurrencyCode,
+	}
+	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
+
+	orderHandler := &order.Handler{Q: queries}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -152,6 +179,31 @@ func main() {
 			a.Route("/{addressID}", func(child chi.Router) {
 				child.Patch("/", addressHandler.Update)
 				child.Delete("/", addressHandler.Delete)
+			})
+
+			v.Route("/carts", func(c chi.Router) {
+				c.Get("/{id}", cartHandler.Get)
+				c.Group(func(g chi.Router) {
+					g.Use(idem.Middleware)
+					g.Post("/", cartHandler.Create)
+					g.Post("/{id}/items", cartHandler.AddItem)
+					g.Patch("/{id}/items/{itemId}", cartHandler.UpdateItem)
+					g.Delete("/{id}/items/{itemId}", cartHandler.RemoveItem)
+					g.Post("/{id}/apply-voucher", cartHandler.ApplyVoucher)
+					g.Delete("/{id}/voucher", cartHandler.RemoveVoucher)
+					g.Post("/{id}/quote/shipping", cartHandler.QuoteShipping)
+					g.Post("/{id}/quote/tax", cartHandler.QuoteTax)
+					g.With(authMiddleware.RequireAuth).Post("/merge", cartHandler.Merge)
+				})
+			})
+
+			v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout", checkoutHandler.Checkout)
+
+			v.Group(func(authR chi.Router) {
+				authR.Use(authMiddleware.RequireAuth)
+				authR.Get("/orders", orderHandler.List)
+				authR.Get("/orders/{orderId}", orderHandler.Get)
+				authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
 			})
 		})
 	})

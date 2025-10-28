@@ -97,6 +97,67 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProduct
 	return i, err
 }
 
+const getProductForCart = `-- name: GetProductForCart :one
+SELECT id,
+       title,
+       slug,
+       price,
+       category_id
+FROM products
+WHERE id = $1
+LIMIT 1
+`
+
+type GetProductForCartRow struct {
+	ID         pgtype.UUID `json:"id"`
+	Title      string      `json:"title"`
+	Slug       string      `json:"slug"`
+	Price      int64       `json:"price"`
+	CategoryID pgtype.UUID `json:"category_id"`
+}
+
+func (q *Queries) GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error) {
+	row := q.db.QueryRow(ctx, getProductForCart, id)
+	var i GetProductForCartRow
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Slug,
+		&i.Price,
+		&i.CategoryID,
+	)
+	return i, err
+}
+
+const getVariantForCart = `-- name: GetVariantForCart :one
+SELECT id,
+       product_id,
+       price,
+       stock
+FROM product_variants
+WHERE id = $1
+LIMIT 1
+`
+
+type GetVariantForCartRow struct {
+	ID        pgtype.UUID `json:"id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	Price     int64       `json:"price"`
+	Stock     int32       `json:"stock"`
+}
+
+func (q *Queries) GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error) {
+	row := q.db.QueryRow(ctx, getVariantForCart, id)
+	var i GetVariantForCartRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.Price,
+		&i.Stock,
+	)
+	return i, err
+}
+
 const listImagesByProduct = `-- name: ListImagesByProduct :many
 SELECT id,
        product_id,
