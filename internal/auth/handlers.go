@@ -5,18 +5,25 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/noah-isme/backend-toko/internal/common"
 )
 
+const defaultRefreshCookiePath = "/api/v1/auth"
+
 // Handler exposes HTTP handlers for authentication and account endpoints.
 type Handler struct {
-	Service           *Service
-	AccessCookieName  string
-	RefreshCookieName string
-	CookieDomain      string
-	CookieSecure      bool
-	CookieSameSite    http.SameSite
+	Service *Service
+	Mailer  common.EmailSender
+
+	RefreshCookieName     string
+	RefreshCookieDomain   string
+	RefreshCookieSecure   bool
+	RefreshCookieSameSite http.SameSite
+	RefreshCookiePath     string
+
+	PublicBaseURL string
 }
 
 type registerRequest struct {
@@ -30,13 +37,17 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-type forgotPasswordRequest struct {
+type forgotRequest struct {
 	Email string `json:"email"`
 }
 
-type resetPasswordRequest struct {
-	Token    string `json:"token"`
-	Password string `json:"password"`
+type resetRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"newPassword"`
+}
+
+type refreshResponse struct {
+	AccessToken string `json:"accessToken"`
 }
 
 // Register handles POST /api/v1/auth/register.
@@ -74,14 +85,35 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	h.setAuthCookies(w, result)
+	h.setRefreshCookie(w, result.RefreshToken, result.RefreshExpiry)
 	common.JSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"user":                    result.User,
-			"access_token":            result.AccessToken,
-			"access_token_expires_at": result.AccessExpiry,
+			"user":                  result.User,
+			"accessToken":           result.AccessToken,
+			"accessTokenExpiresAt":  result.AccessExpiry,
+			"refreshTokenExpiresAt": result.RefreshExpiry,
 		},
 	})
+}
+
+// Refresh handles POST /api/v1/auth/refresh.
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	token := h.refreshTokenFromRequest(r)
+	if token == "" {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing refresh cookie", nil)
+		return
+	}
+	result, err := h.Service.Refresh(r.Context(), token)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.setRefreshCookie(w, result.RefreshToken, result.RefreshExpiry)
+	common.JSON(w, http.StatusOK, refreshResponse{AccessToken: result.AccessToken})
 }
 
 // Logout handles POST /api/v1/auth/logout.
@@ -90,11 +122,10 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
 		return
 	}
-	refreshToken := h.refreshTokenFromRequest(r)
-	if refreshToken != "" {
-		_ = h.Service.Logout(r.Context(), refreshToken)
+	if token := h.refreshTokenFromRequest(r); token != "" {
+		_ = h.Service.Logout(r.Context(), token)
 	}
-	h.clearAuthCookies(w)
+	h.clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -117,50 +148,41 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": user})
 }
 
-// ForgotPassword handles POST /api/v1/auth/password/forgot.
-func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+// Forgot handles POST /api/v1/auth/password/forgot.
+func (h *Handler) Forgot(w http.ResponseWriter, r *http.Request) {
 	if h.Service == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
 		return
 	}
-	var req forgotPasswordRequest
+	var req forgotRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
 		return
 	}
-	result, err := h.Service.InitiatePasswordReset(r.Context(), req.Email)
-	if err != nil {
+	if err := h.Service.Forgot(r.Context(), req.Email, h.PublicBaseURL, h.Mailer); err != nil {
 		h.writeError(w, err)
 		return
 	}
-	response := map[string]any{"data": map[string]any{"message": "if the email exists, a reset link has been sent"}}
-	if result.Token != "" {
-		response["meta"] = map[string]any{"reset_token": result.Token, "expires_at": result.ExpiresAt}
-	}
-	common.JSON(w, http.StatusAccepted, response)
+	w.WriteHeader(http.StatusNoContent)
 }
 
-// ResetPassword handles POST /api/v1/auth/password/reset.
-func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+// Reset handles POST /api/v1/auth/password/reset.
+func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 	if h.Service == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
 		return
 	}
-	var req resetPasswordRequest
+	var req resetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
 		return
 	}
-	if strings.TrimSpace(req.Token) == "" {
-		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "token is required", nil)
-		return
-	}
-	if err := h.Service.ResetPassword(r.Context(), req.Token, req.Password); err != nil {
+	if err := h.Service.Reset(r.Context(), req.Token, req.NewPassword); err != nil {
 		h.writeError(w, err)
 		return
 	}
-	h.clearAuthCookies(w)
-	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"message": "password updated"}})
+	h.clearRefreshCookie(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
@@ -183,58 +205,45 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "internal error", nil)
 }
 
-func (h *Handler) setAuthCookies(w http.ResponseWriter, result LoginResult) {
-	if h.AccessCookieName != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     h.AccessCookieName,
-			Value:    result.AccessToken,
-			Domain:   h.CookieDomain,
-			Path:     "/",
-			Expires:  result.AccessExpiry,
-			HttpOnly: true,
-			Secure:   h.CookieSecure,
-			SameSite: h.CookieSameSite,
-		})
+func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, expires time.Time) {
+	if h.RefreshCookieName == "" {
+		return
 	}
-	if h.RefreshCookieName != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     h.RefreshCookieName,
-			Value:    result.RefreshToken,
-			Domain:   h.CookieDomain,
-			Path:     "/",
-			Expires:  result.RefreshExpiry,
-			HttpOnly: true,
-			Secure:   h.CookieSecure,
-			SameSite: h.CookieSameSite,
-		})
+	path := h.RefreshCookiePath
+	if strings.TrimSpace(path) == "" {
+		path = defaultRefreshCookiePath
 	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     h.RefreshCookieName,
+		Value:    token,
+		Domain:   h.RefreshCookieDomain,
+		Path:     path,
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   h.RefreshCookieSecure,
+		SameSite: h.RefreshCookieSameSite,
+	})
 }
 
-func (h *Handler) clearAuthCookies(w http.ResponseWriter) {
-	if h.AccessCookieName != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     h.AccessCookieName,
-			Value:    "",
-			Domain:   h.CookieDomain,
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   h.CookieSecure,
-			SameSite: h.CookieSameSite,
-		})
+func (h *Handler) clearRefreshCookie(w http.ResponseWriter) {
+	if h.RefreshCookieName == "" {
+		return
 	}
-	if h.RefreshCookieName != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     h.RefreshCookieName,
-			Value:    "",
-			Domain:   h.CookieDomain,
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   h.CookieSecure,
-			SameSite: h.CookieSameSite,
-		})
+	path := h.RefreshCookiePath
+	if strings.TrimSpace(path) == "" {
+		path = defaultRefreshCookiePath
 	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     h.RefreshCookieName,
+		Value:    "",
+		Domain:   h.RefreshCookieDomain,
+		Path:     path,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+		HttpOnly: true,
+		Secure:   h.RefreshCookieSecure,
+		SameSite: h.RefreshCookieSameSite,
+	})
 }
 
 func (h *Handler) refreshTokenFromRequest(r *http.Request) string {

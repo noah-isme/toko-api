@@ -15,20 +15,23 @@ import (
 
 // Config holds application configuration loaded from the environment.
 type Config struct {
-	AppEnv             string
-	Port               string
-	DatabaseURL        string
-	RedisURL           string
-	JWTSecret          string
-	CORSAllowedOrigins []string
-	MidtransServerKey  string
-	MidtransClientKey  string
-	RajaOngkirAPIKey   string
-	AccessTokenTTL     time.Duration
-	RefreshTokenTTL    time.Duration
-	CookieDomain       string
-	CookieSecure       bool
-	CookieSameSite     http.SameSite
+	AppEnv                string
+	Port                  string
+	DatabaseURL           string
+	RedisURL              string
+	JWTSecret             string
+	CORSAllowedOrigins    []string
+	MidtransServerKey     string
+	MidtransClientKey     string
+	RajaOngkirAPIKey      string
+	AccessTokenTTL        time.Duration
+	RefreshTokenTTL       time.Duration
+	PasswordResetTTL      time.Duration
+	RefreshCookieName     string
+	RefreshCookieDomain   string
+	RefreshCookieSecure   bool
+	RefreshCookieSameSite http.SameSite
+	PublicBaseURL         string
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -41,24 +44,33 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AppEnv:             valueOrDefault(k.String("APP_ENV"), "development"),
-		Port:               valueOrDefault(k.String("PORT"), "8080"),
-		DatabaseURL:        k.String("DATABASE_URL"),
-		RedisURL:           k.String("REDIS_URL"),
-		JWTSecret:          k.String("JWT_SECRET"),
-		CORSAllowedOrigins: splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
-		MidtransServerKey:  k.String("MIDTRANS_SERVER_KEY"),
-		MidtransClientKey:  k.String("MIDTRANS_CLIENT_KEY"),
-		RajaOngkirAPIKey:   k.String("RAJAONGKIR_API_KEY"),
-		AccessTokenTTL:     parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
-		RefreshTokenTTL:    parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
-		CookieDomain:       strings.TrimSpace(k.String("COOKIE_DOMAIN")),
-		CookieSecure:       parseBool(k.String("COOKIE_SECURE")),
-		CookieSameSite:     parseSameSite(k.String("COOKIE_SAMESITE")),
+		AppEnv:                valueOrDefault(k.String("APP_ENV"), "development"),
+		Port:                  valueOrDefault(k.String("PORT"), "8080"),
+		DatabaseURL:           k.String("DATABASE_URL"),
+		RedisURL:              k.String("REDIS_URL"),
+		JWTSecret:             k.String("JWT_SECRET"),
+		CORSAllowedOrigins:    splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
+		MidtransServerKey:     k.String("MIDTRANS_SERVER_KEY"),
+		MidtransClientKey:     k.String("MIDTRANS_CLIENT_KEY"),
+		RajaOngkirAPIKey:      k.String("RAJAONGKIR_API_KEY"),
+		AccessTokenTTL:        parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
+		RefreshTokenTTL:       parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
+		PasswordResetTTL:      parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
+		RefreshCookieName:     valueOrDefault(k.String("REFRESH_COOKIE_NAME"), "rt"),
+		RefreshCookieDomain:   strings.TrimSpace(k.String("REFRESH_COOKIE_DOMAIN")),
+		RefreshCookieSecure:   parseBool(k.String("REFRESH_COOKIE_SECURE")),
+		RefreshCookieSameSite: parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
+		PublicBaseURL:         strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
 	}
 
-	if cfg.CookieSameSite == http.SameSiteDefaultMode {
-		cfg.CookieSameSite = http.SameSiteLaxMode
+	if cfg.RefreshCookieSameSite == http.SameSiteDefaultMode {
+		cfg.RefreshCookieSameSite = http.SameSiteLaxMode
+	}
+	if strings.TrimSpace(cfg.RefreshCookieName) == "" {
+		cfg.RefreshCookieName = "rt"
+	}
+	if cfg.PublicBaseURL != "" {
+		cfg.PublicBaseURL = strings.TrimRight(cfg.PublicBaseURL, "/")
 	}
 
 	if cfg.DatabaseURL == "" {

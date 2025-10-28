@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/auth"
+	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/user"
@@ -48,19 +49,21 @@ func main() {
 		Secret:          cfg.JWTSecret,
 		AccessTokenTTL:  cfg.AccessTokenTTL,
 		RefreshTokenTTL: cfg.RefreshTokenTTL,
+		ResetTokenTTL:   cfg.PasswordResetTTL,
 	})
 	if err != nil {
 		logger.Fatal().Err(err).Msg("initialise auth service")
 	}
 	authHandler := &auth.Handler{
-		Service:           authService,
-		AccessCookieName:  "access_token",
-		RefreshCookieName: "refresh_token",
-		CookieDomain:      cfg.CookieDomain,
-		CookieSecure:      cfg.CookieSecure,
-		CookieSameSite:    cfg.CookieSameSite,
+		Service:               authService,
+		Mailer:                common.NopEmailSender{},
+		RefreshCookieName:     cfg.RefreshCookieName,
+		RefreshCookieDomain:   cfg.RefreshCookieDomain,
+		RefreshCookieSecure:   cfg.RefreshCookieSecure,
+		RefreshCookieSameSite: cfg.RefreshCookieSameSite,
+		PublicBaseURL:         cfg.PublicBaseURL,
 	}
-	authMiddleware := auth.Middleware{Service: authService, AccessCookie: authHandler.AccessCookieName}
+	authMiddleware := auth.Middleware{Service: authService}
 
 	addressService := user.NewService(pool)
 	addressHandler := &user.Handler{Service: addressService}
@@ -97,13 +100,14 @@ func main() {
 		v.Route("/auth", func(a chi.Router) {
 			a.Post("/register", authHandler.Register)
 			a.Post("/login", authHandler.Login)
-			a.Post("/password/forgot", authHandler.ForgotPassword)
-			a.Post("/password/reset", authHandler.ResetPassword)
+			a.Post("/refresh", authHandler.Refresh)
+			a.Post("/logout", authHandler.Logout)
+			a.Post("/password/forgot", authHandler.Forgot)
+			a.Post("/password/reset", authHandler.Reset)
 
 			a.Group(func(protected chi.Router) {
 				protected.Use(authMiddleware.RequireAuth)
 				protected.Get("/me", authHandler.Me)
-				protected.Post("/logout", authHandler.Logout)
 			})
 		})
 
