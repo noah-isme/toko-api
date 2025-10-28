@@ -21,7 +21,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/obs"
 )
 
 // Dispatcher coordinates webhook scheduling and delivery.
@@ -77,11 +82,20 @@ func (d *Dispatcher) WorkOnce(ctx context.Context, batch int32) error {
 	if batch <= 0 {
 		batch = 1
 	}
+	ctx, span := otel.Tracer("notify.Dispatcher").Start(ctx, "Dispatcher.WorkOnce")
+	defer span.End()
+	span.SetAttributes(attribute.Int("webhook.batch", int(batch)))
+
 	deliveries, err := d.Store.DequeueDueDeliveries(ctx, batch)
 	if err != nil {
+		span.RecordError(err)
 		return err
 	}
 	for _, del := range deliveries {
+		if obs.WebhookDispatchAttempts != nil {
+			obs.WebhookDispatchAttempts.Inc()
+		}
+		attemptStart := time.Now()
 		if err := d.Store.MarkDelivering(ctx, del.ID); err != nil {
 			continue
 		}
@@ -97,6 +111,12 @@ func (d *Dispatcher) WorkOnce(ctx context.Context, batch int32) error {
 		}
 		status, respBody, deliverErr := d.deliver(ctx, endpoint, event, del)
 		if deliverErr == nil && status >= 200 && status < 300 {
+			if obs.WebhookDeliveriesTotal != nil {
+				obs.WebhookDeliveriesTotal.WithLabelValues("delivered").Inc()
+			}
+			if obs.WebhookAttemptLatency != nil {
+				obs.WebhookAttemptLatency.WithLabelValues("delivered").Observe(obs.DurationMillis(time.Since(attemptStart)))
+			}
 			statusVal := pgtype.Int4{}
 			if status > 0 {
 				statusVal = pgtype.Int4{Int32: int32(status), Valid: true}
@@ -117,9 +137,24 @@ func (d *Dispatcher) WorkOnce(ctx context.Context, batch int32) error {
 		reason := fmt.Sprintf("status=%d err=%v", status, deliverErr)
 		reasonText := pgtype.Text{String: reason, Valid: true}
 		if int(del.Attempt+1) >= int(del.MaxAttempt) {
+			if obs.WebhookDeliveriesTotal != nil {
+				obs.WebhookDeliveriesTotal.WithLabelValues("dlq").Inc()
+			}
+			if obs.WebhookAttemptLatency != nil {
+				obs.WebhookAttemptLatency.WithLabelValues("dlq").Observe(obs.DurationMillis(time.Since(attemptStart)))
+			}
+			if obs.WebhookDispatchDLQ != nil {
+				obs.WebhookDispatchDLQ.Inc()
+			}
 			_ = d.Store.MoveToDLQ(ctx, dbgen.MoveToDLQParams{LastError: reasonText, ID: del.ID})
 			_, _ = d.Store.InsertWebhookDlq(ctx, dbgen.InsertWebhookDlqParams{DeliveryID: del.ID, Reason: reasonText})
 			continue
+		}
+		if obs.WebhookDeliveriesTotal != nil {
+			obs.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
+		}
+		if obs.WebhookAttemptLatency != nil {
+			obs.WebhookAttemptLatency.WithLabelValues("failed").Observe(obs.DurationMillis(time.Since(attemptStart)))
 		}
 		delay := d.nextDelay(del.Attempt)
 		_ = d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID})
@@ -143,11 +178,20 @@ func (d *Dispatcher) failDelivery(ctx context.Context, del dbgen.WebhookDelivery
 	reason := err.Error()
 	reasonText := pgtype.Text{String: reason, Valid: true}
 	if int(del.Attempt+1) >= int(del.MaxAttempt) {
+		if obs.WebhookDeliveriesTotal != nil {
+			obs.WebhookDeliveriesTotal.WithLabelValues("dlq").Inc()
+		}
+		if obs.WebhookDispatchDLQ != nil {
+			obs.WebhookDispatchDLQ.Inc()
+		}
 		if dlqErr := d.Store.MoveToDLQ(ctx, dbgen.MoveToDLQParams{LastError: reasonText, ID: del.ID}); dlqErr != nil {
 			return dlqErr
 		}
 		_, _ = d.Store.InsertWebhookDlq(ctx, dbgen.InsertWebhookDlqParams{DeliveryID: del.ID, Reason: reasonText})
 		return nil
+	}
+	if obs.WebhookDeliveriesTotal != nil {
+		obs.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
 	}
 	delay := d.nextDelay(del.Attempt)
 	return d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID})
@@ -157,7 +201,15 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	if d.Client == nil {
 		d.Client = HttpClient(5000, false)
 	}
+	ctx, span := otel.Tracer("notify.Dispatcher").Start(ctx, "Dispatcher.deliver")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("webhook.endpoint_id", uuidFrom(ep.ID)),
+		attribute.String("webhook.delivery_id", uuidFrom(del.ID)),
+		attribute.String("webhook.topic", ev.Topic),
+	)
 	if err := validateURL(ep.Url); err != nil {
+		span.RecordError(err)
 		return 0, "", err
 	}
 	var occurred time.Time
@@ -179,6 +231,7 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
+		span.RecordError(err)
 		return 0, "", err
 	}
 	ts := time.Now().Unix()
@@ -186,14 +239,17 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 		key := replayKey(ep.ID, ev.ID)
 		ok, err := d.Replay.Acquire(ctx, key, d.ReplayTTL)
 		if err != nil {
+			span.RecordError(err)
 			return 0, "", err
 		}
 		if !ok {
+			span.AddEvent("delivery replay prevented")
 			return http.StatusOK, "replay-suppressed", nil
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.Url, bytes.NewReader(body))
 	if err != nil {
+		span.RecordError(err)
 		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -206,6 +262,7 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	req.Header.Set("X-Signature", ComputeSignature(ep.Secret, ts, eventID, body))
 	resp, err := d.Client.Do(req)
 	if err != nil {
+		span.RecordError(err)
 		return 0, "", err
 	}
 	defer func() {
@@ -213,8 +270,10 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	}()
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		span.RecordError(err)
 		return resp.StatusCode, "", err
 	}
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 	return resp.StatusCode, string(responseBody), nil
 }
 
@@ -266,7 +325,7 @@ func HttpClient(timeoutMs int, insecure bool) *http.Client {
 	}
 	return &http.Client{
 		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
-		Transport: transport,
+		Transport: otelhttp.NewTransport(transport),
 	}
 }
 
