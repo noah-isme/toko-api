@@ -3,6 +3,8 @@ package auth
 import (
 	"net/http"
 	"testing"
+
+	"github.com/noah-isme/backend-toko/internal/common"
 )
 
 func TestClientIP(t *testing.T) {
@@ -39,7 +41,7 @@ func TestClientIP(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 			req.RemoteAddr = tt.remoteAddr
-			if got := clientIP(req); got != tt.want {
+			if got := common.ClientIP(req); got != tt.want {
 				t.Fatalf("clientIP() = %q, want %q", got, tt.want)
 			}
 		})

@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	redis "github.com/redis/go-redis/v9"
@@ -22,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/analytics"
+	"github.com/noah-isme/backend-toko/internal/audit"
 	"github.com/noah-isme/backend-toko/internal/auth"
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/catalog"
@@ -35,6 +35,8 @@ import (
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/payment"
+	"github.com/noah-isme/backend-toko/internal/ratelimit"
+	"github.com/noah-isme/backend-toko/internal/security"
 	"github.com/noah-isme/backend-toko/internal/shipping"
 	"github.com/noah-isme/backend-toko/internal/user"
 	"github.com/noah-isme/backend-toko/internal/voucher"
@@ -143,6 +145,9 @@ func main() {
 		AccessTokenTTL:  cfg.AccessTokenTTL,
 		RefreshTokenTTL: cfg.RefreshTokenTTL,
 		ResetTokenTTL:   cfg.PasswordResetTTL,
+		Issuer:          cfg.JWTIssuer,
+		Audience:        cfg.JWTAudience,
+		ClockSkew:       cfg.JWTClockSkew,
 	})
 	if err != nil {
 		logger.Fatal().Err(err).Msg("initialise auth service")
@@ -265,6 +270,110 @@ func main() {
 	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange}
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
+	auditSample := envFloat("AUDIT_SAMPLING_RATE", 1.0)
+	if auditSample < 0 {
+		auditSample = 0
+	}
+	if auditSample > 1 {
+		auditSample = 1
+	}
+	auditEnabled := envBool("AUDIT_ENABLED", true) && auditSample > 0
+	auditSvc := &audit.Service{Store: queries, Enabled: auditEnabled, SamplingRate: auditSample}
+	auditHandler := audit.Handler{Store: auditSvc.Store}
+	auditRecorder := audit.HTTPRecorder{
+		Service: auditSvc,
+		OnError: func(err error) {
+			if err != nil {
+				logger.Error().Err(err).Msg("record audit log")
+			}
+		},
+	}
+
+	securityHeaders := security.Headers{
+		Enable:                envBool("SECURITY_ENABLE_HEADERS", true),
+		EnableHSTS:            envBool("SECURITY_ENABLE_HSTS", true),
+		HSTSMaxAge:            envInt("SECURITY_HSTS_MAX_AGE", 31536000),
+		HSTSIncludeSubdomains: envBool("SECURITY_HSTS_INCLUDE_SUBDOMAINS", true),
+	}
+	corsOrigins := envOrDefault("SECURITY_ALLOWED_ORIGINS", strings.Join(cfg.CORSAllowedOrigins, ","))
+	if strings.TrimSpace(corsOrigins) == "" && len(cfg.CORSAllowedOrigins) > 0 {
+		corsOrigins = strings.Join(cfg.CORSAllowedOrigins, ",")
+	}
+	if strings.TrimSpace(corsOrigins) == "" {
+		corsOrigins = "http://localhost:3000"
+	}
+	bodyLimitBytes := envInt("SECURITY_BODY_LIMIT_BYTES", 1_048_576)
+	if bodyLimitBytes <= 0 {
+		bodyLimitBytes = 1_048_576
+	}
+	csrfEnabled := envBool("SECURITY_CSRF_ENABLED", true)
+	csrfHeader := envOrDefault("SECURITY_CSRF_HEADER", "X-CSRF-Token")
+
+	rateLimitPrefix := envOrDefault("RATE_LIMIT_REDIS_PREFIX", "rl:")
+	limiter := ratelimit.Limiter{Client: redisClient, Prefix: rateLimitPrefix}
+	rateLimitErr := func(err error) {
+		if err != nil {
+			logger.Error().Err(err).Msg("rate limiter failure")
+		}
+	}
+	globalLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key:    func(*http.Request) string { return "global" },
+			Window: time.Duration(envInt("RATE_LIMIT_GLOBAL_WINDOW_SEC", 60)) * time.Second,
+			Max:    envInt("RATE_LIMIT_GLOBAL_MAX", 1200),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
+	ipLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key: func(r *http.Request) string {
+				ip := common.ClientIP(r)
+				if ip == "" {
+					ip = "unknown"
+				}
+				return "ip:" + ip
+			},
+			Window: time.Duration(envInt("RATE_LIMIT_IP_WINDOW_SEC", 60)) * time.Second,
+			Max:    envInt("RATE_LIMIT_IP_MAX", 240),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
+	userLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key: func(r *http.Request) string {
+				if userID, ok := common.UserID(r.Context()); ok && strings.TrimSpace(userID) != "" {
+					return "user:" + userID
+				}
+				ip := common.ClientIP(r)
+				if ip == "" {
+					ip = "unknown"
+				}
+				return "anon:" + ip
+			},
+			Window: time.Duration(envInt("RATE_LIMIT_USER_WINDOW_SEC", 60)) * time.Second,
+			Max:    envInt("RATE_LIMIT_USER_MAX", 120),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
+	loginLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key: func(r *http.Request) string {
+				ip := common.ClientIP(r)
+				if ip == "" {
+					ip = "unknown"
+				}
+				return "login:" + ip
+			},
+			Window: time.Duration(envInt("RATE_LIMIT_LOGIN_WINDOW_SEC", 300)) * time.Second,
+			Max:    envInt("RATE_LIMIT_LOGIN_MAX", 10),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
+
 	var httpMetrics *obs.HTTPMetrics
 	if metricsEnabled {
 		buckets := obs.ParseBucketsCSV(envOrDefault("OBS_METRICS_BUCKETS_MS", ""))
@@ -283,14 +392,14 @@ func main() {
 		r.Use(obs.HTTPObs{Metrics: httpMetrics}.Middleware)
 	}
 	r.Use(obs.RequestLogger{Logger: logger}.Middleware)
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   allowedOrigins(cfg),
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
+	r.Use(securityHeaders.Middleware)
+	if strings.TrimSpace(corsOrigins) != "" {
+		r.Use(security.AllowCORS(corsOrigins))
+	}
+	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes)}.Middleware)
+	if csrfEnabled {
+		r.Use(security.CSRF{Header: csrfHeader}.Middleware)
+	}
 
 	if metricsEnabled {
 		r.Handle("/metrics", promhttp.Handler())
@@ -311,6 +420,9 @@ func main() {
 	r.Get("/health/ready", healthHandler.Ready)
 
 	r.Route("/api/v1", func(v chi.Router) {
+		v.Use(globalLimiter)
+		v.Use(ipLimiter)
+		v.Use(userLimiter)
 		v.Get("/categories", catalogHandler.Categories)
 		v.Get("/brands", catalogHandler.Brands)
 		v.Get("/products", catalogHandler.Products)
@@ -318,12 +430,13 @@ func main() {
 		v.Get("/products/{slug}/related", catalogHandler.Related)
 
 		v.Route("/auth", func(a chi.Router) {
+			a.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "auth"}))
 			a.Post("/register", authHandler.Register)
-			a.Post("/login", authHandler.Login)
+			a.With(loginLimiter).Post("/login", authHandler.Login)
 			a.Post("/refresh", authHandler.Refresh)
 			a.Post("/logout", authHandler.Logout)
-			a.Post("/password/forgot", authHandler.Forgot)
-			a.Post("/password/reset", authHandler.Reset)
+			a.With(loginLimiter).Post("/password/forgot", authHandler.Forgot)
+			a.With(loginLimiter).Post("/password/reset", authHandler.Reset)
 
 			a.Group(func(protected chi.Router) {
 				protected.Use(authMiddleware.RequireAuth)
@@ -370,6 +483,7 @@ func main() {
 		v.Route("/admin", func(admin chi.Router) {
 			admin.Use(authMiddleware.RequireAuth)
 			admin.Use(requireRole(queries, "admin"))
+			admin.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}))
 			admin.Post("/vouchers", voucherHandler.Create)
 			admin.Put("/vouchers/{code}", voucherHandler.Update)
 			admin.Post("/vouchers/preview", voucherHandler.Preview)
@@ -381,6 +495,7 @@ func main() {
 			admin.Delete("/webhooks/{id}", notifyAdmin.DeleteEndpoint)
 			admin.Get("/webhook-deliveries", notifyAdmin.ListDeliveries)
 			admin.Post("/webhook-deliveries/{id}/replay", notifyAdmin.ReplayDelivery)
+			admin.Get("/audit-logs", auditHandler.List)
 		})
 
 		v.Route("/analytics", func(an chi.Router) {
@@ -427,13 +542,6 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatal().Err(err).Msg("server exited unexpectedly")
 	}
-}
-
-func allowedOrigins(cfg *config.Config) []string {
-	if len(cfg.CORSAllowedOrigins) == 0 {
-		return []string{"*"}
-	}
-	return cfg.CORSAllowedOrigins
 }
 
 func requireRole(q dbgen.Querier, role string) func(http.Handler) http.Handler {

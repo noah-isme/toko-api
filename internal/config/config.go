@@ -22,8 +22,11 @@ type Config struct {
 	Port                      string
 	DatabaseURL               string
 	RedisURL                  string
-	JWTSecret                 string
-	CORSAllowedOrigins        []string
+        JWTSecret                 string
+        JWTIssuer                 string
+        JWTAudience               string
+        JWTClockSkew              time.Duration
+        CORSAllowedOrigins        []string
 	MidtransServerKey         string
 	MidtransClientKey         string
 	MidtransBaseURL           string
@@ -89,7 +92,10 @@ func Load() (*Config, error) {
 		Port:                      valueOrDefault(k.String("PORT"), "8080"),
 		DatabaseURL:               k.String("DATABASE_URL"),
 		RedisURL:                  k.String("REDIS_URL"),
-		JWTSecret:                 k.String("JWT_SECRET"),
+                JWTSecret:                 k.String("JWT_SECRET"),
+                JWTIssuer:                 strings.TrimSpace(valueOrDefault(k.String("JWT_ISSUER"), "backend-toko")),
+                JWTAudience:               strings.TrimSpace(valueOrDefault(k.String("JWT_AUDIENCE"), "toko-frontend")),
+                JWTClockSkew:              time.Duration(parsePositiveIntAllowZero(k.String("JWT_CLOCK_SKEW_SEC"), 60)) * time.Second,
 		CORSAllowedOrigins:        splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
 		MidtransServerKey:         k.String("MIDTRANS_SERVER_KEY"),
 		MidtransClientKey:         k.String("MIDTRANS_CLIENT_KEY"),

@@ -254,6 +254,24 @@ type Address struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AuditLog struct {
+	ID           pgtype.UUID        `json:"id"`
+	ActorKind    interface{}        `json:"actor_kind"`
+	ActorUserID  pgtype.UUID        `json:"actor_user_id"`
+	Action       string             `json:"action"`
+	ResourceType string             `json:"resource_type"`
+	ResourceID   pgtype.Text        `json:"resource_id"`
+	Method       string             `json:"method"`
+	Path         string             `json:"path"`
+	Route        pgtype.Text        `json:"route"`
+	Status       int32              `json:"status"`
+	Ip           pgtype.Text        `json:"ip"`
+	UserAgent    pgtype.Text        `json:"user_agent"`
+	RequestID    pgtype.Text        `json:"request_id"`
+	Metadata     []byte             `json:"metadata"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Brand struct {
 	ID        pgtype.UUID        `json:"id"`
 	Name      string             `json:"name"`
