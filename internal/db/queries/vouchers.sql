@@ -1,5 +1,5 @@
 -- name: GetVoucherByCode :one
-SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at
+SELECT *
 FROM vouchers
 WHERE code = $1
 LIMIT 1;

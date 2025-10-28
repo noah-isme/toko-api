@@ -116,18 +116,19 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	}
 	summary := pricing.Compute(pricingItems, pricing.Money(discount), s.TaxBps, pricing.Money(shippingCost))
 	order, err := qtx.CreateOrder(ctx, dbgen.CreateOrderParams{
-		UserID:          uID,
-		CartID:          cID,
-		Status:          "PENDING_PAYMENT",
-		Currency:        s.Currency,
-		PricingSubtotal: summary.Subtotal,
-		PricingDiscount: summary.Discount,
-		PricingTax:      summary.Tax,
-		PricingShipping: summary.Shipping,
-		PricingTotal:    summary.Total,
-		ShippingAddress: toJSON(in.Address),
-		ShippingOption:  toJSON(in.Shipping),
-		Notes:           toNullableText(in.Notes),
+		UserID:             uID,
+		CartID:             cID,
+		Status:             "PENDING_PAYMENT",
+		Currency:           s.Currency,
+		PricingSubtotal:    summary.Subtotal,
+		PricingDiscount:    summary.Discount,
+		PricingTax:         summary.Tax,
+		PricingShipping:    summary.Shipping,
+		PricingTotal:       summary.Total,
+		ShippingAddress:    toJSON(in.Address),
+		ShippingOption:     toJSON(in.Shipping),
+		Notes:              toNullableText(in.Notes),
+		AppliedVoucherCode: cartRow.AppliedVoucherCode,
 	})
 	if err != nil {
 		return Output{}, err

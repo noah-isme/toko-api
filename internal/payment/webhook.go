@@ -2,6 +2,7 @@ package payment
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 
@@ -26,6 +28,12 @@ type Webhook struct {
 	Providers map[string]Provider
 	Replay    *redis.Client
 	ReplayTTL time.Duration
+	Voucher   VoucherSettler
+}
+
+// VoucherSettler records voucher usage as part of order settlement.
+type VoucherSettler interface {
+	Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error
 }
 
 // Handle processes webhook callbacks for the configured payment provider(s).
@@ -143,10 +151,17 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if order.CartID.Valid {
-				cartRow, err := q.GetCartByID(ctx, order.CartID)
-				if err == nil && cartRow.AppliedVoucherCode.Valid && strings.TrimSpace(cartRow.AppliedVoucherCode.String) != "" {
-					_ = q.IncrementVoucherUsageByCode(ctx, cartRow.AppliedVoucherCode.String)
+			if h.Voucher != nil && order.AppliedVoucherCode.Valid {
+				code := strings.TrimSpace(order.AppliedVoucherCode.String)
+				if code != "" {
+					amount := order.PricingDiscount
+					if amount < 0 {
+						amount = 0
+					}
+					if err := h.Voucher.Settle(ctx, code, order.ID, order.UserID, amount); err != nil {
+						common.JSONError(w, http.StatusInternalServerError, "VOUCHER_SETTLEMENT_FAILED", err.Error(), nil)
+						return
+					}
 				}
 			}
 		}

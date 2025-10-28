@@ -14,6 +14,7 @@ type Querier interface {
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
+	CountVoucherUsageByUser(ctx context.Context, arg CountVoucherUsageByUserParams) (int64, error)
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
 	CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error)
 	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
@@ -24,6 +25,7 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
@@ -48,16 +50,21 @@ type Querier interface {
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
 	GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error)
+	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (Shipment, error)
+	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
+	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
+	GetVoucherUsageByOrder(ctx context.Context, arg GetVoucherUsageByOrderParams) (VoucherUsage, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
+	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
@@ -72,6 +79,8 @@ type Querier interface {
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
+	RefreshSalesDaily(ctx context.Context) error
+	RefreshTopProducts(ctx context.Context) error
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
@@ -85,6 +94,7 @@ type Querier interface {
 	UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentStatusParams) (pgtype.UUID, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
+	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UsePasswordReset(ctx context.Context, token string) error
 }
 

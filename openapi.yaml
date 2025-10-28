@@ -141,6 +141,24 @@ paths:
   /api/v1/admin/orders/{id}/status:
     patch:
       summary: Update order status (admin restricted)
+  /api/v1/admin/vouchers:
+    post:
+      summary: Create voucher
+  /api/v1/admin/vouchers/{code}:
+    put:
+      summary: Update voucher
+  /api/v1/admin/vouchers/preview:
+    post:
+      summary: Preview voucher discount (dry-run)
+  /api/v1/analytics/sales:
+    get:
+      summary: Sales trend (daily)
+  /api/v1/analytics/top-products:
+    get:
+      summary: Top products by qty
+  /api/v1/analytics/overview:
+    get:
+      summary: Overview for dashboard
   /api/v1/payments/intent:
     post:
       summary: Create payment intent (Midtrans/Xendit)

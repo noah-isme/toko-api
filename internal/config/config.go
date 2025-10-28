@@ -57,6 +57,11 @@ type Config struct {
 	CurrencyCode            string
 	CurrencyMinorUnit       int
 	IdempotencyTTL          time.Duration
+	VoucherMaxStack         int
+	VoucherDefaultPriority  int
+	VoucherPerUserLimit     int
+	AnalyticsCacheTTL       time.Duration
+	AnalyticsDefaultRange   int
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -110,6 +115,24 @@ func Load() (*Config, error) {
 		CurrencyCode:            valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
 		CurrencyMinorUnit:       parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
 		IdempotencyTTL:          time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
+		VoucherMaxStack:         parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
+		VoucherDefaultPriority:  parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
+		VoucherPerUserLimit:     parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
+		AnalyticsCacheTTL:       time.Duration(parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)) * time.Second,
+		AnalyticsDefaultRange:   parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
+	}
+
+	if cfg.VoucherMaxStack < 1 {
+		cfg.VoucherMaxStack = 1
+	}
+	if cfg.VoucherDefaultPriority <= 0 {
+		cfg.VoucherDefaultPriority = 100
+	}
+	if cfg.VoucherPerUserLimit < 0 {
+		cfg.VoucherPerUserLimit = 0
+	}
+	if cfg.AnalyticsDefaultRange <= 0 {
+		cfg.AnalyticsDefaultRange = 30
 	}
 
 	if cfg.ShippingOriginCode == "" {

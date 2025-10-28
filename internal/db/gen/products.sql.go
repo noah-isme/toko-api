@@ -102,7 +102,8 @@ SELECT id,
        title,
        slug,
        price,
-       category_id
+       category_id,
+       brand_id
 FROM products
 WHERE id = $1
 LIMIT 1
@@ -114,6 +115,7 @@ type GetProductForCartRow struct {
 	Slug       string      `json:"slug"`
 	Price      int64       `json:"price"`
 	CategoryID pgtype.UUID `json:"category_id"`
+	BrandID    pgtype.UUID `json:"brand_id"`
 }
 
 func (q *Queries) GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error) {
@@ -125,6 +127,7 @@ func (q *Queries) GetProductForCart(ctx context.Context, id pgtype.UUID) (GetPro
 		&i.Slug,
 		&i.Price,
 		&i.CategoryID,
+		&i.BrandID,
 	)
 	return i, err
 }
