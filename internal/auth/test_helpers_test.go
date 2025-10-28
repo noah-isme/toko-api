@@ -41,6 +41,10 @@ func (f *fakeQueries) CountAddressesByUser(context.Context, pgtype.UUID) (int64,
 	return 0, errNotImplemented
 }
 
+func (f *fakeQueries) CountWebhookDeliveries(context.Context, dbgen.CountWebhookDeliveriesParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
 func (f *fakeQueries) ListBrands(context.Context) ([]dbgen.ListBrandsRow, error) {
 	return nil, errNotImplemented
 }
@@ -97,7 +101,15 @@ func (f *fakeQueries) CreateAddress(context.Context, dbgen.CreateAddressParams) 
 	return dbgen.Address{}, errNotImplemented
 }
 
+func (f *fakeQueries) CreateWebhookEndpoint(context.Context, dbgen.CreateWebhookEndpointParams) (dbgen.WebhookEndpoint, error) {
+	return dbgen.WebhookEndpoint{}, errNotImplemented
+}
+
 func (f *fakeQueries) DeleteAddress(context.Context, dbgen.DeleteAddressParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) DeleteDlqByDelivery(context.Context, pgtype.UUID) error {
 	return errNotImplemented
 }
 
@@ -106,6 +118,14 @@ func (f *fakeQueries) GetAddressByID(context.Context, dbgen.GetAddressByIDParams
 }
 
 func (f *fakeQueries) ListAddressesByUser(context.Context, dbgen.ListAddressesByUserParams) ([]dbgen.Address, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) DequeueDueDeliveries(context.Context, int32) ([]dbgen.WebhookDelivery, error) {
 	return nil, errNotImplemented
 }
 
@@ -179,6 +199,14 @@ func (f *fakeQueries) GetUserByID(ctx context.Context, id pgtype.UUID) (dbgen.Ge
 
 func (f *fakeQueries) GetOrderByID(context.Context, pgtype.UUID) (dbgen.Order, error) {
 	return dbgen.Order{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetDeliveryByID(context.Context, pgtype.UUID) (dbgen.WebhookDelivery, error) {
+	return dbgen.WebhookDelivery{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.DomainEvent, error) {
+	return dbgen.DomainEvent{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdateUserPassword(ctx context.Context, arg dbgen.UpdateUserPasswordParams) (dbgen.UpdateUserPasswordRow, error) {
@@ -439,19 +467,19 @@ func (f *fakeQueries) GetProductForCart(context.Context, pgtype.UUID) (dbgen.Get
 }
 
 func (f *fakeQueries) GetVariantForCart(context.Context, pgtype.UUID) (dbgen.GetVariantForCartRow, error) {
-        return dbgen.GetVariantForCartRow{}, errNotImplemented
+	return dbgen.GetVariantForCartRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) GetVoucherByCode(context.Context, string) (dbgen.Voucher, error) {
-        return dbgen.Voucher{}, errNotImplemented
+	return dbgen.Voucher{}, errNotImplemented
 }
 
 func (f *fakeQueries) CreateVoucher(context.Context, dbgen.CreateVoucherParams) (dbgen.Voucher, error) {
-        return dbgen.Voucher{}, errNotImplemented
+	return dbgen.Voucher{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdateVoucher(context.Context, dbgen.UpdateVoucherParams) (dbgen.Voucher, error) {
-        return dbgen.Voucher{}, errNotImplemented
+	return dbgen.Voucher{}, errNotImplemented
 }
 
 func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, string) (dbgen.Voucher, error) {
@@ -544,4 +572,60 @@ func (f *fakeQueries) RefreshSalesDaily(context.Context) error {
 
 func (f *fakeQueries) RefreshTopProducts(context.Context) error {
 	return errNotImplemented
+}
+
+func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
+	return dbgen.DomainEvent{}, errNotImplemented
+}
+
+func (f *fakeQueries) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlqParams) (dbgen.WebhookDlq, error) {
+	return dbgen.WebhookDlq{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.DomainEvent, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListWebhookEndpoints(context.Context, dbgen.ListWebhookEndpointsParams) ([]dbgen.WebhookEndpoint, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) UpdateWebhookEndpoint(context.Context, dbgen.UpdateWebhookEndpointParams) (dbgen.WebhookEndpoint, error) {
+	return dbgen.WebhookEndpoint{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListWebhookDeliveries(context.Context, dbgen.ListWebhookDeliveriesParams) ([]dbgen.ListWebhookDeliveriesRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) MarkDelivering(context.Context, pgtype.UUID) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) MarkDelivered(context.Context, dbgen.MarkDeliveredParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) MarkFailedWithBackoff(context.Context, dbgen.MarkFailedWithBackoffParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) MoveToDLQ(context.Context, dbgen.MoveToDLQParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ResetDeliveryForReplay(context.Context, pgtype.UUID) (dbgen.WebhookDelivery, error) {
+	return dbgen.WebhookDelivery{}, errNotImplemented
+}
+
+func (f *fakeQueries) EnqueueDelivery(context.Context, dbgen.EnqueueDeliveryParams) (dbgen.WebhookDelivery, error) {
+	return dbgen.WebhookDelivery{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetWebhookEndpoint(context.Context, pgtype.UUID) (dbgen.WebhookEndpoint, error) {
+	return dbgen.WebhookEndpoint{}, errNotImplemented
 }

@@ -11,6 +11,51 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type DeliveryStatus string
+
+const (
+	DeliveryStatusPENDING    DeliveryStatus = "PENDING"
+	DeliveryStatusDELIVERING DeliveryStatus = "DELIVERING"
+	DeliveryStatusDELIVERED  DeliveryStatus = "DELIVERED"
+	DeliveryStatusFAILED     DeliveryStatus = "FAILED"
+	DeliveryStatusDLQ        DeliveryStatus = "DLQ"
+)
+
+func (e *DeliveryStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = DeliveryStatus(s)
+	case string:
+		*e = DeliveryStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for DeliveryStatus: %T", src)
+	}
+	return nil
+}
+
+type NullDeliveryStatus struct {
+	DeliveryStatus DeliveryStatus `json:"delivery_status"`
+	Valid          bool           `json:"valid"` // Valid is true if DeliveryStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullDeliveryStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.DeliveryStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.DeliveryStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullDeliveryStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.DeliveryStatus), nil
+}
+
 type DiscountKind string
 
 const (
@@ -248,6 +293,14 @@ type Category struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DomainEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	Topic       string             `json:"topic"`
+	AggregateID pgtype.UUID        `json:"aggregate_id"`
+	Payload     []byte             `json:"payload"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+}
+
 type MvSalesDaily struct {
 	Day        pgtype.Interval `json:"day"`
 	PaidOrders int64           `json:"paid_orders"`
@@ -432,4 +485,37 @@ type VoucherUsage struct {
 	OrderID   pgtype.UUID        `json:"order_id"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	Amount    int64              `json:"amount"`
+}
+
+type WebhookDelivery struct {
+	ID             pgtype.UUID        `json:"id"`
+	EndpointID     pgtype.UUID        `json:"endpoint_id"`
+	EventID        pgtype.UUID        `json:"event_id"`
+	Status         DeliveryStatus     `json:"status"`
+	Attempt        int32              `json:"attempt"`
+	MaxAttempt     int32              `json:"max_attempt"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError      pgtype.Text        `json:"last_error"`
+	ResponseStatus pgtype.Int4        `json:"response_status"`
+	ResponseBody   pgtype.Text        `json:"response_body"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WebhookDlq struct {
+	ID         pgtype.UUID        `json:"id"`
+	DeliveryID pgtype.UUID        `json:"delivery_id"`
+	Reason     pgtype.Text        `json:"reason"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type WebhookEndpoint struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Url       string             `json:"url"`
+	Secret    string             `json:"secret"`
+	Active    bool               `json:"active"`
+	Topics    []string           `json:"topics"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
