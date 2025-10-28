@@ -71,6 +71,7 @@ type Querier interface {
 	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (WebhookEndpoint, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
+	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)
 	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error)
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
@@ -78,6 +79,7 @@ type Querier interface {
 	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
 	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
+	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
 	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)

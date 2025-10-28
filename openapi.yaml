@@ -193,6 +193,21 @@ paths:
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
       summary: Replay a webhook delivery
+  /api/v1/admin/audit-logs:
+    get:
+      summary: List audit logs (admin)
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
   /api/v1/analytics/sales:
     get:
       summary: Sales trend (daily)

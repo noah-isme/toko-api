@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/lestrrat-go/jwx/v2/jwa"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
 	"github.com/noah-isme/backend-toko/internal/common"
@@ -37,6 +38,10 @@ type Service struct {
 	resetTTL   time.Duration
 	now        func() time.Time
 	signer     jwa.SignatureAlgorithm
+	validator  TokenValidator
+	issuer     string
+	audience   string
+	clockSkew  time.Duration
 }
 
 // Config configures the auth service.
@@ -46,6 +51,9 @@ type Config struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	ResetTokenTTL   time.Duration
+	Issuer          string
+	Audience        string
+	ClockSkew       time.Duration
 }
 
 // User represents a safe subset of the user model returned to clients.
@@ -96,6 +104,20 @@ func NewService(cfg Config) (*Service, error) {
 	if resetTTL <= 0 {
 		resetTTL = defaultResetTTL
 	}
+
+	issuer := strings.TrimSpace(cfg.Issuer)
+	if issuer == "" {
+		issuer = "backend-toko"
+	}
+	audience := strings.TrimSpace(cfg.Audience)
+	if audience == "" {
+		audience = "toko-frontend"
+	}
+	clockSkew := cfg.ClockSkew
+	if clockSkew < 0 {
+		clockSkew = 0
+	}
+
 	return &Service{
 		queries:    cfg.Queries,
 		secret:     []byte(secret),
@@ -104,6 +126,15 @@ func NewService(cfg Config) (*Service, error) {
 		resetTTL:   resetTTL,
 		now:        time.Now,
 		signer:     jwa.HS256,
+		validator: TokenValidator{
+			Issuer:    issuer,
+			Audience:  audience,
+			ClockSkew: clockSkew,
+			Algorithm: jwa.HS256,
+		},
+		issuer:    issuer,
+		audience:  audience,
+		clockSkew: clockSkew,
 	}, nil
 }
 
@@ -344,26 +375,69 @@ func (s *Service) Reset(ctx context.Context, token, newPassword string) error {
 
 // ParseAccessToken validates an access token and returns the subject (user ID).
 func (s *Service) ParseAccessToken(token string) (string, error) {
-	if strings.TrimSpace(token) == "" {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
 		return "", common.NewAppError("UNAUTHORIZED", "missing token", httpStatusUnauthorized, nil)
 	}
-	parsed, err := jwt.ParseString(token, jwt.WithKey(s.signer, s.secret))
+	algorithm, err := extractTokenAlgorithm(trimmed)
 	if err != nil {
 		return "", common.NewAppError("UNAUTHORIZED", "invalid token", httpStatusUnauthorized, err)
 	}
-	if err := jwt.Validate(parsed, jwt.WithClock(jwt.ClockFunc(s.now))); err != nil {
+	if s.validator.Algorithm != "" && algorithm != s.validator.Algorithm {
+		return "", common.NewAppError("UNAUTHORIZED", "invalid token", httpStatusUnauthorized, fmt.Errorf("unexpected token algorithm %s", algorithm))
+	}
+	parsed, err := jwt.ParseString(trimmed, jwt.WithKey(algorithm, s.secret))
+	if err != nil {
+		return "", common.NewAppError("UNAUTHORIZED", "invalid token", httpStatusUnauthorized, err)
+	}
+	if err := s.validator.Validate(parsed, algorithm, s.now()); err != nil {
 		return "", common.NewAppError("UNAUTHORIZED", "invalid token", httpStatusUnauthorized, err)
 	}
 	return parsed.Subject(), nil
 }
 
+func extractTokenAlgorithm(token string) (jwa.SignatureAlgorithm, error) {
+	message, err := jws.ParseString(token)
+	if err != nil {
+		return "", err
+	}
+	signatures := message.Signatures()
+	if len(signatures) == 0 {
+		return "", errors.New("auth: token contains no signatures")
+	}
+	var algorithm jwa.SignatureAlgorithm
+	for _, sig := range signatures {
+		headers := sig.ProtectedHeaders()
+		if headers == nil {
+			return "", errors.New("auth: token missing protected headers")
+		}
+		alg := headers.Algorithm()
+		if alg == "" {
+			return "", errors.New("auth: token missing algorithm")
+		}
+		if alg == jwa.NoSignature {
+			return "", errors.New("auth: token uses none algorithm")
+		}
+		if algorithm == "" {
+			algorithm = alg
+		} else if algorithm != alg {
+			return "", fmt.Errorf("auth: mixed token algorithms detected")
+		}
+	}
+	return algorithm, nil
+}
+
 func (s *Service) signAccessToken(userID string) (string, time.Time, error) {
-	expiresAt := s.now().Add(s.accessTTL)
-	token, err := jwt.NewBuilder().
+	now := s.now()
+	expiresAt := now.Add(s.accessTTL)
+	builder := jwt.NewBuilder().
 		Subject(userID).
-		IssuedAt(s.now()).
-		Expiration(expiresAt).
-		Build()
+		Issuer(s.issuer).
+		Audience([]string{s.audience}).
+		IssuedAt(now).
+		NotBefore(now.Add(-s.clockSkew)).
+		Expiration(expiresAt)
+	token, err := builder.Build()
 	if err != nil {
 		return "", time.Time{}, err
 	}

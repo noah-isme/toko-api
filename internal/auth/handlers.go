@@ -80,7 +80,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
 		return
 	}
-	result, err := h.Service.Login(r.Context(), req.Email, req.Password, r.UserAgent(), clientIP(r))
+	result, err := h.Service.Login(r.Context(), req.Email, req.Password, r.UserAgent(), common.ClientIP(r))
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -254,25 +254,4 @@ func (h *Handler) refreshTokenFromRequest(r *http.Request) string {
 		return strings.TrimSpace(cookie.Value)
 	}
 	return ""
-}
-
-func clientIP(r *http.Request) string {
-	if ip := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); ip != "" {
-		parts := strings.Split(ip, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
-		return ip
-	}
-	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
-		return ip
-	}
-	host := strings.TrimSpace(r.RemoteAddr)
-	if host == "" {
-		return ""
-	}
-	if colon := strings.LastIndex(host, ":"); colon >= 0 {
-		return host[:colon]
-	}
-	return host
 }

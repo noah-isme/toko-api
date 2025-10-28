@@ -125,6 +125,14 @@ func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error 
 	return errNotImplemented
 }
 
+func (f *fakeQueries) ListAuditLogs(context.Context, dbgen.ListAuditLogsParams) ([]dbgen.AuditLog, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) InsertAuditLog(context.Context, dbgen.InsertAuditLogParams) (dbgen.InsertAuditLogRow, error) {
+	return dbgen.InsertAuditLogRow{}, nil
+}
+
 func (f *fakeQueries) DequeueDueDeliveries(context.Context, int32) ([]dbgen.WebhookDelivery, error) {
 	return nil, errNotImplemented
 }
