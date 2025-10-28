@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/knadh/koanf/providers/env"
@@ -22,6 +24,11 @@ type Config struct {
 	MidtransServerKey  string
 	MidtransClientKey  string
 	RajaOngkirAPIKey   string
+	AccessTokenTTL     time.Duration
+	RefreshTokenTTL    time.Duration
+	CookieDomain       string
+	CookieSecure       bool
+	CookieSameSite     http.SameSite
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -43,6 +50,15 @@ func Load() (*Config, error) {
 		MidtransServerKey:  k.String("MIDTRANS_SERVER_KEY"),
 		MidtransClientKey:  k.String("MIDTRANS_CLIENT_KEY"),
 		RajaOngkirAPIKey:   k.String("RAJAONGKIR_API_KEY"),
+		AccessTokenTTL:     parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
+		RefreshTokenTTL:    parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
+		CookieDomain:       strings.TrimSpace(k.String("COOKIE_DOMAIN")),
+		CookieSecure:       parseBool(k.String("COOKIE_SECURE")),
+		CookieSameSite:     parseSameSite(k.String("COOKIE_SAMESITE")),
+	}
+
+	if cfg.CookieSameSite == http.SameSiteDefaultMode {
+		cfg.CookieSameSite = http.SameSiteLaxMode
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -90,6 +106,40 @@ func valueOrDefault(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseDuration(value, fallback string) time.Duration {
+	base := strings.TrimSpace(value)
+	if base == "" {
+		base = fallback
+	}
+	d, err := time.ParseDuration(base)
+	if err != nil {
+		d, _ = time.ParseDuration(fallback)
+	}
+	return d
+}
+
+func parseBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseSameSite(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	case "lax":
+		return http.SameSiteLaxMode
+	default:
+		return http.SameSiteDefaultMode
+	}
 }
 
 // MustLoad behaves like Load but panics on error. Useful for tests and command entrypoints.
