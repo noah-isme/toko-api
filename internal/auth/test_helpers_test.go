@@ -349,3 +349,103 @@ func (f *fakeQueries) MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID)
 	f.resetsByToken[reset.Token] = reset
 	return nil
 }
+
+func (f *fakeQueries) CountOrdersForUser(context.Context, pgtype.UUID) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) CreateCart(context.Context, dbgen.CreateCartParams) (dbgen.Cart, error) {
+	return dbgen.Cart{}, errNotImplemented
+}
+
+func (f *fakeQueries) CreateCartItem(context.Context, dbgen.CreateCartItemParams) (dbgen.CartItem, error) {
+	return dbgen.CartItem{}, errNotImplemented
+}
+
+func (f *fakeQueries) CreateOrder(context.Context, dbgen.CreateOrderParams) (dbgen.Order, error) {
+	return dbgen.Order{}, errNotImplemented
+}
+
+func (f *fakeQueries) CreateOrderItem(context.Context, dbgen.CreateOrderItemParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.Payment, error) {
+	return dbgen.Payment{}, errNotImplemented
+}
+
+func (f *fakeQueries) DeleteCartItem(context.Context, dbgen.DeleteCartItemParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) FindCartItemByProductVariant(context.Context, dbgen.FindCartItemByProductVariantParams) (dbgen.CartItem, error) {
+	return dbgen.CartItem{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetActiveCartByAnon(context.Context, pgtype.Text) (dbgen.Cart, error) {
+	return dbgen.Cart{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetActiveCartByUser(context.Context, pgtype.UUID) (dbgen.Cart, error) {
+	return dbgen.Cart{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetCartByID(context.Context, pgtype.UUID) (dbgen.Cart, error) {
+	return dbgen.Cart{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetCartItemByID(context.Context, pgtype.UUID) (dbgen.CartItem, error) {
+	return dbgen.CartItem{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetOrderByIDForUser(context.Context, dbgen.GetOrderByIDForUserParams) (dbgen.Order, error) {
+	return dbgen.Order{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetProductForCart(context.Context, pgtype.UUID) (dbgen.GetProductForCartRow, error) {
+	return dbgen.GetProductForCartRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetVariantForCart(context.Context, pgtype.UUID) (dbgen.GetVariantForCartRow, error) {
+	return dbgen.GetVariantForCartRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetVoucherByCode(context.Context, string) (dbgen.Voucher, error) {
+	return dbgen.Voucher{}, errNotImplemented
+}
+
+func (f *fakeQueries) IncreaseVoucherUsedCount(context.Context, pgtype.UUID) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ListCartItems(context.Context, pgtype.UUID) ([]dbgen.CartItem, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListOrderItemsByOrder(context.Context, pgtype.UUID) ([]dbgen.OrderItem, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListOrdersForUser(context.Context, dbgen.ListOrdersForUserParams) ([]dbgen.Order, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) TouchCart(context.Context, dbgen.TouchCartParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) TransferCartToUser(context.Context, dbgen.TransferCartToUserParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) UpdateCartItemQty(context.Context, dbgen.UpdateCartItemQtyParams) (dbgen.CartItem, error) {
+	return dbgen.CartItem{}, errNotImplemented
+}
+
+func (f *fakeQueries) UpdateCartVoucher(context.Context, dbgen.UpdateCartVoucherParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) UpdateOrderStatus(context.Context, dbgen.UpdateOrderStatusParams) error {
+	return errNotImplemented
+}

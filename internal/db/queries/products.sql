@@ -96,3 +96,22 @@ WHERE p.category_id = $1
   AND p.slug <> $2
 ORDER BY p.created_at DESC
 LIMIT 8;
+
+-- name: GetProductForCart :one
+SELECT id,
+       title,
+       slug,
+       price,
+       category_id
+FROM products
+WHERE id = $1
+LIMIT 1;
+
+-- name: GetVariantForCart :one
+SELECT id,
+       product_id,
+       price,
+       stock
+FROM product_variants
+WHERE id = $1
+LIMIT 1;

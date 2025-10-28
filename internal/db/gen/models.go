@@ -5,8 +5,148 @@
 package dbgen
 
 import (
+	"database/sql/driver"
+	"fmt"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type OrderStatus string
+
+const (
+	OrderStatusPENDINGPAYMENT OrderStatus = "PENDING_PAYMENT"
+	OrderStatusPAID           OrderStatus = "PAID"
+	OrderStatusPACKED         OrderStatus = "PACKED"
+	OrderStatusSHIPPED        OrderStatus = "SHIPPED"
+	OrderStatusDELIVERED      OrderStatus = "DELIVERED"
+	OrderStatusCANCELED       OrderStatus = "CANCELED"
+)
+
+func (e *OrderStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = OrderStatus(s)
+	case string:
+		*e = OrderStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for OrderStatus: %T", src)
+	}
+	return nil
+}
+
+type NullOrderStatus struct {
+	OrderStatus OrderStatus `json:"order_status"`
+	Valid       bool        `json:"valid"` // Valid is true if OrderStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullOrderStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.OrderStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.OrderStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullOrderStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.OrderStatus), nil
+}
+
+type PaymentStatus string
+
+const (
+	PaymentStatusPENDING  PaymentStatus = "PENDING"
+	PaymentStatusPAID     PaymentStatus = "PAID"
+	PaymentStatusFAILED   PaymentStatus = "FAILED"
+	PaymentStatusEXPIRED  PaymentStatus = "EXPIRED"
+	PaymentStatusREFUNDED PaymentStatus = "REFUNDED"
+)
+
+func (e *PaymentStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PaymentStatus(s)
+	case string:
+		*e = PaymentStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PaymentStatus: %T", src)
+	}
+	return nil
+}
+
+type NullPaymentStatus struct {
+	PaymentStatus PaymentStatus `json:"payment_status"`
+	Valid         bool          `json:"valid"` // Valid is true if PaymentStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPaymentStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.PaymentStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PaymentStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPaymentStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PaymentStatus), nil
+}
+
+type ShipmentStatus string
+
+const (
+	ShipmentStatusPENDING        ShipmentStatus = "PENDING"
+	ShipmentStatusPICKED         ShipmentStatus = "PICKED"
+	ShipmentStatusINTRANSIT      ShipmentStatus = "IN_TRANSIT"
+	ShipmentStatusOUTFORDELIVERY ShipmentStatus = "OUT_FOR_DELIVERY"
+	ShipmentStatusDELIVERED      ShipmentStatus = "DELIVERED"
+	ShipmentStatusRETURNED       ShipmentStatus = "RETURNED"
+)
+
+func (e *ShipmentStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ShipmentStatus(s)
+	case string:
+		*e = ShipmentStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ShipmentStatus: %T", src)
+	}
+	return nil
+}
+
+type NullShipmentStatus struct {
+	ShipmentStatus ShipmentStatus `json:"shipment_status"`
+	Valid          bool           `json:"valid"` // Valid is true if ShipmentStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullShipmentStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.ShipmentStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ShipmentStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullShipmentStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ShipmentStatus), nil
+}
 
 type Address struct {
 	ID           pgtype.UUID        `json:"id"`
@@ -33,6 +173,28 @@ type Brand struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Cart struct {
+	ID                 pgtype.UUID        `json:"id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	AnonID             pgtype.Text        `json:"anon_id"`
+	AppliedVoucherCode pgtype.Text        `json:"applied_voucher_code"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ExpiresAt          pgtype.Timestamptz `json:"expires_at"`
+}
+
+type CartItem struct {
+	ID        pgtype.UUID `json:"id"`
+	CartID    pgtype.UUID `json:"cart_id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	VariantID pgtype.UUID `json:"variant_id"`
+	Title     string      `json:"title"`
+	Slug      string      `json:"slug"`
+	Qty       int32       `json:"qty"`
+	UnitPrice int64       `json:"unit_price"`
+	Subtotal  int64       `json:"subtotal"`
+}
+
 type Category struct {
 	ID        pgtype.UUID        `json:"id"`
 	Name      string             `json:"name"`
@@ -42,6 +204,36 @@ type Category struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Order struct {
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	CartID          pgtype.UUID        `json:"cart_id"`
+	Status          OrderStatus        `json:"status"`
+	Currency        string             `json:"currency"`
+	PricingSubtotal int64              `json:"pricing_subtotal"`
+	PricingDiscount int64              `json:"pricing_discount"`
+	PricingTax      int64              `json:"pricing_tax"`
+	PricingShipping int64              `json:"pricing_shipping"`
+	PricingTotal    int64              `json:"pricing_total"`
+	ShippingAddress []byte             `json:"shipping_address"`
+	ShippingOption  []byte             `json:"shipping_option"`
+	Notes           pgtype.Text        `json:"notes"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type OrderItem struct {
+	ID        pgtype.UUID `json:"id"`
+	OrderID   pgtype.UUID `json:"order_id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	VariantID pgtype.UUID `json:"variant_id"`
+	Title     string      `json:"title"`
+	Slug      string      `json:"slug"`
+	Qty       int32       `json:"qty"`
+	UnitPrice int64       `json:"unit_price"`
+	Subtotal  int64       `json:"subtotal"`
+}
+
 type PasswordReset struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    pgtype.UUID        `json:"user_id"`
@@ -49,6 +241,16 @@ type PasswordReset struct {
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Payment struct {
+	ID              pgtype.UUID        `json:"id"`
+	OrderID         pgtype.UUID        `json:"order_id"`
+	Provider        pgtype.Text        `json:"provider"`
+	Status          PaymentStatus      `json:"status"`
+	ProviderPayload []byte             `json:"provider_payload"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Product struct {
@@ -99,6 +301,15 @@ type Session struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type Shipment struct {
+	ID             pgtype.UUID    `json:"id"`
+	OrderID        pgtype.UUID    `json:"order_id"`
+	Status         ShipmentStatus `json:"status"`
+	Courier        pgtype.Text    `json:"courier"`
+	TrackingNumber pgtype.Text    `json:"tracking_number"`
+	History        []byte         `json:"history"`
+}
+
 type User struct {
 	ID           pgtype.UUID        `json:"id"`
 	Name         string             `json:"name"`
@@ -107,4 +318,19 @@ type User struct {
 	Roles        []string           `json:"roles"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Voucher struct {
+	ID          pgtype.UUID        `json:"id"`
+	Code        string             `json:"code"`
+	Value       int64              `json:"value"`
+	MinSpend    int64              `json:"min_spend"`
+	UsageLimit  pgtype.Int4        `json:"usage_limit"`
+	UsedCount   int32              `json:"used_count"`
+	ValidFrom   pgtype.Timestamptz `json:"valid_from"`
+	ValidTo     pgtype.Timestamptz `json:"valid_to"`
+	ProductIds  []pgtype.UUID      `json:"product_ids"`
+	CategoryIds []pgtype.UUID      `json:"category_ids"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }

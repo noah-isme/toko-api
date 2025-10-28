@@ -12,38 +12,63 @@ import (
 
 type Querier interface {
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
+	CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error)
+	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
+	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
+	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) error
 	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
+	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
+	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
+	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
+	GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (Cart, error)
+	GetActiveCartByUser(ctx context.Context, userID pgtype.UUID) (Cart, error)
 	GetAddressByID(ctx context.Context, arg GetAddressByIDParams) (Address, error)
 	GetBrandByID(ctx context.Context, id pgtype.UUID) (GetBrandByIDRow, error)
 	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
+	GetCartByID(ctx context.Context, id pgtype.UUID) (Cart, error)
+	GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem, error)
 	GetCategoryByID(ctx context.Context, id pgtype.UUID) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
+	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
+	GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
+	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
+	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
+	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
 	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
+	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
+	ListOrdersForUser(ctx context.Context, arg ListOrdersForUserParams) ([]Order, error)
 	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
 	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
+	TouchCart(ctx context.Context, arg TouchCartParams) error
+	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
+	UpdateCartItemQty(ctx context.Context, arg UpdateCartItemQtyParams) (CartItem, error)
+	UpdateCartVoucher(ctx context.Context, arg UpdateCartVoucherParams) error
+	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UsePasswordReset(ctx context.Context, token string) error

@@ -91,4 +91,45 @@ paths:
   /api/v1/products/{slug}/related:
     get:
       summary: Related products
+  /api/v1/carts:
+    post:
+      summary: Create cart (guest)
+  /api/v1/carts/{id}:
+    get:
+      summary: Get cart by id
+  /api/v1/carts/{id}/items:
+    post:
+      summary: Add item
+  /api/v1/carts/{id}/items/{itemId}:
+    patch:
+      summary: Update qty
+    delete:
+      summary: Remove item
+  /api/v1/carts/{id}/apply-voucher:
+    post:
+      summary: Apply voucher
+  /api/v1/carts/{id}/voucher:
+    delete:
+      summary: Remove voucher
+  /api/v1/carts/{id}/quote/shipping:
+    post:
+      summary: Shipping quote
+  /api/v1/carts/{id}/quote/tax:
+    post:
+      summary: Tax quote
+  /api/v1/carts/merge:
+    post:
+      summary: Merge guest cart into user cart
+  /api/v1/checkout:
+    post:
+      summary: Create order (pending payment)
+  /api/v1/orders:
+    get:
+      summary: List user orders
+  /api/v1/orders/{orderId}:
+    get:
+      summary: Get order detail
+  /api/v1/orders/{orderId}/cancel:
+    post:
+      summary: Cancel order if pending
 components: {}
