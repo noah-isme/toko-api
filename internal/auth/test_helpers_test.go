@@ -477,3 +477,31 @@ func (f *fakeQueries) UpdateCartVoucher(context.Context, dbgen.UpdateCartVoucher
 func (f *fakeQueries) UpdateOrderStatus(context.Context, dbgen.UpdateOrderStatusParams) error {
 	return errNotImplemented
 }
+
+func (f *fakeQueries) CreateShipment(context.Context, dbgen.CreateShipmentParams) (dbgen.Shipment, error) {
+	return dbgen.Shipment{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetShipmentByOrder(context.Context, pgtype.UUID) (dbgen.Shipment, error) {
+	return dbgen.Shipment{}, errNotImplemented
+}
+
+func (f *fakeQueries) InsertShipmentEvent(context.Context, dbgen.InsertShipmentEventParams) (dbgen.ShipmentEvent, error) {
+	return dbgen.ShipmentEvent{}, errNotImplemented
+}
+
+func (f *fakeQueries) UpdateShipmentStatus(context.Context, dbgen.UpdateShipmentStatusParams) (pgtype.UUID, error) {
+	return pgtype.UUID{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListShipmentEvents(context.Context, pgtype.UUID) ([]dbgen.ShipmentEvent, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetOrderStatus(context.Context, pgtype.UUID) (dbgen.OrderStatus, error) {
+	return "", errNotImplemented
+}
+
+func (f *fakeQueries) UpdateOrderStatusIfAllowed(context.Context, dbgen.UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error) {
+	return pgtype.UUID{}, errNotImplemented
+}

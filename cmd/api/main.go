@@ -37,6 +37,8 @@ func main() {
 
 	logger := newLogger(cfg.AppEnv)
 
+	mailer := common.NopEmailSender{}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -123,6 +125,25 @@ func main() {
 	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
 
 	orderHandler := &order.Handler{Q: queries}
+	orderAdmin := &order.AdminHandler{Q: queries}
+
+	var shipProvider shipping.Provider
+	switch cfg.ShippingProvider {
+	case "rajaongkir-mock", "":
+		shipProvider = shipping.RajaOngkirMock{}
+	default:
+		shipProvider = shipping.RajaOngkirMock{}
+	}
+	shipSvc := &shipping.Service{
+		Q:                      queries,
+		Provider:               shipProvider,
+		Mail:                   mailer,
+		NotifyOnShipped:        cfg.NotifyOnShipped,
+		NotifyOnOutForDelivery: cfg.NotifyOnOutForDelivery,
+		NotifyOnDelivered:      cfg.NotifyOnDelivered,
+	}
+	shipHandler := &shipping.Handler{Svc: shipSvc, Q: queries}
+	shipWebhook := shipping.Webhook{Svc: shipSvc, Replay: redisClient, ReplayTTL: cfg.ShippingTrackReplayTTL}
 
 	providers := map[string]payment.Provider{
 		"midtrans": payment.Midtrans{
@@ -235,7 +256,13 @@ func main() {
 			authR.Use(authMiddleware.RequireAuth)
 			authR.Get("/orders", orderHandler.List)
 			authR.Get("/orders/{orderId}", orderHandler.Get)
+			authR.Get("/orders/{orderId}/shipment", shipHandler.GetByOrder)
 			authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+		})
+
+		v.Route("/admin", func(admin chi.Router) {
+			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
+			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
 		})
 
 		v.Route("/payments", func(p chi.Router) {
@@ -247,6 +274,7 @@ func main() {
 			p.Get("/{orderId}/status", paymentHandler.Status)
 		})
 
+		v.Post("/webhooks/shipping/{courier}", shipWebhook.Handle)
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
 
