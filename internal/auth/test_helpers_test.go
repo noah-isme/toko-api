@@ -177,6 +177,10 @@ func (f *fakeQueries) GetUserByID(ctx context.Context, id pgtype.UUID) (dbgen.Ge
 	}, nil
 }
 
+func (f *fakeQueries) GetOrderByID(context.Context, pgtype.UUID) (dbgen.Order, error) {
+	return dbgen.Order{}, errNotImplemented
+}
+
 func (f *fakeQueries) UpdateUserPassword(ctx context.Context, arg dbgen.UpdateUserPasswordParams) (dbgen.UpdateUserPasswordRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -372,6 +376,30 @@ func (f *fakeQueries) CreateOrderItem(context.Context, dbgen.CreateOrderItemPara
 
 func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.Payment, error) {
 	return dbgen.Payment{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetLatestPaymentByOrder(context.Context, pgtype.UUID) (dbgen.Payment, error) {
+	return dbgen.Payment{}, errNotImplemented
+}
+
+func (f *fakeQueries) UpdatePaymentStatus(context.Context, dbgen.UpdatePaymentStatusParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) InsertPaymentEvent(context.Context, dbgen.InsertPaymentEventParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ListOrderItemsForStock(context.Context, pgtype.UUID) ([]dbgen.ListOrderItemsForStockRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) DecrementVariantStock(context.Context, dbgen.DecrementVariantStockParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, string) error {
+	return errNotImplemented
 }
 
 func (f *fakeQueries) DeleteCartItem(context.Context, dbgen.DeleteCartItemParams) error {

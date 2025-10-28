@@ -251,6 +251,19 @@ type Payment struct {
 	ProviderPayload []byte             `json:"provider_payload"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	Channel         pgtype.Text        `json:"channel"`
+	IntentToken     pgtype.Text        `json:"intent_token"`
+	RedirectUrl     pgtype.Text        `json:"redirect_url"`
+	Amount          pgtype.Int8        `json:"amount"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+type PaymentEvent struct {
+	ID        pgtype.UUID        `json:"id"`
+	PaymentID pgtype.UUID        `json:"payment_id"`
+	Status    PaymentStatus      `json:"status"`
+	Payload   []byte             `json:"payload"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Product struct {

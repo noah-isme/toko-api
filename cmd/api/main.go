@@ -24,6 +24,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/order"
+	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/shipping"
 	"github.com/noah-isme/backend-toko/internal/user"
 )
@@ -123,6 +124,36 @@ func main() {
 
 	orderHandler := &order.Handler{Q: queries}
 
+	providers := map[string]payment.Provider{
+		"midtrans": payment.Midtrans{
+			ServerKey: cfg.MidtransServerKey,
+			BaseURL:   cfg.MidtransBaseURL,
+			Sandbox:   cfg.PaymentSandbox,
+		},
+		"xendit": payment.Xendit{
+			SecretKey: cfg.XenditSecretKey,
+			BaseURL:   cfg.XenditBaseURL,
+		},
+	}
+	activeProvider := providers[cfg.PaymentProvider]
+	if activeProvider == nil {
+		activeProvider = providers["midtrans"]
+	}
+	paymentSvc := &payment.Service{
+		Q:               queries,
+		Provider:        activeProvider,
+		IntentTTL:       cfg.PaymentIntentTTL,
+		CallbackBaseURL: cfg.PaymentCallbackBaseURL,
+	}
+	paymentHandler := &payment.Handler{Svc: paymentSvc, Q: queries}
+	webhookHandler := payment.Webhook{
+		Q:         queries,
+		Pool:      pool,
+		Providers: providers,
+		Replay:    redisClient,
+		ReplayTTL: cfg.WebhookReplayTTL,
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -180,32 +211,43 @@ func main() {
 				child.Patch("/", addressHandler.Update)
 				child.Delete("/", addressHandler.Delete)
 			})
+		})
 
-			v.Route("/carts", func(c chi.Router) {
-				c.Get("/{id}", cartHandler.Get)
-				c.Group(func(g chi.Router) {
-					g.Use(idem.Middleware)
-					g.Post("/", cartHandler.Create)
-					g.Post("/{id}/items", cartHandler.AddItem)
-					g.Patch("/{id}/items/{itemId}", cartHandler.UpdateItem)
-					g.Delete("/{id}/items/{itemId}", cartHandler.RemoveItem)
-					g.Post("/{id}/apply-voucher", cartHandler.ApplyVoucher)
-					g.Delete("/{id}/voucher", cartHandler.RemoveVoucher)
-					g.Post("/{id}/quote/shipping", cartHandler.QuoteShipping)
-					g.Post("/{id}/quote/tax", cartHandler.QuoteTax)
-					g.With(authMiddleware.RequireAuth).Post("/merge", cartHandler.Merge)
-				})
-			})
-
-			v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout", checkoutHandler.Checkout)
-
-			v.Group(func(authR chi.Router) {
-				authR.Use(authMiddleware.RequireAuth)
-				authR.Get("/orders", orderHandler.List)
-				authR.Get("/orders/{orderId}", orderHandler.Get)
-				authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+		v.Route("/carts", func(c chi.Router) {
+			c.Get("/{id}", cartHandler.Get)
+			c.Group(func(g chi.Router) {
+				g.Use(idem.Middleware)
+				g.Post("/", cartHandler.Create)
+				g.Post("/{id}/items", cartHandler.AddItem)
+				g.Patch("/{id}/items/{itemId}", cartHandler.UpdateItem)
+				g.Delete("/{id}/items/{itemId}", cartHandler.RemoveItem)
+				g.Post("/{id}/apply-voucher", cartHandler.ApplyVoucher)
+				g.Delete("/{id}/voucher", cartHandler.RemoveVoucher)
+				g.Post("/{id}/quote/shipping", cartHandler.QuoteShipping)
+				g.Post("/{id}/quote/tax", cartHandler.QuoteTax)
+				g.With(authMiddleware.RequireAuth).Post("/merge", cartHandler.Merge)
 			})
 		})
+
+		v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout", checkoutHandler.Checkout)
+
+		v.Group(func(authR chi.Router) {
+			authR.Use(authMiddleware.RequireAuth)
+			authR.Get("/orders", orderHandler.List)
+			authR.Get("/orders/{orderId}", orderHandler.Get)
+			authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+		})
+
+		v.Route("/payments", func(p chi.Router) {
+			p.Use(authMiddleware.RequireAuth)
+			p.Group(func(g chi.Router) {
+				g.Use(idem.Middleware)
+				g.Post("/intent", paymentHandler.Intent)
+			})
+			p.Get("/{orderId}/status", paymentHandler.Status)
+		})
+
+		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
 
 	srv := &http.Server{
