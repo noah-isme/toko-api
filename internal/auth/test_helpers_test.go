@@ -366,6 +366,10 @@ func (f *fakeQueries) CreateCartItem(context.Context, dbgen.CreateCartItemParams
 	return dbgen.CartItem{}, errNotImplemented
 }
 
+func (f *fakeQueries) CountVoucherUsageByUser(context.Context, dbgen.CountVoucherUsageByUserParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
 func (f *fakeQueries) CreateOrder(context.Context, dbgen.CreateOrderParams) (dbgen.Order, error) {
 	return dbgen.Order{}, errNotImplemented
 }
@@ -435,15 +439,35 @@ func (f *fakeQueries) GetProductForCart(context.Context, pgtype.UUID) (dbgen.Get
 }
 
 func (f *fakeQueries) GetVariantForCart(context.Context, pgtype.UUID) (dbgen.GetVariantForCartRow, error) {
-	return dbgen.GetVariantForCartRow{}, errNotImplemented
+        return dbgen.GetVariantForCartRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) GetVoucherByCode(context.Context, string) (dbgen.Voucher, error) {
+        return dbgen.Voucher{}, errNotImplemented
+}
+
+func (f *fakeQueries) CreateVoucher(context.Context, dbgen.CreateVoucherParams) (dbgen.Voucher, error) {
+        return dbgen.Voucher{}, errNotImplemented
+}
+
+func (f *fakeQueries) UpdateVoucher(context.Context, dbgen.UpdateVoucherParams) (dbgen.Voucher, error) {
+        return dbgen.Voucher{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, string) (dbgen.Voucher, error) {
 	return dbgen.Voucher{}, errNotImplemented
 }
 
-func (f *fakeQueries) IncreaseVoucherUsedCount(context.Context, pgtype.UUID) error {
+func (f *fakeQueries) GetVoucherUsageByOrder(context.Context, dbgen.GetVoucherUsageByOrderParams) (dbgen.VoucherUsage, error) {
+	return dbgen.VoucherUsage{}, errNotImplemented
+}
+
+func (f *fakeQueries) InsertVoucherUsage(context.Context, dbgen.InsertVoucherUsageParams) error {
 	return errNotImplemented
+}
+
+func (f *fakeQueries) IncreaseVoucherUsedCount(context.Context, pgtype.UUID) error {
+	return nil
 }
 
 func (f *fakeQueries) ListCartItems(context.Context, pgtype.UUID) ([]dbgen.CartItem, error) {
@@ -504,4 +528,20 @@ func (f *fakeQueries) GetOrderStatus(context.Context, pgtype.UUID) (dbgen.OrderS
 
 func (f *fakeQueries) UpdateOrderStatusIfAllowed(context.Context, dbgen.UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error) {
 	return pgtype.UUID{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetSalesDailyRange(context.Context, dbgen.GetSalesDailyRangeParams) ([]dbgen.GetSalesDailyRangeRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetTopProducts(context.Context, dbgen.GetTopProductsParams) ([]dbgen.MvTopProduct, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) RefreshSalesDaily(context.Context) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) RefreshTopProducts(context.Context) error {
+	return errNotImplemented
 }

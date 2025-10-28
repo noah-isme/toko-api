@@ -21,9 +21,10 @@ var ErrInvalidInput = errors.New("invalid input")
 
 // Service encapsulates cart domain operations.
 type Service struct {
-	Q   *dbgen.Queries
-	TTL time.Duration
-	Now func() time.Time
+	Q                          *dbgen.Queries
+	TTL                        time.Duration
+	Now                        func() time.Time
+	VoucherPerUserLimitDefault int
 }
 
 func (s *Service) ttl() time.Duration {
@@ -246,7 +247,7 @@ func (s *Service) ApplyVoucher(ctx context.Context, cartID string, code string) 
 		}
 		return 0, err
 	}
-	discount, voucher, err := s.evaluateVoucher(ctx, cID, code)
+	discount, voucher, err := s.evaluateVoucher(ctx, cart, code)
 	if err != nil {
 		return 0, err
 	}
@@ -344,7 +345,7 @@ func (s *Service) Merge(ctx context.Context, guestCartID string, userID string) 
 }
 
 func (s *Service) itemEligible(ctx context.Context, item dbgen.CartItem, voucher dbgen.Voucher) (bool, error) {
-	if len(voucher.ProductIds) == 0 && len(voucher.CategoryIds) == 0 {
+	if len(voucher.ProductIds) == 0 && len(voucher.CategoryIds) == 0 && len(voucher.BrandIds) == 0 {
 		return true, nil
 	}
 	product, err := s.Q.GetProductForCart(ctx, item.ProductID)
@@ -365,14 +366,21 @@ func (s *Service) itemEligible(ctx context.Context, item dbgen.CartItem, voucher
 			}
 		}
 	}
+	if len(voucher.BrandIds) > 0 && product.BrandID.Valid {
+		for _, el := range voucher.BrandIds {
+			if uuidEqual(el, product.BrandID) {
+				return true, nil
+			}
+		}
+	}
 	return false, nil
 }
 
-func (s *Service) evaluateVoucher(ctx context.Context, cartID pgtype.UUID, code string) (int64, dbgen.Voucher, error) {
+func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code string) (int64, dbgen.Voucher, error) {
 	if code == "" {
 		return 0, dbgen.Voucher{}, fmt.Errorf("voucher code required: %w", ErrInvalidInput)
 	}
-	items, subtotal, err := s.loadCartItems(ctx, cartID)
+	items, subtotal, err := s.loadCartItems(ctx, cart.ID)
 	if err != nil {
 		return 0, dbgen.Voucher{}, err
 	}
@@ -390,13 +398,27 @@ func (s *Service) evaluateVoucher(ctx context.Context, cartID pgtype.UUID, code 
 	if voucher.UsageLimit.Valid && voucher.UsedCount >= voucher.UsageLimit.Int32 {
 		return 0, dbgen.Voucher{}, fmt.Errorf("voucher usage exceeded: %w", ErrInvalidInput)
 	}
+	limit := int32(s.VoucherPerUserLimitDefault)
+	if voucher.PerUserLimit.Valid {
+		limit = voucher.PerUserLimit.Int32
+	}
+	if limit > 0 && cart.UserID.Valid {
+		used, err := s.Q.CountVoucherUsageByUser(ctx, dbgen.CountVoucherUsageByUserParams{VoucherID: voucher.ID, UserID: cart.UserID})
+		if err != nil {
+			return 0, dbgen.Voucher{}, err
+		}
+		if int32(used) >= limit {
+			return 0, dbgen.Voucher{}, fmt.Errorf("voucher usage exceeded: %w", ErrInvalidInput)
+		}
+	}
 	if subtotal < voucher.MinSpend {
 		return 0, dbgen.Voucher{}, fmt.Errorf("minimum spend not met: %w", ErrInvalidInput)
 	}
 
 	eligible := subtotal
 	hasScope := len(voucher.ProductIds) > 0 || len(voucher.CategoryIds) > 0
-	if hasScope {
+	hasBrandScope := len(voucher.BrandIds) > 0
+	if hasScope || hasBrandScope {
 		eligible = 0
 		for _, it := range items {
 			allowed, err := s.itemEligible(ctx, it, voucher)
@@ -412,9 +434,21 @@ func (s *Service) evaluateVoucher(ctx context.Context, cartID pgtype.UUID, code 
 		}
 	}
 
-	discount := voucher.Value
+	var discount int64
+	switch voucher.Kind {
+	case dbgen.DiscountKindPercent:
+		if !voucher.PercentBps.Valid || voucher.PercentBps.Int32 <= 0 {
+			return 0, dbgen.Voucher{}, fmt.Errorf("invalid percent voucher: %w", ErrInvalidInput)
+		}
+		discount = (eligible * int64(voucher.PercentBps.Int32)) / 10000
+	default:
+		discount = voucher.Value
+	}
 	if discount > eligible {
 		discount = eligible
+	}
+	if discount < 0 {
+		discount = 0
 	}
 	return discount, voucher, nil
 }
@@ -473,7 +507,11 @@ func (s *Service) EvaluateVoucher(ctx context.Context, cartID pgtype.UUID, code 
 	if s == nil {
 		return 0, dbgen.Voucher{}, errors.New("cart service not configured")
 	}
-	return s.evaluateVoucher(ctx, cartID, code)
+	cart, err := s.Q.GetCartByID(ctx, cartID)
+	if err != nil {
+		return 0, dbgen.Voucher{}, err
+	}
+	return s.evaluateVoucher(ctx, cart, code)
 }
 
 func uuidEqual(a, b pgtype.UUID) bool {

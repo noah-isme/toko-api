@@ -107,7 +107,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	var discount int64
 	if cart.AppliedVoucherCode.Valid && cart.AppliedVoucherCode.String != "" && h.Svc != nil {
-		discount, _, err = h.Svc.evaluateVoucher(r.Context(), cart.ID, cart.AppliedVoucherCode.String)
+		discount, _, err = h.Svc.evaluateVoucher(r.Context(), cart, cart.AppliedVoucherCode.String)
 		if err != nil {
 			discount = 0
 		}

@@ -1,27 +1,26 @@
 -- name: CreateOrder :one
-INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-RETURNING id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at;
+INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, applied_voucher_code)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING *;
 
 -- name: CreateOrderItem :exec
 INSERT INTO order_items (order_id, product_id, variant_id, title, slug, qty, unit_price, subtotal)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetOrderByIDForUser :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at
+SELECT *
 FROM orders
 WHERE id = $1 AND user_id = $2
 LIMIT 1;
 
 -- name: GetOrderByID :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total,
-       shipping_address, shipping_option, notes, created_at, updated_at
+SELECT *
 FROM orders
 WHERE id = $1
 LIMIT 1;
 
 -- name: ListOrdersForUser :many
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at
+SELECT *
 FROM orders
 WHERE user_id = $1
 ORDER BY created_at DESC

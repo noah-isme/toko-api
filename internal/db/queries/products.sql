@@ -102,7 +102,8 @@ SELECT id,
        title,
        slug,
        price,
-       category_id
+       category_id,
+       brand_id
 FROM products
 WHERE id = $1
 LIMIT 1;

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 
+	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/auth"
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/catalog"
@@ -27,6 +29,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/shipping"
 	"github.com/noah-isme/backend-toko/internal/user"
+	"github.com/noah-isme/backend-toko/internal/voucher"
 )
 
 func main() {
@@ -105,7 +108,9 @@ func main() {
 
 	idem := common.Idem{R: redisClient, TTL: cfg.IdempotencyTTL}
 
-	cartSvc := &cart.Service{Q: queries, TTL: cfg.CartTTL}
+	cartSvc := &cart.Service{Q: queries, TTL: cfg.CartTTL, VoucherPerUserLimitDefault: cfg.VoucherPerUserLimit}
+	voucherSvc := &voucher.Service{Q: queries, DefaultPerUserLimit: cfg.VoucherPerUserLimit}
+	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, DefaultPriority: cfg.VoucherDefaultPriority}
 	cartHandler := &cart.Handler{
 		Q:              queries,
 		Svc:            cartSvc,
@@ -173,7 +178,11 @@ func main() {
 		Providers: providers,
 		Replay:    redisClient,
 		ReplayTTL: cfg.WebhookReplayTTL,
+		Voucher:   voucherSvc,
 	}
+
+	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange}
+	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -261,8 +270,21 @@ func main() {
 		})
 
 		v.Route("/admin", func(admin chi.Router) {
+			admin.Use(authMiddleware.RequireAuth)
+			admin.Use(requireRole(queries, "admin"))
+			admin.Post("/vouchers", voucherHandler.Create)
+			admin.Put("/vouchers/{code}", voucherHandler.Update)
+			admin.Post("/vouchers/preview", voucherHandler.Preview)
 			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
 			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
+		})
+
+		v.Route("/analytics", func(an chi.Router) {
+			an.Use(authMiddleware.RequireAuth)
+			an.Use(requireRole(queries, "admin"))
+			an.Get("/sales", analyticsHandler.Sales)
+			an.Get("/top-products", analyticsHandler.TopProducts)
+			an.Get("/overview", analyticsHandler.Overview)
 		})
 
 		v.Route("/payments", func(p chi.Router) {
@@ -304,4 +326,35 @@ func allowedOrigins(cfg *config.Config) []string {
 		return []string{"*"}
 	}
 	return cfg.CORSAllowedOrigins
+}
+
+func requireRole(q dbgen.Querier, role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if q == nil {
+				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "role validator not configured", nil)
+				return
+			}
+			userID, ok := common.UserID(r.Context())
+			if !ok {
+				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
+				return
+			}
+			uid, err := cart.ToUUID(userID)
+			if err != nil {
+				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
+				return
+			}
+			user, err := q.GetUserByID(r.Context(), uid)
+			if err != nil {
+				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
+				return
+			}
+			if !slices.Contains(user.Roles, role) {
+				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "insufficient permissions", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

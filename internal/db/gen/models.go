@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type DiscountKind string
+
+const (
+	DiscountKindFixedAmount DiscountKind = "fixed_amount"
+	DiscountKindPercent     DiscountKind = "percent"
+)
+
+func (e *DiscountKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = DiscountKind(s)
+	case string:
+		*e = DiscountKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for DiscountKind: %T", src)
+	}
+	return nil
+}
+
+type NullDiscountKind struct {
+	DiscountKind DiscountKind `json:"discount_kind"`
+	Valid        bool         `json:"valid"` // Valid is true if DiscountKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullDiscountKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.DiscountKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.DiscountKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullDiscountKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.DiscountKind), nil
+}
+
 type OrderStatus string
 
 const (
@@ -206,22 +248,36 @@ type Category struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type MvSalesDaily struct {
+	Day        pgtype.Interval `json:"day"`
+	PaidOrders int64           `json:"paid_orders"`
+	Revenue    int64           `json:"revenue"`
+	AllOrders  int64           `json:"all_orders"`
+}
+
+type MvTopProduct struct {
+	ProductID pgtype.UUID `json:"product_id"`
+	QtySold   int64       `json:"qty_sold"`
+	Gross     int64       `json:"gross"`
+}
+
 type Order struct {
-	ID              pgtype.UUID        `json:"id"`
-	UserID          pgtype.UUID        `json:"user_id"`
-	CartID          pgtype.UUID        `json:"cart_id"`
-	Status          OrderStatus        `json:"status"`
-	Currency        string             `json:"currency"`
-	PricingSubtotal int64              `json:"pricing_subtotal"`
-	PricingDiscount int64              `json:"pricing_discount"`
-	PricingTax      int64              `json:"pricing_tax"`
-	PricingShipping int64              `json:"pricing_shipping"`
-	PricingTotal    int64              `json:"pricing_total"`
-	ShippingAddress []byte             `json:"shipping_address"`
-	ShippingOption  []byte             `json:"shipping_option"`
-	Notes           pgtype.Text        `json:"notes"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	CartID             pgtype.UUID        `json:"cart_id"`
+	Status             OrderStatus        `json:"status"`
+	Currency           string             `json:"currency"`
+	PricingSubtotal    int64              `json:"pricing_subtotal"`
+	PricingDiscount    int64              `json:"pricing_discount"`
+	PricingTax         int64              `json:"pricing_tax"`
+	PricingShipping    int64              `json:"pricing_shipping"`
+	PricingTotal       int64              `json:"pricing_total"`
+	ShippingAddress    []byte             `json:"shipping_address"`
+	ShippingOption     []byte             `json:"shipping_option"`
+	Notes              pgtype.Text        `json:"notes"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	AppliedVoucherCode pgtype.Text        `json:"applied_voucher_code"`
 }
 
 type OrderItem struct {
@@ -349,16 +405,31 @@ type User struct {
 }
 
 type Voucher struct {
-	ID          pgtype.UUID        `json:"id"`
-	Code        string             `json:"code"`
-	Value       int64              `json:"value"`
-	MinSpend    int64              `json:"min_spend"`
-	UsageLimit  pgtype.Int4        `json:"usage_limit"`
-	UsedCount   int32              `json:"used_count"`
-	ValidFrom   pgtype.Timestamptz `json:"valid_from"`
-	ValidTo     pgtype.Timestamptz `json:"valid_to"`
-	ProductIds  []pgtype.UUID      `json:"product_ids"`
-	CategoryIds []pgtype.UUID      `json:"category_ids"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID           pgtype.UUID        `json:"id"`
+	Code         string             `json:"code"`
+	Value        int64              `json:"value"`
+	MinSpend     int64              `json:"min_spend"`
+	UsageLimit   pgtype.Int4        `json:"usage_limit"`
+	UsedCount    int32              `json:"used_count"`
+	ValidFrom    pgtype.Timestamptz `json:"valid_from"`
+	ValidTo      pgtype.Timestamptz `json:"valid_to"`
+	ProductIds   []pgtype.UUID      `json:"product_ids"`
+	CategoryIds  []pgtype.UUID      `json:"category_ids"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	Kind         DiscountKind       `json:"kind"`
+	PercentBps   pgtype.Int4        `json:"percent_bps"`
+	Combinable   bool               `json:"combinable"`
+	Priority     int32              `json:"priority"`
+	PerUserLimit pgtype.Int4        `json:"per_user_limit"`
+	BrandIds     []pgtype.UUID      `json:"brand_ids"`
+}
+
+type VoucherUsage struct {
+	ID        pgtype.UUID        `json:"id"`
+	VoucherID pgtype.UUID        `json:"voucher_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	OrderID   pgtype.UUID        `json:"order_id"`
+	UsedAt    pgtype.Timestamptz `json:"used_at"`
+	Amount    int64              `json:"amount"`
 }

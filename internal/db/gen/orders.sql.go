@@ -25,24 +25,25 @@ func (q *Queries) CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (i
 }
 
 const createOrder = `-- name: CreateOrder :one
-INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-RETURNING id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at
+INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, applied_voucher_code)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
 `
 
 type CreateOrderParams struct {
-	UserID          pgtype.UUID `json:"user_id"`
-	CartID          pgtype.UUID `json:"cart_id"`
-	Status          OrderStatus `json:"status"`
-	Currency        string      `json:"currency"`
-	PricingSubtotal int64       `json:"pricing_subtotal"`
-	PricingDiscount int64       `json:"pricing_discount"`
-	PricingTax      int64       `json:"pricing_tax"`
-	PricingShipping int64       `json:"pricing_shipping"`
-	PricingTotal    int64       `json:"pricing_total"`
-	ShippingAddress []byte      `json:"shipping_address"`
-	ShippingOption  []byte      `json:"shipping_option"`
-	Notes           pgtype.Text `json:"notes"`
+	UserID             pgtype.UUID `json:"user_id"`
+	CartID             pgtype.UUID `json:"cart_id"`
+	Status             OrderStatus `json:"status"`
+	Currency           string      `json:"currency"`
+	PricingSubtotal    int64       `json:"pricing_subtotal"`
+	PricingDiscount    int64       `json:"pricing_discount"`
+	PricingTax         int64       `json:"pricing_tax"`
+	PricingShipping    int64       `json:"pricing_shipping"`
+	PricingTotal       int64       `json:"pricing_total"`
+	ShippingAddress    []byte      `json:"shipping_address"`
+	ShippingOption     []byte      `json:"shipping_option"`
+	Notes              pgtype.Text `json:"notes"`
+	AppliedVoucherCode pgtype.Text `json:"applied_voucher_code"`
 }
 
 func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error) {
@@ -59,6 +60,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		arg.ShippingAddress,
 		arg.ShippingOption,
 		arg.Notes,
+		arg.AppliedVoucherCode,
 	)
 	var i Order
 	err := row.Scan(
@@ -77,6 +79,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AppliedVoucherCode,
 	)
 	return i, err
 }
@@ -112,8 +115,7 @@ func (q *Queries) CreateOrderItem(ctx context.Context, arg CreateOrderItemParams
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total,
-       shipping_address, shipping_option, notes, created_at, updated_at
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
 FROM orders
 WHERE id = $1
 LIMIT 1
@@ -138,12 +140,13 @@ func (q *Queries) GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, erro
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AppliedVoucherCode,
 	)
 	return i, err
 }
 
 const getOrderByIDForUser = `-- name: GetOrderByIDForUser :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
 FROM orders
 WHERE id = $1 AND user_id = $2
 LIMIT 1
@@ -173,6 +176,7 @@ func (q *Queries) GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUs
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AppliedVoucherCode,
 	)
 	return i, err
 }
@@ -215,7 +219,7 @@ func (q *Queries) ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID
 }
 
 const listOrdersForUser = `-- name: ListOrdersForUser :many
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
 FROM orders
 WHERE user_id = $1
 ORDER BY created_at DESC
@@ -253,6 +257,7 @@ func (q *Queries) ListOrdersForUser(ctx context.Context, arg ListOrdersForUserPa
 			&i.Notes,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AppliedVoucherCode,
 		); err != nil {
 			return nil, err
 		}
