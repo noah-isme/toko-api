@@ -1,0 +1,139 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/joho/godotenv"
+	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/v2"
+)
+
+// Config holds application configuration loaded from the environment.
+type Config struct {
+	AppEnv             string
+	Port               string
+	DatabaseURL        string
+	RedisURL           string
+	JWTSecret          string
+	CORSAllowedOrigins []string
+	MidtransServerKey  string
+	MidtransClientKey  string
+	RajaOngkirAPIKey   string
+}
+
+// Load reads configuration from environment variables and optional .env files.
+func Load() (*Config, error) {
+	_ = godotenv.Load()
+
+	k := koanf.New(".")
+	if err := k.Load(env.Provider("", ".", func(s string) string { return s }), nil); err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+
+	cfg := &Config{
+		AppEnv:             valueOrDefault(k.String("APP_ENV"), "development"),
+		Port:               valueOrDefault(k.String("PORT"), "8080"),
+		DatabaseURL:        k.String("DATABASE_URL"),
+		RedisURL:           k.String("REDIS_URL"),
+		JWTSecret:          k.String("JWT_SECRET"),
+		CORSAllowedOrigins: splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
+		MidtransServerKey:  k.String("MIDTRANS_SERVER_KEY"),
+		MidtransClientKey:  k.String("MIDTRANS_CLIENT_KEY"),
+		RajaOngkirAPIKey:   k.String("RAJAONGKIR_API_KEY"),
+	}
+
+	if cfg.DatabaseURL == "" {
+		return nil, errors.New("DATABASE_URL is required")
+	}
+	if cfg.RedisURL == "" {
+		return nil, errors.New("REDIS_URL is required")
+	}
+	if cfg.JWTSecret == "" {
+		return nil, errors.New("JWT_SECRET is required")
+	}
+
+	return cfg, nil
+}
+
+// HTTPAddr returns the address the HTTP server should bind to.
+func (c *Config) HTTPAddr() string {
+	port := strings.TrimSpace(c.Port)
+	if port == "" {
+		port = "8080"
+	}
+	if strings.HasPrefix(port, ":") {
+		return port
+	}
+	return ":" + port
+}
+
+func splitAndTrim(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func valueOrDefault(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
+}
+
+// MustLoad behaves like Load but panics on error. Useful for tests and command entrypoints.
+func MustLoad() *Config {
+	cfg, err := Load()
+	if err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// LoadForTests allows tests to override environment variables without touching the real environment.
+func LoadForTests(env map[string]string) (*Config, error) {
+	original := make(map[string]string, len(env))
+	for key := range env {
+		original[key] = os.Getenv(key)
+		if err := setEnvVar(key, env[key]); err != nil {
+			return nil, err
+		}
+	}
+	cfg, err := Load()
+	restoreErr := restoreEnv(original)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, restoreErr
+}
+
+func setEnvVar(key, value string) error {
+	if value == "" {
+		return os.Unsetenv(key)
+	}
+	return os.Setenv(key, value)
+}
+
+func restoreEnv(values map[string]string) error {
+	var errs []string
+	for key, value := range values {
+		if err := setEnvVar(key, value); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("restore env: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
