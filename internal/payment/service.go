@@ -11,8 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/noah-isme/backend-toko/internal/cart"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/obs"
 )
 
 // Service coordinates payment intents and status retrieval.
@@ -29,6 +33,24 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 	if s == nil || s.Q == nil || s.Provider == nil {
 		return zero, errors.New("payment service not configured")
 	}
+	ctx, span := otel.Tracer("payment.Service").Start(ctx, "PaymentService.CreateIntent")
+	defer span.End()
+
+	start := time.Now()
+	providerName := inferProviderName(s.Provider)
+	channelLabel := normaliseLabel(channel)
+	result := "error"
+	defer func() {
+		span.SetAttributes(
+			attribute.String("payment.provider", providerName),
+			attribute.String("payment.channel", channelLabel),
+			attribute.Float64("payment.intent.duration_ms", obs.DurationMillis(time.Since(start))),
+			attribute.String("payment.intent.result", result),
+		)
+		if obs.PaymentIntentTotal != nil {
+			obs.PaymentIntentTotal.WithLabelValues(providerName, channelLabel, result).Inc()
+		}
+	}()
 	if cbBase == "" {
 		cbBase = s.CallbackBaseURL
 	}
@@ -40,6 +62,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 	if err != nil {
 		return zero, fmt.Errorf("invalid order id: %w", err)
 	}
+	span.SetAttributes(attribute.String("order.id", orderID))
 	order, err := s.Q.GetOrderByID(ctx, orderUUID)
 	if err != nil {
 		return zero, err
@@ -59,6 +82,10 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		}
 		if existing.Status == dbgen.PaymentStatusPENDING {
 			if !existing.ExpiresAt.Valid || existing.ExpiresAt.Time.After(time.Now()) {
+				if existing.Provider.Valid {
+					providerName = normaliseLabel(existing.Provider.String)
+				}
+				result = "reused"
 				return existing, nil
 			}
 		}
@@ -75,12 +102,15 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 	}
 	resp, err := s.Provider.CreateIntent(ctx, req)
 	if err != nil {
+		span.RecordError(err)
 		return zero, err
 	}
-	providerName := resp.Provider
+	providerName = resp.Provider
 	if providerName == "" {
 		providerName = inferProviderName(s.Provider)
 	}
+	providerName = normaliseLabel(providerName)
+	result = "success"
 	payload := toJSON(map[string]any{
 		"request":  req,
 		"response": resp,
@@ -156,6 +186,14 @@ func inferProviderName(p Provider) string {
 	default:
 		return ""
 	}
+}
+
+func normaliseLabel(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
 }
 
 func toJSON(v any) []byte {
