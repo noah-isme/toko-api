@@ -14,6 +14,11 @@ UPDATE password_resets
 SET used_at = now()
 WHERE id = $1 AND used_at IS NULL;
 
+-- name: UsePasswordReset :exec
+UPDATE password_resets
+SET used_at = now()
+WHERE token = $1 AND used_at IS NULL;
+
 -- name: DeletePasswordReset :exec
 DELETE FROM password_resets
 WHERE id = $1;

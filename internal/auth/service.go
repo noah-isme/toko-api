@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -65,10 +67,12 @@ type LoginResult struct {
 	RefreshExpiry time.Time `json:"refresh_expires_at"`
 }
 
-// PasswordResetResult holds the generated reset token for out-of-band delivery.
-type PasswordResetResult struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+// RefreshResult represents the outcome of a refresh operation.
+type RefreshResult struct {
+	AccessToken   string    `json:"access_token"`
+	AccessExpiry  time.Time `json:"access_expires_at"`
+	RefreshToken  string    `json:"refresh_token"`
+	RefreshExpiry time.Time `json:"refresh_expires_at"`
 }
 
 // NewService constructs a Service instance with sane defaults.
@@ -187,10 +191,53 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 
 // Logout revokes the refresh token.
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
-	if strings.TrimSpace(refreshToken) == "" {
+	token := strings.TrimSpace(refreshToken)
+	if token == "" {
 		return nil
 	}
-	return s.queries.DeleteSessionByToken(ctx, refreshToken)
+	return s.queries.DeleteSessionByToken(ctx, hashRefreshToken(token))
+}
+
+// Refresh validates and rotates a refresh token, issuing a fresh access token pair.
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (RefreshResult, error) {
+	token := strings.TrimSpace(refreshToken)
+	if token == "" {
+		return RefreshResult{}, common.NewAppError("UNAUTHORIZED", "invalid refresh token", httpStatusUnauthorized, nil)
+	}
+
+	hashed := hashRefreshToken(token)
+	session, err := s.queries.GetSessionByToken(ctx, hashed)
+	if err != nil {
+		return RefreshResult{}, common.NewAppError("UNAUTHORIZED", "invalid refresh token", httpStatusUnauthorized, nil)
+	}
+	if !session.ExpiresAt.Valid || s.now().After(session.ExpiresAt.Time) {
+		_ = s.queries.DeleteSessionByToken(ctx, hashed)
+		return RefreshResult{}, common.NewAppError("UNAUTHORIZED", "invalid refresh token", httpStatusUnauthorized, nil)
+	}
+
+	userID := uuidString(session.UserID)
+	if userID == "" {
+		_ = s.queries.DeleteSessionByToken(ctx, hashed)
+		return RefreshResult{}, common.NewAppError("UNAUTHORIZED", "invalid refresh token", httpStatusUnauthorized, nil)
+	}
+
+	accessToken, accessExpiry, err := s.signAccessToken(userID)
+	if err != nil {
+		return RefreshResult{}, fmt.Errorf("sign access token: %w", err)
+	}
+
+	newRefresh, refreshExpiry, err := s.rotateSessionToken(ctx, session.ID)
+	if err != nil {
+		_ = s.queries.DeleteSessionByToken(ctx, hashed)
+		return RefreshResult{}, fmt.Errorf("rotate session token: %w", err)
+	}
+
+	return RefreshResult{
+		AccessToken:   accessToken,
+		AccessExpiry:  accessExpiry,
+		RefreshToken:  newRefresh,
+		RefreshExpiry: refreshExpiry,
+	}, nil
 }
 
 // Me fetches the current authenticated user.
@@ -209,50 +256,66 @@ func (s *Service) Me(ctx context.Context, userID string) (User, error) {
 	return convertUserFromGet(dbUser), nil
 }
 
-// InitiatePasswordReset issues a reset token for the provided email. Errors are suppressed to avoid account enumeration.
-func (s *Service) InitiatePasswordReset(ctx context.Context, email string) (PasswordResetResult, error) {
+// Forgot creates a password reset token and dispatches it via the provided sender.
+func (s *Service) Forgot(ctx context.Context, email, baseURL string, sender common.EmailSender) error {
 	normalizedEmail := strings.TrimSpace(strings.ToLower(email))
 	if normalizedEmail == "" {
-		return PasswordResetResult{}, nil
+		return nil
 	}
-	dbUser, err := s.queries.GetUserByEmail(ctx, normalizedEmail)
+
+	user, err := s.queries.GetUserByEmail(ctx, normalizedEmail)
 	if err != nil {
-		// Silently return to avoid exposing whether the email exists.
-		return PasswordResetResult{}, nil
+		// Avoid disclosing whether the email exists.
+		return nil
 	}
 
 	token, err := generateToken(32)
 	if err != nil {
-		return PasswordResetResult{}, fmt.Errorf("generate reset token: %w", err)
+		return fmt.Errorf("generate reset token: %w", err)
 	}
 	expiresAt := s.now().Add(s.resetTTL)
 
 	if _, err := s.queries.CreatePasswordReset(ctx, db.CreatePasswordResetParams{
-		UserID:    dbUser.ID,
+		UserID:    user.ID,
 		Token:     token,
 		ExpiresAt: pgTimestamp(expiresAt),
 	}); err != nil {
-		return PasswordResetResult{}, fmt.Errorf("create password reset: %w", err)
+		return fmt.Errorf("create password reset: %w", err)
 	}
 
-	return PasswordResetResult{Token: token, ExpiresAt: expiresAt}, nil
+	if sender == nil {
+		return nil
+	}
+
+	base := strings.TrimRight(baseURL, "/")
+	link := fmt.Sprintf("%s/reset?token=%s", base, token)
+	if base == "" {
+		link = fmt.Sprintf("/reset?token=%s", token)
+	}
+
+	if err := sender.Send(user.Email, "Reset Password", "Klik tautan untuk reset: "+link); err != nil {
+		return fmt.Errorf("send reset email: %w", err)
+	}
+
+	return nil
 }
 
-// ResetPassword updates the password for the user associated with the provided token.
-func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) error {
+// Reset validates the provided token and updates the user's password.
+func (s *Service) Reset(ctx context.Context, token, newPassword string) error {
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		return common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
+	}
 	if len(newPassword) < 8 {
-		return common.NewAppError("VALIDATION_ERROR", "password must be at least 8 characters", httpStatusBadRequest, nil)
+		return common.NewAppError("WEAK_PASSWORD", "password must be at least 8 characters", httpStatusBadRequest, nil)
 	}
 
-	reset, err := s.queries.GetPasswordResetByToken(ctx, token)
+	reset, err := s.queries.GetPasswordResetByToken(ctx, trimmedToken)
 	if err != nil {
-		return common.NewAppError("INVALID_TOKEN", "reset token is invalid", httpStatusBadRequest, err)
+		return common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
 	}
-	if reset.UsedAt.Valid {
-		return common.NewAppError("INVALID_TOKEN", "reset token has been used", httpStatusBadRequest, nil)
-	}
-	if !reset.ExpiresAt.Valid || s.now().After(reset.ExpiresAt.Time) {
-		return common.NewAppError("INVALID_TOKEN", "reset token has expired", httpStatusBadRequest, nil)
+	if reset.UsedAt.Valid || !reset.ExpiresAt.Valid || s.now().After(reset.ExpiresAt.Time) {
+		return common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
 	}
 
 	hash, err := argon2id.CreateHash(newPassword, argon2id.DefaultParams)
@@ -260,14 +323,11 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	if _, err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
-		ID:           reset.UserID,
-		PasswordHash: hash,
-	}); err != nil {
+	if _, err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{ID: reset.UserID, PasswordHash: hash}); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 
-	if err := s.queries.MarkPasswordResetUsed(ctx, reset.ID); err != nil {
+	if err := s.queries.UsePasswordReset(ctx, trimmedToken); err != nil {
 		return fmt.Errorf("mark reset used: %w", err)
 	}
 
@@ -276,7 +336,7 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 	}
 
 	if err := s.queries.DeletePasswordResetsByUser(ctx, reset.UserID); err != nil {
-		return fmt.Errorf("delete resets: %w", err)
+		return fmt.Errorf("delete password resets: %w", err)
 	}
 
 	return nil
@@ -318,18 +378,42 @@ func (s *Service) generateRefreshToken(ctx context.Context, userID pgtype.UUID, 
 	if !userID.Valid {
 		return "", time.Time{}, errors.New("auth: invalid user identifier")
 	}
-	token, err := generateToken(48)
+	token, hashed, expiresAt, err := s.newRefreshToken()
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	expiresAt := s.now().Add(s.refreshTTL)
 	if _, err := s.queries.CreateSession(ctx, db.CreateSessionParams{
 		UserID:       userID,
-		RefreshToken: token,
+		RefreshToken: hashed,
 		UserAgent:    pgText(userAgent),
 		Ip:           pgText(ip),
 		ExpiresAt:    pgTimestamp(expiresAt),
 	}); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
+}
+
+func (s *Service) newRefreshToken() (string, string, time.Time, error) {
+	token, err := generateToken(48)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	expiresAt := s.now().Add(s.refreshTTL)
+	return token, hashRefreshToken(token), expiresAt, nil
+}
+
+func (s *Service) rotateSessionToken(ctx context.Context, sessionID pgtype.UUID) (string, time.Time, error) {
+	token, hashed, expiresAt, err := s.newRefreshToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	_, err = s.queries.RotateSessionToken(ctx, db.RotateSessionTokenParams{
+		ID:           sessionID,
+		RefreshToken: hashed,
+		ExpiresAt:    pgTimestamp(expiresAt),
+	})
+	if err != nil {
 		return "", time.Time{}, err
 	}
 	return token, expiresAt, nil
@@ -341,6 +425,11 @@ func generateToken(length int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func hashRefreshToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func convertCreateUserRow(u db.CreateUserRow) User {
