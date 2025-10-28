@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -12,7 +13,12 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/noah-isme/backend-toko/internal/auth"
 	"github.com/noah-isme/backend-toko/internal/config"
+	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/user"
 )
 
 func main() {
@@ -22,6 +28,42 @@ func main() {
 	}
 
 	logger := newLogger(cfg.AppEnv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("connect database")
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		logger.Fatal().Err(err).Msg("ping database")
+	}
+
+	queries := dbgen.New(pool)
+	authService, err := auth.NewService(auth.Config{
+		Queries:         queries,
+		Secret:          cfg.JWTSecret,
+		AccessTokenTTL:  cfg.AccessTokenTTL,
+		RefreshTokenTTL: cfg.RefreshTokenTTL,
+	})
+	if err != nil {
+		logger.Fatal().Err(err).Msg("initialise auth service")
+	}
+	authHandler := &auth.Handler{
+		Service:           authService,
+		AccessCookieName:  "access_token",
+		RefreshCookieName: "refresh_token",
+		CookieDomain:      cfg.CookieDomain,
+		CookieSecure:      cfg.CookieSecure,
+		CookieSameSite:    cfg.CookieSameSite,
+	}
+	authMiddleware := auth.Middleware{Service: authService, AccessCookie: authHandler.AccessCookieName}
+
+	addressService := user.NewService(pool)
+	addressHandler := &user.Handler{Service: addressService}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -49,6 +91,31 @@ func main() {
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	r.Route("/api/v1", func(v chi.Router) {
+		v.Route("/auth", func(a chi.Router) {
+			a.Post("/register", authHandler.Register)
+			a.Post("/login", authHandler.Login)
+			a.Post("/password/forgot", authHandler.ForgotPassword)
+			a.Post("/password/reset", authHandler.ResetPassword)
+
+			a.Group(func(protected chi.Router) {
+				protected.Use(authMiddleware.RequireAuth)
+				protected.Get("/me", authHandler.Me)
+				protected.Post("/logout", authHandler.Logout)
+			})
+		})
+
+		v.Route("/users/me/addresses", func(a chi.Router) {
+			a.Use(authMiddleware.RequireAuth)
+			a.Get("/", addressHandler.List)
+			a.Post("/", addressHandler.Create)
+			a.Route("/{addressID}", func(child chi.Router) {
+				child.Patch("/", addressHandler.Update)
+				child.Delete("/", addressHandler.Delete)
+			})
+		})
 	})
 
 	srv := &http.Server{
