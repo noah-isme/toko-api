@@ -41,6 +41,58 @@ func (f *fakeQueries) CountAddressesByUser(context.Context, pgtype.UUID) (int64,
 	return 0, errNotImplemented
 }
 
+func (f *fakeQueries) ListBrands(context.Context) ([]dbgen.ListBrandsRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetBrandByID(context.Context, pgtype.UUID) (dbgen.GetBrandByIDRow, error) {
+	return dbgen.GetBrandByIDRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetBrandBySlug(context.Context, string) (dbgen.GetBrandBySlugRow, error) {
+	return dbgen.GetBrandBySlugRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListCategories(context.Context) ([]dbgen.ListCategoriesRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetCategoryByID(context.Context, pgtype.UUID) (dbgen.GetCategoryByIDRow, error) {
+	return dbgen.GetCategoryByIDRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetCategoryBySlug(context.Context, string) (dbgen.GetCategoryBySlugRow, error) {
+	return dbgen.GetCategoryBySlugRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) CountProductsPublic(context.Context, dbgen.CountProductsPublicParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) ListProductsPublic(context.Context, dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetProductBySlug(context.Context, string) (dbgen.GetProductBySlugRow, error) {
+	return dbgen.GetProductBySlugRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListVariantsByProduct(context.Context, pgtype.UUID) ([]dbgen.ProductVariant, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListImagesByProduct(context.Context, pgtype.UUID) ([]dbgen.ProductImage, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListSpecsByProduct(context.Context, pgtype.UUID) ([]dbgen.ProductSpec, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListRelatedByCategory(context.Context, dbgen.ListRelatedByCategoryParams) ([]dbgen.ListRelatedByCategoryRow, error) {
+	return nil, errNotImplemented
+}
+
 func (f *fakeQueries) CreateAddress(context.Context, dbgen.CreateAddressParams) (dbgen.Address, error) {
 	return dbgen.Address{}, errNotImplemented
 }

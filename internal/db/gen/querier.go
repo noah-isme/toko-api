@@ -11,10 +11,11 @@ import (
 )
 
 type Querier interface {
-        CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
-        CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
-        CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
-        CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
+	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
+	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
@@ -22,18 +23,30 @@ type Querier interface {
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
 	GetAddressByID(ctx context.Context, arg GetAddressByIDParams) (Address, error)
+	GetBrandByID(ctx context.Context, id pgtype.UUID) (GetBrandByIDRow, error)
+	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
+	GetCategoryByID(ctx context.Context, id pgtype.UUID) (GetCategoryByIDRow, error)
+	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
-        GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
-        GetUserByEmail(ctx context.Context, email string) (User, error)
-        GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
-        ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
-        MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
-        RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
-        UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
-        UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
-        UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
-        UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
-        UsePasswordReset(ctx context.Context, token string) error
+	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
+	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
+	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
+	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
+	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
+	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
+	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
+	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
+	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
+	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
+	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
+	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
+	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
+	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
+	UsePasswordReset(ctx context.Context, token string) error
 }
 
 var _ Querier = (*Queries)(nil)

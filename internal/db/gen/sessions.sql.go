@@ -74,18 +74,18 @@ LIMIT 1
 `
 
 func (q *Queries) GetSessionByToken(ctx context.Context, refreshToken string) (Session, error) {
-        row := q.db.QueryRow(ctx, getSessionByToken, refreshToken)
-        var i Session
-        err := row.Scan(
-                &i.ID,
-                &i.UserID,
-                &i.RefreshToken,
-                &i.UserAgent,
-                &i.Ip,
-                &i.ExpiresAt,
-                &i.CreatedAt,
-        )
-        return i, err
+	row := q.db.QueryRow(ctx, getSessionByToken, refreshToken)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.RefreshToken,
+		&i.UserAgent,
+		&i.Ip,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const rotateSessionToken = `-- name: RotateSessionToken :one
@@ -97,22 +97,22 @@ RETURNING id, user_id, refresh_token, user_agent, ip, expires_at, created_at
 `
 
 type RotateSessionTokenParams struct {
-        ID           pgtype.UUID        `json:"id"`
-        RefreshToken string             `json:"refresh_token"`
-        ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	ID           pgtype.UUID        `json:"id"`
+	RefreshToken string             `json:"refresh_token"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error) {
-        row := q.db.QueryRow(ctx, rotateSessionToken, arg.ID, arg.RefreshToken, arg.ExpiresAt)
-        var i Session
-        err := row.Scan(
-                &i.ID,
-                &i.UserID,
-                &i.RefreshToken,
-                &i.UserAgent,
-                &i.Ip,
-                &i.ExpiresAt,
-                &i.CreatedAt,
-        )
-        return i, err
+	row := q.db.QueryRow(ctx, rotateSessionToken, arg.ID, arg.RefreshToken, arg.ExpiresAt)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.RefreshToken,
+		&i.UserAgent,
+		&i.Ip,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }

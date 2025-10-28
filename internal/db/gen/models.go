@@ -25,6 +25,23 @@ type Address struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Brand struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Category struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	ParentID  pgtype.UUID        `json:"parent_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PasswordReset struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    pgtype.UUID        `json:"user_id"`
@@ -32,6 +49,44 @@ type PasswordReset struct {
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Product struct {
+	ID         pgtype.UUID        `json:"id"`
+	Title      string             `json:"title"`
+	Slug       string             `json:"slug"`
+	BrandID    pgtype.UUID        `json:"brand_id"`
+	CategoryID pgtype.UUID        `json:"category_id"`
+	Price      int64              `json:"price"`
+	CompareAt  pgtype.Int8        `json:"compare_at"`
+	InStock    bool               `json:"in_stock"`
+	Thumbnail  pgtype.Text        `json:"thumbnail"`
+	Badges     []string           `json:"badges"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProductImage struct {
+	ID        pgtype.UUID `json:"id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	Url       string      `json:"url"`
+	SortOrder int32       `json:"sort_order"`
+}
+
+type ProductSpec struct {
+	ID        pgtype.UUID `json:"id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	Key       string      `json:"key"`
+	Value     string      `json:"value"`
+}
+
+type ProductVariant struct {
+	ID         pgtype.UUID `json:"id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	Sku        pgtype.Text `json:"sku"`
+	Price      int64       `json:"price"`
+	Stock      int32       `json:"stock"`
+	Attributes []byte      `json:"attributes"`
 }
 
 type Session struct {

@@ -34,4 +34,61 @@ paths:
       summary: Update address
     delete:
       summary: Delete address
+  /api/v1/categories:
+    get:
+      summary: List categories
+  /api/v1/brands:
+    get:
+      summary: List brands
+  /api/v1/products:
+    get:
+      summary: List products
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: brand
+          schema:
+            type: string
+        - in: query
+          name: minPrice
+          schema:
+            type: integer
+        - in: query
+          name: maxPrice
+          schema:
+            type: integer
+        - in: query
+          name: inStock
+          schema:
+            type: boolean
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum:
+              - price:asc
+              - price:desc
+              - title:asc
+              - title:desc
+        - in: query
+          name: page
+          schema:
+            type: integer
+        - in: query
+          name: limit
+          schema:
+            type: integer
+  /api/v1/products/{slug}:
+    get:
+      summary: Product detail
+  /api/v1/products/{slug}/related:
+    get:
+      summary: Related products
 components: {}
