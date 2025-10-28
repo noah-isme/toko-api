@@ -18,6 +18,7 @@ const (
 	OrderStatusPAID           OrderStatus = "PAID"
 	OrderStatusPACKED         OrderStatus = "PACKED"
 	OrderStatusSHIPPED        OrderStatus = "SHIPPED"
+	OrderStatusOUTFORDELIVERY OrderStatus = "OUT_FOR_DELIVERY"
 	OrderStatusDELIVERED      OrderStatus = "DELIVERED"
 	OrderStatusCANCELED       OrderStatus = "CANCELED"
 )
@@ -108,6 +109,7 @@ const (
 	ShipmentStatusPENDING        ShipmentStatus = "PENDING"
 	ShipmentStatusPICKED         ShipmentStatus = "PICKED"
 	ShipmentStatusINTRANSIT      ShipmentStatus = "IN_TRANSIT"
+	ShipmentStatusSHIPPED        ShipmentStatus = "SHIPPED"
 	ShipmentStatusOUTFORDELIVERY ShipmentStatus = "OUT_FOR_DELIVERY"
 	ShipmentStatusDELIVERED      ShipmentStatus = "DELIVERED"
 	ShipmentStatusRETURNED       ShipmentStatus = "RETURNED"
@@ -315,12 +317,25 @@ type Session struct {
 }
 
 type Shipment struct {
-	ID             pgtype.UUID    `json:"id"`
-	OrderID        pgtype.UUID    `json:"order_id"`
-	Status         ShipmentStatus `json:"status"`
-	Courier        pgtype.Text    `json:"courier"`
-	TrackingNumber pgtype.Text    `json:"tracking_number"`
-	History        []byte         `json:"history"`
+	ID             pgtype.UUID        `json:"id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	Status         ShipmentStatus     `json:"status"`
+	Courier        pgtype.Text        `json:"courier"`
+	TrackingNumber pgtype.Text        `json:"tracking_number"`
+	History        []byte             `json:"history"`
+	LastStatus     NullShipmentStatus `json:"last_status"`
+	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
+}
+
+type ShipmentEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	ShipmentID  pgtype.UUID        `json:"shipment_id"`
+	Status      ShipmentStatus     `json:"status"`
+	Description pgtype.Text        `json:"description"`
+	Location    pgtype.Text        `json:"location"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+	RawPayload  []byte             `json:"raw_payload"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type User struct {

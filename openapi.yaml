@@ -132,9 +132,21 @@ paths:
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
+  /api/v1/orders/{orderId}/shipment:
+    get:
+      summary: Get shipment detail for order
+  /api/v1/admin/orders/{id}/shipment:
+    post:
+      summary: Create shipment for order
+  /api/v1/admin/orders/{id}/status:
+    patch:
+      summary: Update order status (admin restricted)
   /api/v1/payments/intent:
     post:
       summary: Create payment intent (Midtrans/Xendit)
+  /api/v1/webhooks/shipping/{courier}:
+    post:
+      summary: Shipping webhook receiver (idempotent)
   /api/v1/payments/{orderId}/status:
     get:
       summary: Get consolidated payment status

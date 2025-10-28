@@ -22,6 +22,7 @@ type Querier interface {
 	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
 	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
@@ -43,10 +44,12 @@ type Querier interface {
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
+	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
 	GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
+	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (Shipment, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
@@ -54,6 +57,7 @@ type Querier interface {
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
+	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
@@ -64,6 +68,7 @@ type Querier interface {
 	ListOrdersForUser(ctx context.Context, arg ListOrdersForUserParams) ([]Order, error)
 	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
 	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
+	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
@@ -75,7 +80,9 @@ type Querier interface {
 	UpdateCartItemQty(ctx context.Context, arg UpdateCartItemQtyParams) (CartItem, error)
 	UpdateCartVoucher(ctx context.Context, arg UpdateCartVoucherParams) error
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
+	UpdateOrderStatusIfAllowed(ctx context.Context, arg UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
+	UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentStatusParams) (pgtype.UUID, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UsePasswordReset(ctx context.Context, token string) error
