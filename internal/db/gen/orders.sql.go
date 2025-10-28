@@ -111,33 +111,31 @@ func (q *Queries) CreateOrderItem(ctx context.Context, arg CreateOrderItemParams
 	return err
 }
 
-const createPayment = `-- name: CreatePayment :one
-INSERT INTO payments (order_id, provider, status, provider_payload)
-VALUES ($1, $2, $3, $4)
-RETURNING id, order_id, provider, status, provider_payload, created_at, updated_at
+const getOrderByID = `-- name: GetOrderByID :one
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total,
+       shipping_address, shipping_option, notes, created_at, updated_at
+FROM orders
+WHERE id = $1
+LIMIT 1
 `
 
-type CreatePaymentParams struct {
-	OrderID         pgtype.UUID   `json:"order_id"`
-	Provider        pgtype.Text   `json:"provider"`
-	Status          PaymentStatus `json:"status"`
-	ProviderPayload []byte        `json:"provider_payload"`
-}
-
-func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error) {
-	row := q.db.QueryRow(ctx, createPayment,
-		arg.OrderID,
-		arg.Provider,
-		arg.Status,
-		arg.ProviderPayload,
-	)
-	var i Payment
+func (q *Queries) GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error) {
+	row := q.db.QueryRow(ctx, getOrderByID, id)
+	var i Order
 	err := row.Scan(
 		&i.ID,
-		&i.OrderID,
-		&i.Provider,
+		&i.UserID,
+		&i.CartID,
 		&i.Status,
-		&i.ProviderPayload,
+		&i.Currency,
+		&i.PricingSubtotal,
+		&i.PricingDiscount,
+		&i.PricingTax,
+		&i.PricingShipping,
+		&i.PricingTotal,
+		&i.ShippingAddress,
+		&i.ShippingOption,
+		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

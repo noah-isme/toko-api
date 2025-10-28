@@ -132,4 +132,13 @@ paths:
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
+  /api/v1/payments/intent:
+    post:
+      summary: Create payment intent (Midtrans/Xendit)
+  /api/v1/payments/{orderId}/status:
+    get:
+      summary: Get consolidated payment status
+  /api/v1/webhooks/payment/{provider}:
+    post:
+      summary: Payment webhook receiver
 components: {}

@@ -146,28 +146,14 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 			return Output{}, err
 		}
 	}
-	payload := map[string]any{
-		"channel":        in.PaymentChannel,
-		"orderId":        cart.UUIDString(order.ID),
-		"expectedAmount": summary.Total,
-	}
-	payment, err := qtx.CreatePayment(ctx, dbgen.CreatePaymentParams{
-		OrderID:         order.ID,
-		Provider:        pgtype.Text{String: "stub", Valid: true},
-		Status:          "PENDING",
-		ProviderPayload: toJSON(payload),
-	})
-	if err != nil {
-		return Output{}, err
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return Output{}, err
 	}
 	var out Output
 	out.OrderID = cart.UUIDString(order.ID)
 	out.Status = string(order.Status)
-	out.Payment.Provider = payment.Provider.String
-	out.Payment.Token = cart.UUIDString(payment.ID)
+	out.Payment.Provider = ""
+	out.Payment.Token = ""
 	out.Payment.RedirectURL = ""
 	return out, nil
 }
