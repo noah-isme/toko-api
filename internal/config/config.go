@@ -97,14 +97,21 @@ type Config struct {
 	RetryJitterPercent         float64
 	OutboundTimeout            time.Duration
 	QueueVisibilityTimeout     time.Duration
+	QueueMaxAttempts           int
+	QueueBackoffBase           time.Duration
+	QueueBackoffJitter         float64
+	QueueDLQRetentionDays      int
 	QueueConcurrencyWebhook    int
 	QueueConcurrencyEmail      int
 	QueueConcurrencyAnalytics  int
 	LockTTL                    time.Duration
 	LockRetryBackoff           time.Duration
 	WorkerShutdownGrace        time.Duration
+	WorkerHeartbeatInterval    time.Duration
+	WorkerJobSoftDeadline      time.Duration
 	APIMaxShutdownGrace        time.Duration
 	EnableAPIEmbeddedWorkers   bool
+	AdminDLQPageSize           int
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -123,6 +130,16 @@ func Load() (*Config, error) {
 	analyticsTTL := parsePositiveIntAllowZero(k.String("REDIS_CACHE_TTL_ANALYTICS_SEC"), 0)
 	if analyticsTTL <= 0 {
 		analyticsTTL = parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)
+	}
+
+	retryBaseMs := parsePositiveIntAllowZero(k.String("RETRY_BASE_MS"), 200)
+	queueBackoffBaseMs := parsePositiveIntAllowZero(k.String("QUEUE_BACKOFF_BASE_MS"), 0)
+	if queueBackoffBaseMs <= 0 {
+		queueBackoffBaseMs = retryBaseMs
+	}
+	queueJitter := parseFloatAllowZero(k.String("QUEUE_BACKOFF_JITTER_PCT"), 0)
+	if queueJitter <= 0 {
+		queueJitter = parseFloatAllowZero(k.String("RETRY_JITTER_PCT"), 0.2)
 	}
 
 	cfg := &Config{
@@ -200,19 +217,26 @@ func Load() (*Config, error) {
 		CircuitWebhookMinReq:       parsePositiveIntAllowZero(k.String("CB_WEBHOOK_MIN_REQUESTS"), 5),
 		CircuitWebhookFailureRate:  parseFloatAllowZero(k.String("CB_WEBHOOK_FAILURE_RATE_THRESHOLD"), 0.5),
 		CircuitWebhookOpenFor:      time.Duration(parsePositiveIntAllowZero(k.String("CB_WEBHOOK_OPEN_SEC"), 30)) * time.Second,
-		RetryBase:                  time.Duration(parsePositiveIntAllowZero(k.String("RETRY_BASE_MS"), 200)) * time.Millisecond,
+		RetryBase:                  time.Duration(retryBaseMs) * time.Millisecond,
 		RetryMaxAttempts:           parsePositiveIntAllowZero(k.String("RETRY_MAX_ATTEMPTS"), 5),
 		RetryJitterPercent:         parseFloatAllowZero(k.String("RETRY_JITTER_PCT"), 0.2),
 		OutboundTimeout:            time.Duration(parsePositiveIntAllowZero(k.String("OUTBOUND_TIMEOUT_MS"), 5000)) * time.Millisecond,
 		QueueVisibilityTimeout:     time.Duration(parsePositiveIntAllowZero(k.String("QUEUE_VISIBILITY_TIMEOUT_SEC"), 60)) * time.Second,
+		QueueMaxAttempts:           parsePositiveIntAllowZero(k.String("QUEUE_MAX_ATTEMPTS"), 8),
+		QueueBackoffBase:           time.Duration(queueBackoffBaseMs) * time.Millisecond,
+		QueueBackoffJitter:         queueJitter,
+		QueueDLQRetentionDays:      parsePositiveIntAllowZero(k.String("QUEUE_DLQ_RETENTION_DAYS"), 7),
 		QueueConcurrencyWebhook:    parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_WEBHOOK"), 16),
 		QueueConcurrencyEmail:      parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_EMAIL"), 8),
 		QueueConcurrencyAnalytics:  parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_ANALYTICS"), 4),
 		LockTTL:                    time.Duration(parsePositiveIntAllowZero(k.String("LOCK_TTL_SEC"), 45)) * time.Second,
 		LockRetryBackoff:           time.Duration(parsePositiveIntAllowZero(k.String("LOCK_RETRY_MS"), 80)) * time.Millisecond,
 		WorkerShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("WORKER_SHUTDOWN_GRACE_SEC"), 25)) * time.Second,
+		WorkerHeartbeatInterval:    time.Duration(parsePositiveIntAllowZero(k.String("WORKER_HEARTBEAT_SEC"), 5)) * time.Second,
+		WorkerJobSoftDeadline:      time.Duration(parsePositiveIntAllowZero(k.String("WORKER_JOB_SOFT_DEADLINE_SEC"), 20)) * time.Second,
 		APIMaxShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("API_MAX_SHUTDOWN_GRACE_SEC"), 15)) * time.Second,
 		EnableAPIEmbeddedWorkers:   parseBoolWithDefault(k.String("ENABLE_API_EMBEDDED_WORKERS"), false),
+		AdminDLQPageSize:           parsePositiveIntAllowZero(k.String("ADMIN_DLQ_PAGE_SIZE"), 50),
 	}
 
 	if cfg.VoucherMaxStack < 1 {
@@ -272,6 +296,30 @@ func Load() (*Config, error) {
 	}
 	if cfg.QueueConcurrencyAnalytics <= 0 {
 		cfg.QueueConcurrencyAnalytics = 1
+	}
+	if cfg.QueueMaxAttempts <= 0 {
+		cfg.QueueMaxAttempts = 8
+	}
+	if cfg.QueueBackoffBase <= 0 {
+		cfg.QueueBackoffBase = cfg.RetryBase
+	}
+	if cfg.QueueBackoffJitter <= 0 {
+		cfg.QueueBackoffJitter = cfg.RetryJitterPercent
+	}
+	if cfg.QueueDLQRetentionDays <= 0 {
+		cfg.QueueDLQRetentionDays = 7
+	}
+	if cfg.WorkerHeartbeatInterval <= 0 {
+		cfg.WorkerHeartbeatInterval = 5 * time.Second
+	}
+	if cfg.WorkerJobSoftDeadline <= 0 {
+		cfg.WorkerJobSoftDeadline = cfg.QueueVisibilityTimeout / 2
+		if cfg.WorkerJobSoftDeadline <= 0 {
+			cfg.WorkerJobSoftDeadline = 20 * time.Second
+		}
+	}
+	if cfg.AdminDLQPageSize <= 0 {
+		cfg.AdminDLQPageSize = 50
 	}
 	if cfg.NotifyEmailTopics == nil {
 		cfg.NotifyEmailTopics = parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true)

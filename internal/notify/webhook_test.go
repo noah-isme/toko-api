@@ -50,6 +50,7 @@ func TestSignatureAndHeaders(t *testing.T) {
 			Breaker:     resilience.NewBreaker(1, 1, time.Second),
 			MaxAttempts: 1,
 			Timeout:     time.Second,
+			Target:      "webhook-delivery",
 		},
 		Enabled: true,
 	}
@@ -187,6 +188,7 @@ func TestRetryAndDLQ(t *testing.T) {
 			Breaker:     resilience.NewBreaker(1, 1, time.Second),
 			MaxAttempts: 1,
 			Timeout:     time.Second,
+			Target:      "webhook-delivery",
 		},
 		BackoffBaseSec:     3,
 		DefaultMaxAttempts: 2,
@@ -274,6 +276,7 @@ func TestIdempotencyUniqueDelivery(t *testing.T) {
 			Breaker:     resilience.NewBreaker(1, 1, time.Second),
 			MaxAttempts: 1,
 			Timeout:     time.Second,
+			Target:      "webhook-delivery",
 		},
 		Enabled: true,
 	}

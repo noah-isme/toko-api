@@ -250,7 +250,7 @@ func main() {
 	}
 
 	notifyStore := notify.NewStore(queries)
-	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL}
+	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL, MaxAttempts: cfg.QueueMaxAttempts}
 	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
 		Store: notifyStore,
@@ -261,6 +261,8 @@ func main() {
 			MaxAttempts: cfg.RetryMaxAttempts,
 			Jitter:      cfg.RetryJitterPercent,
 			Timeout:     cfg.OutboundTimeout,
+			Target:      "webhook-delivery",
+			Logger:      &logger,
 		},
 		Queue:              taskQueue,
 		BackoffBaseSec:     cfg.WebhookBackoffBaseSec,
@@ -294,6 +296,13 @@ func main() {
 	orderHandler := &order.Handler{Q: queries}
 	orderAdmin := &order.AdminHandler{Q: queries}
 	notifyAdmin := &notify.AdminHandler{Store: notifyStore, Disp: dispatcher}
+	queueAdmin := &queue.AdminHandler{
+		Store:             queue.NewStore(pool),
+		Queue:             taskQueue,
+		PageSize:          cfg.AdminDLQPageSize,
+		Logger:            logger,
+		VisibilityTimeout: cfg.QueueVisibilityTimeout,
+	}
 
 	var shipProvider shipping.Provider
 	switch cfg.ShippingProvider {
@@ -595,6 +604,9 @@ func main() {
 			admin.Delete("/webhooks/{id}", notifyAdmin.DeleteEndpoint)
 			admin.Get("/webhook-deliveries", notifyAdmin.ListDeliveries)
 			admin.Post("/webhook-deliveries/{id}/replay", notifyAdmin.ReplayDelivery)
+			admin.Get("/queue/dlq", queueAdmin.ListDLQ)
+			admin.Post("/queue/dlq/replay", queueAdmin.ReplayDLQ)
+			admin.Get("/queue/stats", queueAdmin.Stats)
 			admin.Get("/audit-logs", auditHandler.List)
 		})
 

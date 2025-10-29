@@ -47,7 +47,7 @@ func main() {
 	}()
 
 	notifyStore := notify.NewStore(queries)
-	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL}
+	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL, MaxAttempts: cfg.QueueMaxAttempts}
 	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
 		Store: notifyStore,
@@ -58,6 +58,8 @@ func main() {
 			MaxAttempts: cfg.RetryMaxAttempts,
 			Jitter:      cfg.RetryJitterPercent,
 			Timeout:     cfg.OutboundTimeout,
+			Target:      "webhook-delivery",
+			Logger:      &logger,
 		},
 		Queue:              taskQueue,
 		BackoffBaseSec:     cfg.WebhookBackoffBaseSec,
@@ -79,8 +81,12 @@ func main() {
 		Kind:              notify.WebhookDeliveryTask(),
 		Concurrency:       cfg.QueueConcurrencyWebhook,
 		VisibilityTimeout: cfg.QueueVisibilityTimeout,
-		RetryBase:         cfg.RetryBase,
-		RetryJitter:       cfg.RetryJitterPercent,
+		RetryBase:         cfg.QueueBackoffBase,
+		RetryJitter:       cfg.QueueBackoffJitter,
+		Store:             queue.NewStore(pool),
+		HeartbeatInterval: cfg.WorkerHeartbeatInterval,
+		SoftDeadline:      cfg.WorkerJobSoftDeadline,
+		Logger:            &logger,
 		Handler: func(jobCtx context.Context, task queue.Task) error {
 			return deliveryWorker.Handle(jobCtx, task.Payload)
 		},

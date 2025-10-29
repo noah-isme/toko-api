@@ -329,6 +329,7 @@ func (d *Dispatcher) httpClient() *resilience.HTTPClient {
 		MaxAttempts: 3,
 		Jitter:      0.2,
 		Timeout:     base.Timeout,
+		Target:      "webhook-delivery",
 	}
 	return d.HTTP
 }

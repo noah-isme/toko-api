@@ -1,0 +1,35 @@
+groups:
+  - name: queue-breaker
+    rules:
+      - alert: HighQueueFailureRate
+        expr: sum(rate(queue_processed_total{status!="success"}[5m])) / sum(rate(queue_processed_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High queue failure rate"
+          description: "More than 5% of processed jobs for {{ $labels.kind }} are failing or retrying."
+      - alert: DLQSizeHighWarn
+        expr: sum(queue_dlq_size) > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ size elevated"
+          description: "Queue DLQ contains over 50 items across all kinds."
+      - alert: DLQSizeHighCrit
+        expr: sum(queue_dlq_size) > 200
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ size critical"
+          description: "Queue DLQ contains over 200 items; investigate stalled workers or downstream outages."
+      - alert: BreakerOpenTooLong
+        expr: max_over_time(breaker_state==1[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open"
+          description: "Breaker {{ $labels.target }} has been open for more than 15 minutes."

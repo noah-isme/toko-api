@@ -8,6 +8,10 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
 - **Grafana dashboards**: import JSON definitions from [`deploy/grafana/dashboards`](deploy/grafana/dashboards) (`overview`, `api`, `db_redis`, `webhook`). Each uses auto interval and descriptive legends.
 - **Load tests**: scenarios under [`perf/k6`](perf/k6) with execution guidance in [`perf/README.md`](perf/README.md). CI smoke runs via the `perf-smoke` workflow and fails if latency or error budgets regress.
 
+## Operability
+- Queue & breaker metrics diekspos melalui dashboard [`queue_breaker.json`](deploy/grafana/dashboards/queue_breaker.json) dan alert Prometheus [`alerts_queue_breaker.yml`](deploy/prometheus/alerts_queue_breaker.yml).
+- Admin DLQ endpoints tersedia di `/api/v1/admin/queue/*` untuk list, replay, dan stats antrean.
+
 ## Operations
 - Database tuning indexes shipped in `migrations/0013_perf_indexes.up.sql`.
 - Connection pool, statement cache, and concurrency guard configurable via environment variables (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME_MIN`, `DB_STATEMENT_CACHE_CAPACITY`, `HTTP_MAX_INFLIGHT`).

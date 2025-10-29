@@ -212,6 +212,61 @@ paths:
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
       summary: Replay a webhook delivery
+  /api/v1/admin/queue/dlq:
+    get:
+      summary: List dead-letter queue items
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: DLQ entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminQueueDLQListResponse'
+  /api/v1/admin/queue/dlq/replay:
+    post:
+      summary: Replay DLQ items
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminQueueReplayRequest'
+      responses:
+        '200':
+          description: Replay result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminQueueReplayResponse'
+  /api/v1/admin/queue/stats:
+    get:
+      summary: Queue depth and DLQ metrics
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Queue stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminQueueStatsResponse'
   /api/v1/admin/audit-logs:
     get:
       summary: List audit logs (admin)
@@ -248,4 +303,83 @@ paths:
   /api/v1/webhooks/payment/{provider}:
     post:
       summary: Payment webhook receiver
-components: {}
+components:
+  schemas:
+    AdminQueueDLQItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        idempotencyKey:
+          type: string
+        attempts:
+          type: integer
+        lastError:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        message:
+          type: object
+          additionalProperties: true
+    AdminQueueDLQListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminQueueDLQItem'
+        total:
+          type: integer
+        kind:
+          type: string
+          nullable: true
+    AdminQueueReplayRequest:
+      type: object
+      description: Provide a list of item IDs or a queue kind to replay.
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        kind:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+      example:
+        ids: []
+        kind: webhook-delivery
+        limit: 20
+    AdminQueueReplayResponse:
+      type: object
+      properties:
+        replayed:
+          type: array
+          items:
+            type: string
+            format: uuid
+        failed:
+          type: object
+          additionalProperties:
+            type: string
+    AdminQueueStatsResponse:
+      type: object
+      properties:
+        kind:
+          type: string
+        ready:
+          type: integer
+        processing:
+          type: integer
+        dlq:
+          type: integer
+        oldest_lag_ms:
+          type: integer
+        visibility_timeout:
+          type: number

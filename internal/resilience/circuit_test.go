@@ -1,8 +1,9 @@
 package resilience_test
 
 import (
-	"testing"
-	"time"
+        "context"
+        "testing"
+        "time"
 
 	"github.com/stretchr/testify/require"
 
@@ -10,19 +11,20 @@ import (
 )
 
 func TestBreakerTransitions(t *testing.T) {
-	breaker := resilience.NewBreaker(2, 0.5, 50*time.Millisecond)
+        breaker := resilience.NewBreaker(2, 0.5, 50*time.Millisecond)
+        ctx := context.Background()
 
-	require.True(t, breaker.Allow())
-	breaker.Report(false)
-	require.True(t, breaker.Allow())
-	breaker.Report(false)
+        require.True(t, breaker.Allow(ctx))
+        breaker.Report(ctx, false)
+        require.True(t, breaker.Allow(ctx))
+        breaker.Report(ctx, false)
 
-	require.False(t, breaker.Allow(), "breaker should open after threshold exceeded")
+        require.False(t, breaker.Allow(ctx), "breaker should open after threshold exceeded")
 
-	time.Sleep(60 * time.Millisecond)
-	require.True(t, breaker.Allow(), "breaker should move to half-open after cool off")
-	breaker.Report(true)
-	require.True(t, breaker.Allow(), "breaker should close after successful probe")
+        time.Sleep(60 * time.Millisecond)
+        require.True(t, breaker.Allow(ctx), "breaker should move to half-open after cool off")
+        breaker.Report(ctx, true)
+        require.True(t, breaker.Allow(ctx), "breaker should close after successful probe")
 }
 
 func TestBackoffWithJitter(t *testing.T) {
