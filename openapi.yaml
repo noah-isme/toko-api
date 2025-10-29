@@ -17,6 +17,10 @@ info:
     **Load Testing**
     - k6 scenarios under `perf/k6` with smoke/baseline guidance in `perf/README.md`.
 
+    **Degradation Behaviour**
+    - Payment and shipping circuits return HTTP 503 with standard error schema when breakers open.
+    - Webhook retries back off and land in the DLQ once max attempts are exhausted.
+
 paths:
   /health/live:
     get:

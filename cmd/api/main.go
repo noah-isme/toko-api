@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -36,7 +38,9 @@ import (
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/payment"
+	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
+	"github.com/noah-isme/backend-toko/internal/resilience"
 	"github.com/noah-isme/backend-toko/internal/security"
 	"github.com/noah-isme/backend-toko/internal/shipping"
 	"github.com/noah-isme/backend-toko/internal/user"
@@ -246,9 +250,19 @@ func main() {
 	}
 
 	notifyStore := notify.NewStore(queries)
+	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL}
+	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
-		Store:              notifyStore,
-		Client:             notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS),
+		Store: notifyStore,
+		HTTP: &resilience.HTTPClient{
+			Client:      webhookHTTPClient,
+			Breaker:     resilience.NewBreaker(cfg.CircuitWebhookMinReq, cfg.CircuitWebhookFailureRate, cfg.CircuitWebhookOpenFor),
+			BaseBackoff: cfg.RetryBase,
+			MaxAttempts: cfg.RetryMaxAttempts,
+			Jitter:      cfg.RetryJitterPercent,
+			Timeout:     cfg.OutboundTimeout,
+		},
+		Queue:              taskQueue,
 		BackoffBaseSec:     cfg.WebhookBackoffBaseSec,
 		DefaultMaxAttempts: cfg.WebhookDefaultMaxAttempts,
 		Enabled:            cfg.WebhookDeliveryEnabled,
@@ -605,28 +619,31 @@ func main() {
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
 
-	if cfg.WebhookDeliveryEnabled {
-		for i := 0; i < cfg.EventWorkerConcurrency; i++ {
-			go func() {
-				ticker := time.NewTicker(2 * time.Second)
-				defer ticker.Stop()
-				for range ticker.C {
-					if err := dispatcher.WorkOnce(context.Background(), 50); err != nil {
-						logger.Error().Err(err).Msg("dispatch webhook")
-					}
-				}
-			}()
-		}
-	}
-
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr(),
 		Handler: r,
 	}
 
+	health.SetReady(true)
 	logger.Info().Str("addr", srv.Addr).Msg("server starting")
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Fatal().Err(err).Msg("server exited unexpectedly")
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatal().Err(err).Msg("server exited unexpectedly")
+		}
+	}()
+
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	<-shutdownCtx.Done()
+	health.SetReady(false)
+	ctxTimeout := cfg.APIMaxShutdownGrace
+	if ctxTimeout <= 0 {
+		ctxTimeout = 15 * time.Second
+	}
+	shutdownTimeout, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownTimeout); err != nil {
+		logger.Error().Err(err).Msg("server shutdown")
 	}
 }
 

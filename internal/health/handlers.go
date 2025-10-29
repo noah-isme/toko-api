@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,17 @@ type Handler struct {
 	RedisTimeout time.Duration
 }
 
+var ready atomic.Bool
+
+func init() {
+	ready.Store(true)
+}
+
+// SetReady updates the readiness flag used by Ready handler.
+func SetReady(v bool) {
+	ready.Store(v)
+}
+
 // Live reports liveness status.
 func (h Handler) Live(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -29,6 +41,10 @@ func (h Handler) Live(w http.ResponseWriter, _ *http.Request) {
 
 // Ready reports readiness based on dependency probes.
 func (h Handler) Ready(w http.ResponseWriter, r *http.Request) {
+	if !ready.Load() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
 	if h.Checker == nil {
 		http.Error(w, "dependencies unavailable", http.StatusServiceUnavailable)
 		return

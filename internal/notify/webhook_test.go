@@ -17,6 +17,7 @@ import (
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/notify"
+	"github.com/noah-isme/backend-toko/internal/resilience"
 )
 
 func toUUID(u uuid.UUID) pgtype.UUID {
@@ -43,7 +44,15 @@ func TestSignatureAndHeaders(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	dispatcher := &notify.Dispatcher{Client: srv.Client(), Enabled: true}
+	dispatcher := &notify.Dispatcher{
+		HTTP: &resilience.HTTPClient{
+			Client:      srv.Client(),
+			Breaker:     resilience.NewBreaker(1, 1, time.Second),
+			MaxAttempts: 1,
+			Timeout:     time.Second,
+		},
+		Enabled: true,
+	}
 	endpoint := dbgen.WebhookEndpoint{Url: srv.URL, Secret: "secret", ID: toUUID(uuid.New())}
 	event := dbgen.DomainEvent{
 		ID:         toUUID(uuid.New()),
@@ -172,8 +181,13 @@ func TestRetryAndDLQ(t *testing.T) {
 	}
 
 	dispatcher := &notify.Dispatcher{
-		Store:              store,
-		Client:             srv.Client(),
+		Store: store,
+		HTTP: &resilience.HTTPClient{
+			Client:      srv.Client(),
+			Breaker:     resilience.NewBreaker(1, 1, time.Second),
+			MaxAttempts: 1,
+			Timeout:     time.Second,
+		},
 		BackoffBaseSec:     3,
 		DefaultMaxAttempts: 2,
 		Enabled:            true,
@@ -214,12 +228,12 @@ func (s *scheduleStore) ListActiveEndpointsForTopic(context.Context, string) ([]
 	return s.endpoints, nil
 }
 
-func (s *scheduleStore) EnqueueDelivery(context.Context, dbgen.EnqueueDeliveryParams) (dbgen.WebhookDelivery, error) {
+func (s *scheduleStore) EnqueueDelivery(_ context.Context, arg dbgen.EnqueueDeliveryParams) (dbgen.WebhookDelivery, error) {
 	s.enqueued++
 	if s.enqueued == 1 {
 		return dbgen.WebhookDelivery{}, &pgconn.PgError{Code: "23505"}
 	}
-	return dbgen.WebhookDelivery{}, nil
+	return dbgen.WebhookDelivery{ID: toUUID(uuid.New()), MaxAttempt: arg.MaxAttempt}, nil
 }
 
 func (s *scheduleStore) DequeueDueDeliveries(context.Context, int32) ([]dbgen.WebhookDelivery, error) {
@@ -253,7 +267,16 @@ func (s *scheduleStore) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.Doma
 
 func TestIdempotencyUniqueDelivery(t *testing.T) {
 	store := &scheduleStore{endpoints: []dbgen.WebhookEndpoint{{ID: toUUID(uuid.New())}, {ID: toUUID(uuid.New())}}}
-	dispatcher := &notify.Dispatcher{Store: store, Enabled: true}
+	dispatcher := &notify.Dispatcher{
+		Store: store,
+		HTTP: &resilience.HTTPClient{
+			Client:      http.DefaultClient,
+			Breaker:     resilience.NewBreaker(1, 1, time.Second),
+			MaxAttempts: 1,
+			Timeout:     time.Second,
+		},
+		Enabled: true,
+	}
 	event := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.created"}
 
 	err := dispatcher.Schedule(context.Background(), event)
