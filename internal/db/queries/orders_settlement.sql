@@ -1,5 +1,5 @@
 -- name: ListOrderItemsForStock :many
-SELECT product_id, variant_id, qty
+SELECT product_id, variant_id, qty, slug
 FROM order_items
 WHERE order_id = $1;
 

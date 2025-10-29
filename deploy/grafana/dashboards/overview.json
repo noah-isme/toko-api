@@ -1,0 +1,80 @@
+{
+  "id": null,
+  "uid": "toko-overview",
+  "title": "Backend Toko - Overview",
+  "tags": ["toko", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP Latency p50/p95",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(toko_http_request_duration_ms_bucket[$__interval])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(toko_http_request_duration_ms_bucket[$__interval])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Error Rate",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "percent"}},
+      "targets": [
+        {
+          "expr": "sum(rate(toko_http_requests_total{status=~\"5..\"}[$__interval])) / sum(rate(toko_http_requests_total[$__interval]))",
+          "legendFormat": "5xx ratio"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "In-flight Requests",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "toko_http_in_flight_requests",
+          "legendFormat": "in-flight"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"legend": {"displayMode": "hidden"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "sum(rate(toko_http_requests_total[$__interval]))",
+          "legendFormat": "RPS"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "req/s"}},
+      "options": {"legend": {"displayMode": "hidden"}}
+    }
+  ]
+}

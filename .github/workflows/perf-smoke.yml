@@ -1,0 +1,94 @@
+name: perf-smoke
+
+on:
+  pull_request:
+
+jobs:
+  k6-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: toko
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/toko?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: smoke-secret
+      MIDTRANS_SERVER_KEY: stub
+      MIDTRANS_CLIENT_KEY: stub
+      XENDIT_SECRET_KEY: stub
+      PAYMENT_PROVIDER: midtrans
+      PAYMENT_CALLBACK_BASE_URL: http://localhost:8080
+      PUBLIC_BASE_URL: http://localhost:3000
+      REDIS_CACHE_PREFIX: cache
+      CATALOG_CACHE_TTL_SEC: 120
+      ANALYTICS_CACHE_TTL_SEC: 90
+      HTTP_MAX_INFLIGHT: 200
+      BASE_URL: http://localhost:8080
+      VUS: 20
+      DURATION: 45s
+      HTTP_P95: 250
+      HTTP_P99: 400
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download dependencies
+        run: go mod download
+      - name: Install migrate
+        run: go install github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.0
+      - name: Run migrations
+        run: $(go env GOPATH)/bin/migrate -path migrations -database "$DATABASE_URL" up
+      - name: Build API
+        run: go build -o bin/toko-api ./cmd/api
+      - name: Start API server
+        run: |
+          ./bin/toko-api &
+          echo $! > api.pid
+      - name: Wait for API readiness
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8080/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become ready" >&2
+          exit 1
+      - uses: grafana/setup-k6-action@v1
+      - name: Run k6 smoke
+        run: |
+          k6 run perf/k6/read_heavy.js --summary-export perf/smoke.json
+      - name: Budget check
+        run: |
+          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('perf/smoke.json','utf8')); const p95=data.metrics['http_req_duration'].percentiles['95']; const p99=data.metrics['http_req_duration'].percentiles['99']; const errorRate=data.metrics['http_req_failed'].rate; if(p95>250 || p99>400 || errorRate>0.01){console.error('perf budget exceeded', {p95, p99, errorRate}); process.exit(1);}"
+      - name: Stop API server
+        if: always()
+        run: |
+          if [ -f api.pid ]; then kill $(cat api.pid) || true; fi
+      - name: Upload smoke summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-smoke-summary
+          path: perf/smoke.json

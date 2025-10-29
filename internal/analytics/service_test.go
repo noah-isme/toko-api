@@ -34,7 +34,7 @@ func TestSalesRangeCached(t *testing.T) {
 	defer mr.Close()
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	queries := &stubQueries{}
-	svc := &analytics.Service{Q: queries, R: rdb, TTL: time.Minute, DefaultRange: 30}
+	svc := &analytics.Service{Q: queries, R: rdb, TTL: time.Minute, DefaultRange: 30, Prefix: "test"}
 	from := time.Now().Add(-24 * time.Hour).Truncate(24 * time.Hour)
 	to := time.Now().Truncate(24 * time.Hour)
 	if _, err := svc.SalesRange(context.Background(), from, to); err != nil {

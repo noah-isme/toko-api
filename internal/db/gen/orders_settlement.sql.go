@@ -40,7 +40,7 @@ func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, code string) 
 }
 
 const listOrderItemsForStock = `-- name: ListOrderItemsForStock :many
-SELECT product_id, variant_id, qty
+SELECT product_id, variant_id, qty, slug
 FROM order_items
 WHERE order_id = $1
 `
@@ -49,6 +49,7 @@ type ListOrderItemsForStockRow struct {
 	ProductID pgtype.UUID `json:"product_id"`
 	VariantID pgtype.UUID `json:"variant_id"`
 	Qty       int32       `json:"qty"`
+	Slug      string      `json:"slug"`
 }
 
 func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUID) ([]ListOrderItemsForStockRow, error) {
@@ -60,7 +61,7 @@ func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUI
 	var items []ListOrderItemsForStockRow
 	for rows.Next() {
 		var i ListOrderItemsForStockRow
-		if err := rows.Scan(&i.ProductID, &i.VariantID, &i.Qty); err != nil {
+		if err := rows.Scan(&i.ProductID, &i.VariantID, &i.Qty, &i.Slug); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

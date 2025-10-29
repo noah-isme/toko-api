@@ -1,6 +1,7 @@
 package voucher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/noah-isme/backend-toko/internal/analytics"
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
@@ -22,6 +25,8 @@ type Handler struct {
 	Q               dbgen.Querier
 	Svc             *Service
 	DefaultPriority int
+	CatalogCache    *catalog.Cache
+	Analytics       *analytics.Service
 }
 
 type voucherPayload struct {
@@ -71,7 +76,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	voucher, err := h.Q.CreateVoucher(r.Context(), params)
+	ctx := r.Context()
+	voucher, err := h.Q.CreateVoucher(ctx, params)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -81,6 +87,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to create voucher", nil)
 		return
 	}
+	h.invalidateCaches(ctx)
 	common.JSON(w, http.StatusCreated, map[string]any{"data": voucher})
 }
 
@@ -105,7 +112,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	voucher, err := h.Q.UpdateVoucher(r.Context(), params)
+	ctx := r.Context()
+	voucher, err := h.Q.UpdateVoucher(ctx, params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "voucher not found", nil)
@@ -114,6 +122,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to update voucher", nil)
 		return
 	}
+	h.invalidateCaches(ctx)
 	common.JSON(w, http.StatusOK, map[string]any{"data": voucher})
 }
 
@@ -302,4 +311,16 @@ func uuidFromString(value string) (uuid.UUID, error) {
 		return uuid.UUID{}, err
 	}
 	return parsed, nil
+}
+
+func (h *Handler) invalidateCaches(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	if h.CatalogCache != nil {
+		h.CatalogCache.InvalidateList(ctx)
+	}
+	if h.Analytics != nil {
+		h.Analytics.Clear(ctx)
+	}
 }

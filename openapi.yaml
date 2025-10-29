@@ -2,6 +2,21 @@ openapi: 3.1.0
 info:
   title: Backend Toko API
   version: 0.2.0
+  description: |
+    Backend for catalogue, checkout, and webhook flows.
+
+    **SLOs**
+    - Public HTTP endpoints: p95 latency < ${PERF_SLO_HTTP_P95_MS} ms (rolling 5 minutes), error rate < ${PERF_SLO_HTTP_ERROR_RATE}.
+    - Webhook dispatch: p99 latency < ${PERF_SLO_WEBHOOK_P99_MS} ms.
+
+    **Observability**
+    - Prometheus metrics at `/metrics` (namespace `toko`).
+    - Alert rules defined in `deploy/prometheus/alerts.yml`.
+    - Grafana dashboards located in `deploy/grafana/dashboards/`.
+
+    **Load Testing**
+    - k6 scenarios under `perf/k6` with smoke/baseline guidance in `perf/README.md`.
+
 paths:
   /health/live:
     get:

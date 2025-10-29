@@ -1,0 +1,71 @@
+{
+  "id": null,
+  "uid": "toko-db-redis",
+  "title": "DB & Redis",
+  "tags": ["toko", "database"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "DB Connections (acquired vs idle)",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {"expr": "db_pool_acquired_conns", "legendFormat": "acquired"},
+        {"expr": "db_pool_idle_conns", "legendFormat": "idle"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "conn"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "DB Pool Saturation",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "percent"}},
+      "targets": [
+        {"expr": "db_pool_in_use_ratio * 100", "legendFormat": "in-use %"}
+      ],
+      "options": {"legend": {"displayMode": "hidden"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis Command Errors",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "rate(redis_client_errors_total[$__interval])",
+          "legendFormat": "errors/s"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "options": {"legend": {"displayMode": "hidden"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis Ops",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "sum(rate(redis_commands_processed_total[$__interval]))",
+          "legendFormat": "ops/s"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops/s"}},
+      "options": {"legend": {"displayMode": "hidden"}}
+    }
+  ]
+}
