@@ -12,3 +12,10 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
 - Database tuning indexes shipped in `migrations/0013_perf_indexes.up.sql`.
 - Connection pool, statement cache, and concurrency guard configurable via environment variables (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME_MIN`, `DB_STATEMENT_CACHE_CAPACITY`, `HTTP_MAX_INFLIGHT`).
 - Redis cache prefix & TTLs adjustable (`REDIS_CACHE_PREFIX`, `CATALOG_CACHE_TTL_SEC`, `ANALYTICS_CACHE_TTL_SEC`).
+
+## Scalability & Resilience
+- Outbound Payment, Shipping, and Webhook clients run through circuit breakers with jittered retries and request timeouts.
+- Background workers run in `cmd/worker` for webhook, email, and analytics tasks; the API only publishes jobs.
+- Redis-backed distributed locks guard idempotent delivery and settlement replay flows.
+- Graceful shutdown toggles readiness and drains inflight HTTP requests and queue jobs.
+- Chaos playbooks live under `perf/chaos` to rehearse provider, Redis, and DB failure scenarios.

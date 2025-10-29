@@ -27,12 +27,15 @@ import (
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/obs"
+	"github.com/noah-isme/backend-toko/internal/queue"
+	"github.com/noah-isme/backend-toko/internal/resilience"
 )
 
 // Dispatcher coordinates webhook scheduling and delivery.
 type Dispatcher struct {
 	Store              Store
-	Client             *http.Client
+	HTTP               *resilience.HTTPClient
+	Queue              queue.Enqueuer
 	BackoffBaseSec     int
 	DefaultMaxAttempts int
 	Enabled            bool
@@ -58,7 +61,7 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 		if maxAttempt <= 0 {
 			maxAttempt = 6
 		}
-		_, err := d.Store.EnqueueDelivery(ctx, dbgen.EnqueueDeliveryParams{
+		delivery, err := d.Store.EnqueueDelivery(ctx, dbgen.EnqueueDeliveryParams{
 			EndpointID: ep.ID,
 			EventID:    event.ID,
 			MaxAttempt: int32(maxAttempt),
@@ -69,6 +72,10 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 				continue
 			}
 			joined = errors.Join(joined, fmt.Errorf("enqueue delivery for %s: %w", uuidFrom(ep.ID), err))
+			continue
+		}
+		if err := d.EnqueueDelivery(ctx, uuidFrom(delivery.ID), 0, int(delivery.MaxAttempt)); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("queue delivery %s: %w", uuidFrom(delivery.ID), err))
 		}
 	}
 	return joined
@@ -92,74 +99,106 @@ func (d *Dispatcher) WorkOnce(ctx context.Context, batch int32) error {
 		return err
 	}
 	for _, del := range deliveries {
-		if obs.WebhookDispatchAttempts != nil {
-			obs.WebhookDispatchAttempts.Inc()
+		if err := d.processDelivery(ctx, del); err != nil {
+			span.RecordError(err)
 		}
-		attemptStart := time.Now()
-		if err := d.Store.MarkDelivering(ctx, del.ID); err != nil {
-			continue
-		}
-		endpoint, err := d.Store.GetWebhookEndpoint(ctx, del.EndpointID)
-		if err != nil {
-			_ = d.failDelivery(ctx, del, fmt.Errorf("load endpoint: %w", err))
-			continue
-		}
-		event, err := d.Store.GetDomainEvent(ctx, del.EventID)
-		if err != nil {
-			_ = d.failDelivery(ctx, del, fmt.Errorf("load event: %w", err))
-			continue
-		}
-		status, respBody, deliverErr := d.deliver(ctx, endpoint, event, del)
-		if deliverErr == nil && status >= 200 && status < 300 {
-			if obs.WebhookDeliveriesTotal != nil {
-				obs.WebhookDeliveriesTotal.WithLabelValues("delivered").Inc()
-			}
-			if obs.WebhookAttemptLatency != nil {
-				obs.WebhookAttemptLatency.WithLabelValues("delivered").Observe(obs.DurationMillis(time.Since(attemptStart)))
-			}
-			statusVal := pgtype.Int4{}
-			if status > 0 {
-				statusVal = pgtype.Int4{Int32: int32(status), Valid: true}
-			}
-			bodyVal := pgtype.Text{}
-			if respBody != "" {
-				bodyVal = pgtype.Text{String: respBody, Valid: true}
-			}
-			if err := d.Store.MarkDelivered(ctx, dbgen.MarkDeliveredParams{
-				ResponseStatus: statusVal,
-				ResponseBody:   bodyVal,
-				ID:             del.ID,
-			}); err != nil {
-				return err
-			}
-			continue
-		}
-		reason := fmt.Sprintf("status=%d err=%v", status, deliverErr)
-		reasonText := pgtype.Text{String: reason, Valid: true}
-		if int(del.Attempt+1) >= int(del.MaxAttempt) {
-			if obs.WebhookDeliveriesTotal != nil {
-				obs.WebhookDeliveriesTotal.WithLabelValues("dlq").Inc()
-			}
-			if obs.WebhookAttemptLatency != nil {
-				obs.WebhookAttemptLatency.WithLabelValues("dlq").Observe(obs.DurationMillis(time.Since(attemptStart)))
-			}
-			if obs.WebhookDispatchDLQ != nil {
-				obs.WebhookDispatchDLQ.Inc()
-			}
-			_ = d.Store.MoveToDLQ(ctx, dbgen.MoveToDLQParams{LastError: reasonText, ID: del.ID})
-			_, _ = d.Store.InsertWebhookDlq(ctx, dbgen.InsertWebhookDlqParams{DeliveryID: del.ID, Reason: reasonText})
-			continue
-		}
-		if obs.WebhookDeliveriesTotal != nil {
-			obs.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
-		}
-		if obs.WebhookAttemptLatency != nil {
-			obs.WebhookAttemptLatency.WithLabelValues("failed").Observe(obs.DurationMillis(time.Since(attemptStart)))
-		}
-		delay := d.nextDelay(del.Attempt)
-		_ = d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID})
 	}
 	return nil
+}
+
+// DeliverByID processes a single delivery, re-enqueuing it when backoff applies.
+func (d *Dispatcher) DeliverByID(ctx context.Context, deliveryID string) error {
+	if d == nil || d.Store == nil {
+		return errors.New("dispatcher not configured")
+	}
+	parsed, err := uuid.Parse(strings.TrimSpace(deliveryID))
+	if err != nil {
+		return fmt.Errorf("invalid delivery id: %w", err)
+	}
+	var id pgtype.UUID
+	id.Bytes = [16]byte(parsed)
+	id.Valid = true
+	delivery, err := d.Store.GetDeliveryByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if delivery.Status == dbgen.DeliveryStatusDELIVERED || delivery.Status == dbgen.DeliveryStatusDLQ {
+		return nil
+	}
+	if delivery.NextAttemptAt.Valid && delivery.NextAttemptAt.Time.After(time.Now()) {
+		return d.EnqueueDelivery(ctx, deliveryID, time.Until(delivery.NextAttemptAt.Time), int(delivery.MaxAttempt))
+	}
+	return d.processDelivery(ctx, delivery)
+}
+
+func (d *Dispatcher) processDelivery(ctx context.Context, del dbgen.WebhookDelivery) error {
+	if d == nil || d.Store == nil {
+		return errors.New("dispatcher not configured")
+	}
+	if obs.WebhookDispatchAttempts != nil {
+		obs.WebhookDispatchAttempts.Inc()
+	}
+	attemptStart := time.Now()
+	if err := d.Store.MarkDelivering(ctx, del.ID); err != nil {
+		return err
+	}
+	endpoint, err := d.Store.GetWebhookEndpoint(ctx, del.EndpointID)
+	if err != nil {
+		return d.failDelivery(ctx, del, fmt.Errorf("load endpoint: %w", err))
+	}
+	event, err := d.Store.GetDomainEvent(ctx, del.EventID)
+	if err != nil {
+		return d.failDelivery(ctx, del, fmt.Errorf("load event: %w", err))
+	}
+	status, respBody, deliverErr := d.deliver(ctx, endpoint, event, del)
+	if deliverErr == nil && status >= 200 && status < 300 {
+		if obs.WebhookDeliveriesTotal != nil {
+			obs.WebhookDeliveriesTotal.WithLabelValues("delivered").Inc()
+		}
+		if obs.WebhookAttemptLatency != nil {
+			obs.WebhookAttemptLatency.WithLabelValues("delivered").Observe(obs.DurationMillis(time.Since(attemptStart)))
+		}
+		statusVal := pgtype.Int4{}
+		if status > 0 {
+			statusVal = pgtype.Int4{Int32: int32(status), Valid: true}
+		}
+		bodyVal := pgtype.Text{}
+		if respBody != "" {
+			bodyVal = pgtype.Text{String: respBody, Valid: true}
+		}
+		return d.Store.MarkDelivered(ctx, dbgen.MarkDeliveredParams{
+			ResponseStatus: statusVal,
+			ResponseBody:   bodyVal,
+			ID:             del.ID,
+		})
+	}
+	reason := fmt.Sprintf("status=%d err=%v", status, deliverErr)
+	reasonText := pgtype.Text{String: reason, Valid: true}
+	if int(del.Attempt+1) >= int(del.MaxAttempt) {
+		if obs.WebhookDeliveriesTotal != nil {
+			obs.WebhookDeliveriesTotal.WithLabelValues("dlq").Inc()
+		}
+		if obs.WebhookAttemptLatency != nil {
+			obs.WebhookAttemptLatency.WithLabelValues("dlq").Observe(obs.DurationMillis(time.Since(attemptStart)))
+		}
+		if obs.WebhookDispatchDLQ != nil {
+			obs.WebhookDispatchDLQ.Inc()
+		}
+		_ = d.Store.MoveToDLQ(ctx, dbgen.MoveToDLQParams{LastError: reasonText, ID: del.ID})
+		_, _ = d.Store.InsertWebhookDlq(ctx, dbgen.InsertWebhookDlqParams{DeliveryID: del.ID, Reason: reasonText})
+		return nil
+	}
+	if obs.WebhookDeliveriesTotal != nil {
+		obs.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
+	}
+	if obs.WebhookAttemptLatency != nil {
+		obs.WebhookAttemptLatency.WithLabelValues("failed").Observe(obs.DurationMillis(time.Since(attemptStart)))
+	}
+	delay := d.nextDelay(del.Attempt)
+	if err := d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID}); err != nil {
+		return err
+	}
+	return d.EnqueueDelivery(ctx, uuidFrom(del.ID), time.Duration(delay)*time.Second, int(del.MaxAttempt))
 }
 
 func (d *Dispatcher) nextDelay(attempt int32) int {
@@ -194,13 +233,14 @@ func (d *Dispatcher) failDelivery(ctx context.Context, del dbgen.WebhookDelivery
 		obs.WebhookDeliveriesTotal.WithLabelValues("failed").Inc()
 	}
 	delay := d.nextDelay(del.Attempt)
-	return d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID})
+	if err := d.Store.MarkFailedWithBackoff(ctx, dbgen.MarkFailedWithBackoffParams{DelaySec: int32(delay), LastError: reasonText, ID: del.ID}); err != nil {
+		return err
+	}
+	return d.EnqueueDelivery(ctx, uuidFrom(del.ID), time.Duration(delay)*time.Second, int(del.MaxAttempt))
 }
 
 func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev dbgen.DomainEvent, del dbgen.WebhookDelivery) (int, string, error) {
-	if d.Client == nil {
-		d.Client = HttpClient(5000, false)
-	}
+	httpClient := d.httpClient()
 	ctx, span := otel.Tracer("notify.Dispatcher").Start(ctx, "Dispatcher.deliver")
 	defer span.End()
 	span.SetAttributes(
@@ -260,7 +300,7 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", ts))
 	req.Header.Set("X-Idempotency-Key", deliveryID)
 	req.Header.Set("X-Signature", ComputeSignature(ep.Secret, ts, eventID, body))
-	resp, err := d.Client.Do(req)
+	resp, err := httpClient.Do(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		return 0, "", err
@@ -275,6 +315,22 @@ func (d *Dispatcher) deliver(ctx context.Context, ep dbgen.WebhookEndpoint, ev d
 	}
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 	return resp.StatusCode, string(responseBody), nil
+}
+
+func (d *Dispatcher) httpClient() *resilience.HTTPClient {
+	if d.HTTP != nil {
+		return d.HTTP
+	}
+	base := HttpClient(5000, false)
+	d.HTTP = &resilience.HTTPClient{
+		Client:      base,
+		Breaker:     resilience.NewBreaker(5, 0.5, 30*time.Second),
+		BaseBackoff: time.Second,
+		MaxAttempts: 3,
+		Jitter:      0.2,
+		Timeout:     base.Timeout,
+	}
+	return d.HTTP
 }
 
 func validateURL(raw string) error {

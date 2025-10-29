@@ -18,70 +18,93 @@ import (
 
 // Config holds application configuration loaded from the environment.
 type Config struct {
-	AppEnv                    string
-	Port                      string
-	DatabaseURL               string
-	RedisURL                  string
-	RedisCachePrefix          string
-	DBMaxOpenConns            int
-	DBMaxIdleConns            int
-	DBConnMaxLifetime         time.Duration
-	DBStatementCacheCapacity  int
-	HTTPMaxInFlight           int
-	JWTSecret                 string
-	JWTIssuer                 string
-	JWTAudience               string
-	JWTClockSkew              time.Duration
-	CORSAllowedOrigins        []string
-	MidtransServerKey         string
-	MidtransClientKey         string
-	MidtransBaseURL           string
-	XenditSecretKey           string
-	XenditBaseURL             string
-	PaymentProvider           string
-	PaymentSandbox            bool
-	PaymentIntentTTL          time.Duration
-	PaymentCallbackBaseURL    string
-	RajaOngkirAPIKey          string
-	ShippingOriginCode        string
-	ShippingTrackReplayTTL    time.Duration
-	ShippingProvider          string
-	ShippingCallbackBaseURL   string
-	NotifyOnShipped           bool
-	NotifyOnOutForDelivery    bool
-	NotifyOnDelivered         bool
-	AccessTokenTTL            time.Duration
-	RefreshTokenTTL           time.Duration
-	PasswordResetTTL          time.Duration
-	RefreshCookieName         string
-	RefreshCookieDomain       string
-	RefreshCookieSecure       bool
-	RefreshCookieSameSite     http.SameSite
-	PublicBaseURL             string
-	CatalogDefaultPage        int
-	CatalogDefaultLimit       int
-	CatalogMaxLimit           int
-	CatalogCacheTTL           time.Duration
-	CartTTL                   time.Duration
-	PricingTaxRateBPS         int
-	CurrencyCode              string
-	CurrencyMinorUnit         int
-	IdempotencyTTL            time.Duration
-	VoucherMaxStack           int
-	VoucherDefaultPriority    int
-	VoucherPerUserLimit       int
-	AnalyticsCacheTTL         time.Duration
-	AnalyticsDefaultRange     int
-	NotifyEmailEnabled        bool
-	NotifyEmailFrom           string
-	NotifyEmailTopics         map[string]bool
-	WebhookDeliveryEnabled    bool
-	WebhookDefaultMaxAttempts int
-	WebhookBackoffBaseSec     int
-	WebhookRequestTimeout     time.Duration
-	WebhookAllowInsecureTLS   bool
-	WebhookReplayTTL          time.Duration
-	EventWorkerConcurrency    int
+	AppEnv                     string
+	Port                       string
+	DatabaseURL                string
+	RedisURL                   string
+	RedisCachePrefix           string
+	QueueRedisPrefix           string
+	DBMaxOpenConns             int
+	DBMaxIdleConns             int
+	DBConnMaxLifetime          time.Duration
+	DBStatementCacheCapacity   int
+	HTTPMaxInFlight            int
+	JWTSecret                  string
+	JWTIssuer                  string
+	JWTAudience                string
+	JWTClockSkew               time.Duration
+	CORSAllowedOrigins         []string
+	MidtransServerKey          string
+	MidtransClientKey          string
+	MidtransBaseURL            string
+	XenditSecretKey            string
+	XenditBaseURL              string
+	PaymentProvider            string
+	PaymentSandbox             bool
+	PaymentIntentTTL           time.Duration
+	PaymentCallbackBaseURL     string
+	RajaOngkirAPIKey           string
+	ShippingOriginCode         string
+	ShippingTrackReplayTTL     time.Duration
+	ShippingProvider           string
+	ShippingCallbackBaseURL    string
+	NotifyOnShipped            bool
+	NotifyOnOutForDelivery     bool
+	NotifyOnDelivered          bool
+	AccessTokenTTL             time.Duration
+	RefreshTokenTTL            time.Duration
+	PasswordResetTTL           time.Duration
+	RefreshCookieName          string
+	RefreshCookieDomain        string
+	RefreshCookieSecure        bool
+	RefreshCookieSameSite      http.SameSite
+	PublicBaseURL              string
+	CatalogDefaultPage         int
+	CatalogDefaultLimit        int
+	CatalogMaxLimit            int
+	CatalogCacheTTL            time.Duration
+	CartTTL                    time.Duration
+	PricingTaxRateBPS          int
+	CurrencyCode               string
+	CurrencyMinorUnit          int
+	IdempotencyTTL             time.Duration
+	VoucherMaxStack            int
+	VoucherDefaultPriority     int
+	VoucherPerUserLimit        int
+	AnalyticsCacheTTL          time.Duration
+	AnalyticsDefaultRange      int
+	NotifyEmailEnabled         bool
+	NotifyEmailFrom            string
+	NotifyEmailTopics          map[string]bool
+	WebhookDeliveryEnabled     bool
+	WebhookDefaultMaxAttempts  int
+	WebhookBackoffBaseSec      int
+	WebhookRequestTimeout      time.Duration
+	WebhookAllowInsecureTLS    bool
+	WebhookReplayTTL           time.Duration
+	EventWorkerConcurrency     int
+	CircuitPaymentMinReq       int
+	CircuitPaymentFailureRate  float64
+	CircuitPaymentOpenFor      time.Duration
+	CircuitShippingMinReq      int
+	CircuitShippingFailureRate float64
+	CircuitShippingOpenFor     time.Duration
+	CircuitWebhookMinReq       int
+	CircuitWebhookFailureRate  float64
+	CircuitWebhookOpenFor      time.Duration
+	RetryBase                  time.Duration
+	RetryMaxAttempts           int
+	RetryJitterPercent         float64
+	OutboundTimeout            time.Duration
+	QueueVisibilityTimeout     time.Duration
+	QueueConcurrencyWebhook    int
+	QueueConcurrencyEmail      int
+	QueueConcurrencyAnalytics  int
+	LockTTL                    time.Duration
+	LockRetryBackoff           time.Duration
+	WorkerShutdownGrace        time.Duration
+	APIMaxShutdownGrace        time.Duration
+	EnableAPIEmbeddedWorkers   bool
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -103,70 +126,93 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AppEnv:                    valueOrDefault(k.String("APP_ENV"), "development"),
-		Port:                      valueOrDefault(k.String("PORT"), "8080"),
-		DatabaseURL:               k.String("DATABASE_URL"),
-		RedisURL:                  k.String("REDIS_URL"),
-		RedisCachePrefix:          strings.TrimSpace(valueOrDefault(k.String("REDIS_CACHE_PREFIX"), "cache")),
-		DBMaxOpenConns:            parsePositiveIntAllowZero(k.String("DB_MAX_OPEN_CONNS"), 40),
-		DBMaxIdleConns:            parsePositiveIntAllowZero(k.String("DB_MAX_IDLE_CONNS"), 10),
-		DBConnMaxLifetime:         time.Duration(parsePositiveIntAllowZero(k.String("DB_CONN_MAX_LIFETIME_MIN"), 30)) * time.Minute,
-		DBStatementCacheCapacity:  parsePositiveIntAllowZero(k.String("DB_STATEMENT_CACHE_CAPACITY"), 256),
-		HTTPMaxInFlight:           parsePositiveIntAllowZero(k.String("HTTP_MAX_INFLIGHT"), 400),
-		JWTSecret:                 k.String("JWT_SECRET"),
-		JWTIssuer:                 strings.TrimSpace(valueOrDefault(k.String("JWT_ISSUER"), "backend-toko")),
-		JWTAudience:               strings.TrimSpace(valueOrDefault(k.String("JWT_AUDIENCE"), "toko-frontend")),
-		JWTClockSkew:              time.Duration(parsePositiveIntAllowZero(k.String("JWT_CLOCK_SKEW_SEC"), 60)) * time.Second,
-		CORSAllowedOrigins:        splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
-		MidtransServerKey:         k.String("MIDTRANS_SERVER_KEY"),
-		MidtransClientKey:         k.String("MIDTRANS_CLIENT_KEY"),
-		MidtransBaseURL:           strings.TrimSpace(k.String("MIDTRANS_BASE_URL")),
-		XenditSecretKey:           k.String("XENDIT_SECRET_KEY"),
-		XenditBaseURL:             strings.TrimSpace(k.String("XENDIT_BASE_URL")),
-		PaymentProvider:           strings.ToLower(valueOrDefault(k.String("PAYMENT_PROVIDER"), "midtrans")),
-		PaymentSandbox:            parseBool(k.String("PAYMENT_SANDBOX")),
-		PaymentIntentTTL:          time.Duration(parsePositiveInt(k.String("PAYMENT_INTENT_EXPIRES_MIN"), 15)) * time.Minute,
-		PaymentCallbackBaseURL:    strings.TrimSpace(k.String("PAYMENT_CALLBACK_BASE_URL")),
-		RajaOngkirAPIKey:          k.String("RAJAONGKIR_API_KEY"),
-		ShippingOriginCode:        valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
-		ShippingTrackReplayTTL:    time.Duration(parsePositiveInt(k.String("SHIPPING_TRACK_REPLAY_TTL_SEC"), 600)) * time.Second,
-		ShippingProvider:          strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir-mock")),
-		ShippingCallbackBaseURL:   strings.TrimSpace(k.String("SHIPPING_CALLBACK_BASE_URL")),
-		NotifyOnShipped:           parseBoolWithDefault(k.String("NOTIFY_ON_SHIPPED"), true),
-		NotifyOnOutForDelivery:    parseBoolWithDefault(k.String("NOTIFY_ON_OUT_FOR_DELIVERY"), true),
-		NotifyOnDelivered:         parseBoolWithDefault(k.String("NOTIFY_ON_DELIVERED"), true),
-		AccessTokenTTL:            parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
-		RefreshTokenTTL:           parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
-		PasswordResetTTL:          parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
-		RefreshCookieName:         valueOrDefault(k.String("REFRESH_COOKIE_NAME"), "rt"),
-		RefreshCookieDomain:       strings.TrimSpace(k.String("REFRESH_COOKIE_DOMAIN")),
-		RefreshCookieSecure:       parseBool(k.String("REFRESH_COOKIE_SECURE")),
-		RefreshCookieSameSite:     parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
-		PublicBaseURL:             strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
-		CatalogDefaultPage:        parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
-		CatalogDefaultLimit:       parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
-		CatalogMaxLimit:           parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
-		CatalogCacheTTL:           time.Duration(catalogTTL) * time.Second,
-		CartTTL:                   time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
-		PricingTaxRateBPS:         parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
-		CurrencyCode:              valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
-		CurrencyMinorUnit:         parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
-		IdempotencyTTL:            time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
-		VoucherMaxStack:           parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
-		VoucherDefaultPriority:    parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
-		VoucherPerUserLimit:       parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
-		AnalyticsCacheTTL:         time.Duration(analyticsTTL) * time.Second,
-		AnalyticsDefaultRange:     parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
-		NotifyEmailEnabled:        parseBoolWithDefault(k.String("NOTIFY_EMAIL_ENABLED"), true),
-		NotifyEmailFrom:           valueOrDefault(k.String("NOTIFY_FROM_EMAIL"), "no-reply@toko.local"),
-		NotifyEmailTopics:         parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true),
-		WebhookDeliveryEnabled:    parseBoolWithDefault(k.String("WEBHOOK_DELIVERY_ENABLED"), true),
-		WebhookDefaultMaxAttempts: parsePositiveIntAllowZero(k.String("WEBHOOK_DEFAULT_MAX_ATTEMPTS"), 6),
-		WebhookBackoffBaseSec:     parsePositiveIntAllowZero(k.String("WEBHOOK_BACKOFF_BASE_SEC"), 5),
-		WebhookRequestTimeout:     time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REQUEST_TIMEOUT_MS"), 5000)) * time.Millisecond,
-		WebhookAllowInsecureTLS:   parseBool(k.String("WEBHOOK_ALLOW_INSECURE_TLS")),
-		WebhookReplayTTL:          time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REPLAY_TTL_SEC"), 600)) * time.Second,
-		EventWorkerConcurrency:    parsePositiveIntAllowZero(k.String("EVENT_WORKER_CONCURRENCY"), 1),
+		AppEnv:                     valueOrDefault(k.String("APP_ENV"), "development"),
+		Port:                       valueOrDefault(k.String("PORT"), "8080"),
+		DatabaseURL:                k.String("DATABASE_URL"),
+		RedisURL:                   k.String("REDIS_URL"),
+		RedisCachePrefix:           strings.TrimSpace(valueOrDefault(k.String("REDIS_CACHE_PREFIX"), "cache")),
+		QueueRedisPrefix:           strings.TrimSpace(valueOrDefault(k.String("QUEUE_REDIS_PREFIX"), "q")),
+		DBMaxOpenConns:             parsePositiveIntAllowZero(k.String("DB_MAX_OPEN_CONNS"), 40),
+		DBMaxIdleConns:             parsePositiveIntAllowZero(k.String("DB_MAX_IDLE_CONNS"), 10),
+		DBConnMaxLifetime:          time.Duration(parsePositiveIntAllowZero(k.String("DB_CONN_MAX_LIFETIME_MIN"), 30)) * time.Minute,
+		DBStatementCacheCapacity:   parsePositiveIntAllowZero(k.String("DB_STATEMENT_CACHE_CAPACITY"), 256),
+		HTTPMaxInFlight:            parsePositiveIntAllowZero(k.String("HTTP_MAX_INFLIGHT"), 400),
+		JWTSecret:                  k.String("JWT_SECRET"),
+		JWTIssuer:                  strings.TrimSpace(valueOrDefault(k.String("JWT_ISSUER"), "backend-toko")),
+		JWTAudience:                strings.TrimSpace(valueOrDefault(k.String("JWT_AUDIENCE"), "toko-frontend")),
+		JWTClockSkew:               time.Duration(parsePositiveIntAllowZero(k.String("JWT_CLOCK_SKEW_SEC"), 60)) * time.Second,
+		CORSAllowedOrigins:         splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
+		MidtransServerKey:          k.String("MIDTRANS_SERVER_KEY"),
+		MidtransClientKey:          k.String("MIDTRANS_CLIENT_KEY"),
+		MidtransBaseURL:            strings.TrimSpace(k.String("MIDTRANS_BASE_URL")),
+		XenditSecretKey:            k.String("XENDIT_SECRET_KEY"),
+		XenditBaseURL:              strings.TrimSpace(k.String("XENDIT_BASE_URL")),
+		PaymentProvider:            strings.ToLower(valueOrDefault(k.String("PAYMENT_PROVIDER"), "midtrans")),
+		PaymentSandbox:             parseBool(k.String("PAYMENT_SANDBOX")),
+		PaymentIntentTTL:           time.Duration(parsePositiveInt(k.String("PAYMENT_INTENT_EXPIRES_MIN"), 15)) * time.Minute,
+		PaymentCallbackBaseURL:     strings.TrimSpace(k.String("PAYMENT_CALLBACK_BASE_URL")),
+		RajaOngkirAPIKey:           k.String("RAJAONGKIR_API_KEY"),
+		ShippingOriginCode:         valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
+		ShippingTrackReplayTTL:     time.Duration(parsePositiveInt(k.String("SHIPPING_TRACK_REPLAY_TTL_SEC"), 600)) * time.Second,
+		ShippingProvider:           strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir-mock")),
+		ShippingCallbackBaseURL:    strings.TrimSpace(k.String("SHIPPING_CALLBACK_BASE_URL")),
+		NotifyOnShipped:            parseBoolWithDefault(k.String("NOTIFY_ON_SHIPPED"), true),
+		NotifyOnOutForDelivery:     parseBoolWithDefault(k.String("NOTIFY_ON_OUT_FOR_DELIVERY"), true),
+		NotifyOnDelivered:          parseBoolWithDefault(k.String("NOTIFY_ON_DELIVERED"), true),
+		AccessTokenTTL:             parseDuration(k.String("ACCESS_TOKEN_TTL"), "15m"),
+		RefreshTokenTTL:            parseDuration(k.String("REFRESH_TOKEN_TTL"), "720h"),
+		PasswordResetTTL:           parseDuration(k.String("PASSWORD_RESET_TTL"), "1h"),
+		RefreshCookieName:          valueOrDefault(k.String("REFRESH_COOKIE_NAME"), "rt"),
+		RefreshCookieDomain:        strings.TrimSpace(k.String("REFRESH_COOKIE_DOMAIN")),
+		RefreshCookieSecure:        parseBool(k.String("REFRESH_COOKIE_SECURE")),
+		RefreshCookieSameSite:      parseSameSite(k.String("REFRESH_COOKIE_SAMESITE")),
+		PublicBaseURL:              strings.TrimSpace(k.String("PUBLIC_BASE_URL")),
+		CatalogDefaultPage:         parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
+		CatalogDefaultLimit:        parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
+		CatalogMaxLimit:            parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
+		CatalogCacheTTL:            time.Duration(catalogTTL) * time.Second,
+		CartTTL:                    time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
+		PricingTaxRateBPS:          parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
+		CurrencyCode:               valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
+		CurrencyMinorUnit:          parsePositiveIntAllowZero(k.String("CURRENCY_MINOR_UNIT"), 0),
+		IdempotencyTTL:             time.Duration(parsePositiveInt(k.String("IDEMPOTENCY_TTL_SEC"), 600)) * time.Second,
+		VoucherMaxStack:            parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
+		VoucherDefaultPriority:     parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
+		VoucherPerUserLimit:        parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
+		AnalyticsCacheTTL:          time.Duration(analyticsTTL) * time.Second,
+		AnalyticsDefaultRange:      parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
+		NotifyEmailEnabled:         parseBoolWithDefault(k.String("NOTIFY_EMAIL_ENABLED"), true),
+		NotifyEmailFrom:            valueOrDefault(k.String("NOTIFY_FROM_EMAIL"), "no-reply@toko.local"),
+		NotifyEmailTopics:          parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true),
+		WebhookDeliveryEnabled:     parseBoolWithDefault(k.String("WEBHOOK_DELIVERY_ENABLED"), true),
+		WebhookDefaultMaxAttempts:  parsePositiveIntAllowZero(k.String("WEBHOOK_DEFAULT_MAX_ATTEMPTS"), 6),
+		WebhookBackoffBaseSec:      parsePositiveIntAllowZero(k.String("WEBHOOK_BACKOFF_BASE_SEC"), 5),
+		WebhookRequestTimeout:      time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REQUEST_TIMEOUT_MS"), 5000)) * time.Millisecond,
+		WebhookAllowInsecureTLS:    parseBool(k.String("WEBHOOK_ALLOW_INSECURE_TLS")),
+		WebhookReplayTTL:           time.Duration(parsePositiveIntAllowZero(k.String("WEBHOOK_REPLAY_TTL_SEC"), 600)) * time.Second,
+		EventWorkerConcurrency:     parsePositiveIntAllowZero(k.String("EVENT_WORKER_CONCURRENCY"), 1),
+		CircuitPaymentMinReq:       parsePositiveIntAllowZero(k.String("CB_PAYMENT_MIN_REQUESTS"), 20),
+		CircuitPaymentFailureRate:  parseFloatAllowZero(k.String("CB_PAYMENT_FAILURE_RATE_THRESHOLD"), 0.5),
+		CircuitPaymentOpenFor:      time.Duration(parsePositiveIntAllowZero(k.String("CB_PAYMENT_OPEN_SEC"), 30)) * time.Second,
+		CircuitShippingMinReq:      parsePositiveIntAllowZero(k.String("CB_SHIPPING_MIN_REQUESTS"), 20),
+		CircuitShippingFailureRate: parseFloatAllowZero(k.String("CB_SHIPPING_FAILURE_RATE_THRESHOLD"), 0.5),
+		CircuitShippingOpenFor:     time.Duration(parsePositiveIntAllowZero(k.String("CB_SHIPPING_OPEN_SEC"), 30)) * time.Second,
+		CircuitWebhookMinReq:       parsePositiveIntAllowZero(k.String("CB_WEBHOOK_MIN_REQUESTS"), 5),
+		CircuitWebhookFailureRate:  parseFloatAllowZero(k.String("CB_WEBHOOK_FAILURE_RATE_THRESHOLD"), 0.5),
+		CircuitWebhookOpenFor:      time.Duration(parsePositiveIntAllowZero(k.String("CB_WEBHOOK_OPEN_SEC"), 30)) * time.Second,
+		RetryBase:                  time.Duration(parsePositiveIntAllowZero(k.String("RETRY_BASE_MS"), 200)) * time.Millisecond,
+		RetryMaxAttempts:           parsePositiveIntAllowZero(k.String("RETRY_MAX_ATTEMPTS"), 5),
+		RetryJitterPercent:         parseFloatAllowZero(k.String("RETRY_JITTER_PCT"), 0.2),
+		OutboundTimeout:            time.Duration(parsePositiveIntAllowZero(k.String("OUTBOUND_TIMEOUT_MS"), 5000)) * time.Millisecond,
+		QueueVisibilityTimeout:     time.Duration(parsePositiveIntAllowZero(k.String("QUEUE_VISIBILITY_TIMEOUT_SEC"), 60)) * time.Second,
+		QueueConcurrencyWebhook:    parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_WEBHOOK"), 16),
+		QueueConcurrencyEmail:      parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_EMAIL"), 8),
+		QueueConcurrencyAnalytics:  parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_ANALYTICS"), 4),
+		LockTTL:                    time.Duration(parsePositiveIntAllowZero(k.String("LOCK_TTL_SEC"), 45)) * time.Second,
+		LockRetryBackoff:           time.Duration(parsePositiveIntAllowZero(k.String("LOCK_RETRY_MS"), 80)) * time.Millisecond,
+		WorkerShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("WORKER_SHUTDOWN_GRACE_SEC"), 25)) * time.Second,
+		APIMaxShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("API_MAX_SHUTDOWN_GRACE_SEC"), 15)) * time.Second,
+		EnableAPIEmbeddedWorkers:   parseBoolWithDefault(k.String("ENABLE_API_EMBEDDED_WORKERS"), false),
 	}
 
 	if cfg.VoucherMaxStack < 1 {
@@ -190,6 +236,42 @@ func Load() (*Config, error) {
 	}
 	if cfg.EventWorkerConcurrency <= 0 {
 		cfg.EventWorkerConcurrency = 1
+	}
+	if cfg.CircuitWebhookMinReq <= 0 {
+		cfg.CircuitWebhookMinReq = 5
+	}
+	if cfg.CircuitWebhookFailureRate <= 0 {
+		cfg.CircuitWebhookFailureRate = 0.5
+	}
+	if cfg.CircuitWebhookOpenFor <= 0 {
+		cfg.CircuitWebhookOpenFor = 30 * time.Second
+	}
+	if cfg.CircuitPaymentFailureRate <= 0 {
+		cfg.CircuitPaymentFailureRate = 0.5
+	}
+	if cfg.CircuitPaymentMinReq <= 0 {
+		cfg.CircuitPaymentMinReq = 20
+	}
+	if cfg.CircuitPaymentOpenFor <= 0 {
+		cfg.CircuitPaymentOpenFor = 30 * time.Second
+	}
+	if cfg.CircuitShippingFailureRate <= 0 {
+		cfg.CircuitShippingFailureRate = 0.5
+	}
+	if cfg.CircuitShippingMinReq <= 0 {
+		cfg.CircuitShippingMinReq = 20
+	}
+	if cfg.CircuitShippingOpenFor <= 0 {
+		cfg.CircuitShippingOpenFor = 30 * time.Second
+	}
+	if cfg.QueueConcurrencyWebhook <= 0 {
+		cfg.QueueConcurrencyWebhook = 1
+	}
+	if cfg.QueueConcurrencyEmail <= 0 {
+		cfg.QueueConcurrencyEmail = 1
+	}
+	if cfg.QueueConcurrencyAnalytics <= 0 {
+		cfg.QueueConcurrencyAnalytics = 1
 	}
 	if cfg.NotifyEmailTopics == nil {
 		cfg.NotifyEmailTopics = parseTopicToggles(k, "NOTIFY_EMAIL_TOPIC_", true)
@@ -375,6 +457,18 @@ func parseBoolWithDefault(value string, fallback bool) bool {
 		return fallback
 	}
 	return parseBool(trimmed)
+}
+
+func parseFloatAllowZero(value string, fallback float64) float64 {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseSameSite(value string) http.SameSite {
