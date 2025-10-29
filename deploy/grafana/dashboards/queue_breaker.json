@@ -1,0 +1,104 @@
+{
+  "id": null,
+  "uid": "toko-queue-breaker",
+  "title": "Queue & Breaker",
+  "tags": ["toko", "queue"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "refresh": 1
+      },
+      {
+        "name": "kind",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "$ds"},
+        "query": "label_values(queue_depth, kind)",
+        "current": {"text": "webhook-delivery", "value": "webhook-delivery"},
+        "refresh": 2
+      },
+      {
+        "name": "breaker",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "$ds"},
+        "query": "label_values(breaker_state, target)",
+        "current": {"text": "webhook-delivery", "value": "webhook-delivery"},
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Queue Depth",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "expr": "queue_depth{kind=\"$kind\"}",
+          "legendFormat": "ready"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "DLQ Size",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "expr": "queue_dlq_size{kind=\"$kind\"}",
+          "legendFormat": "dlq"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Processed Rate",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "targets": [
+        {
+          "expr": "sum(rate(queue_processed_total{kind=\"$kind\"}[$__interval])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Breaker State",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "expr": "breaker_state{target=\"$breaker\"}",
+          "legendFormat": "state"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Breaker Transitions",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "sum(rate(breaker_transition_total{target=\"$breaker\"}[$__interval])) by (from, to)",
+          "legendFormat": "{{from}}->{{to}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+    }
+  ]
+}

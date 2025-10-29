@@ -6,7 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // HTTPClient wraps an http.Client with retry, timeout and circuit-breaker logic.
@@ -18,6 +21,8 @@ type HTTPClient struct {
 	Jitter      float64
 	Timeout     time.Duration
 	Fallback    func(context.Context, *http.Request, error) (*http.Response, error)
+	Target      string
+	Logger      *zerolog.Logger
 }
 
 // Do executes the request applying retry semantics. The provided request body is
@@ -31,6 +36,12 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 	if breaker == nil {
 		// default to closed breaker that never trips
 		breaker = NewBreaker(1, 1, time.Second)
+	}
+	if cl.Target != "" {
+		breaker = breaker.WithTarget(cl.Target)
+	}
+	if cl.Logger != nil {
+		breaker = breaker.WithLogger(*cl.Logger)
 	}
 	maxAttempts := cl.MaxAttempts
 	if maxAttempts <= 0 {
@@ -47,31 +58,56 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 	}
 
 	var lastErr error
+	target := cl.targetLabel()
+	logger := cl.logger(ctx)
+	traceID := traceIDFromContext(ctx)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if !breaker.Allow() {
+		if !breaker.Allow(ctx) {
 			lastErr = ErrOpenCircuit
+			evt := logger.Warn().Str("target", target).Int("attempt", attempt)
+			if traceID != "" {
+				evt = evt.Str("trace_id", traceID)
+			}
+			evt.Msg("breaker open; request short-circuited")
 			break
 		}
 		attemptReq, err := cloneRequestWithContext(ctx, req, originalBody)
 		if err != nil {
-			breaker.Report(false)
+			breaker.Report(ctx, false)
 			return nil, err
 		}
+		evt := logger.Info().Str("target", target).Int("attempt", attempt)
+		if traceID != "" {
+			evt = evt.Str("trace_id", traceID)
+		}
+		evt.Msg("http attempt start")
 		resp, err := cl.doOnce(ctx, attemptReq)
 		if err == nil && resp.StatusCode < 500 {
-			breaker.Report(true)
+			breaker.Report(ctx, true)
+			successEvt := logger.Info().Str("target", target).Int("attempt", attempt).Int("status", resp.StatusCode)
+			if traceID != "" {
+				successEvt = successEvt.Str("trace_id", traceID)
+			}
+			successEvt.Msg("http attempt success")
 			return resp, nil
 		}
 		if err == nil {
 			lastErr = errors.New(resp.Status)
+			_ = resp.Body.Close()
 		} else {
 			lastErr = err
 		}
-		breaker.Report(false)
+		breaker.Report(ctx, false)
+		failureEvt := logger.Warn().Str("target", target).Int("attempt", attempt).Err(lastErr)
+		if traceID != "" {
+			failureEvt = failureEvt.Str("trace_id", traceID)
+		}
 		if attempt == maxAttempts {
+			failureEvt.Msg("http attempts exhausted")
 			break
 		}
 		sleepFor := Backoff(baseBackoff, attempt, cl.Jitter)
+		failureEvt.Dur("backoff", sleepFor).Msg("http attempt failed; backing off")
 		timer := time.NewTimer(sleepFor)
 		select {
 		case <-ctx.Done():
@@ -83,6 +119,13 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 
 	if cl.Fallback != nil {
 		return cl.Fallback(ctx, req, lastErr)
+	}
+	if lastErr != nil {
+		evt := logger.Error().Str("target", target).Err(lastErr)
+		if traceID != "" {
+			evt = evt.Str("trace_id", traceID)
+		}
+		evt.Msg("http request failed")
 	}
 	return nil, lastErr
 }
@@ -145,4 +188,23 @@ func cloneRequestWithContext(ctx context.Context, req *http.Request, body []byte
 		}
 	}
 	return clone, nil
+}
+
+func (cl HTTPClient) targetLabel() string {
+	trimmed := strings.TrimSpace(cl.Target)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
+func (cl HTTPClient) logger(ctx context.Context) *zerolog.Logger {
+	if ctxLogger := zerolog.Ctx(ctx); ctxLogger != nil {
+		logger := ctxLogger.With().Logger()
+		return &logger
+	}
+	if cl.Logger == nil {
+		return &breakerNopLogger
+	}
+	return cl.Logger
 }

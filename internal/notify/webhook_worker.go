@@ -7,6 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/lock"
 )
 
@@ -32,6 +36,21 @@ func (w DeliveryWorker) Handle(ctx context.Context, payload []byte) error {
 	}
 	key := fmt.Sprintf("lock:delivery:%s", deliveryID)
 	return w.Locker.WithLock(ctx, key, ttl, func(ctx context.Context) error {
+		if w.Dispatcher.Store == nil {
+			return errors.New("webhook worker: dispatcher store unavailable")
+		}
+		parsed, err := uuid.Parse(deliveryID)
+		if err != nil {
+			return fmt.Errorf("invalid delivery id: %w", err)
+		}
+		id := pgtype.UUID{Bytes: [16]byte(parsed), Valid: true}
+		delivery, err := w.Dispatcher.Store.GetDeliveryByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if delivery.Status == dbgen.DeliveryStatusDELIVERED || delivery.Status == dbgen.DeliveryStatusDLQ {
+			return nil
+		}
 		return w.Dispatcher.DeliverByID(ctx, deliveryID)
 	})
 }

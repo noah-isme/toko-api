@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog"
 
 	"github.com/noah-isme/backend-toko/internal/resilience"
 )
+
+var nopLogger = zerolog.Nop()
 
 // Task represents a job to be processed asynchronously.
 type Task struct {
@@ -19,14 +23,16 @@ type Task struct {
 	Payload        []byte
 	IdempotencyKey string
 	MaxAttempts    int
+	Attempt        int
 	Delay          time.Duration
 }
 
 // Enqueuer publishes tasks to Redis backed queues.
 type Enqueuer struct {
-	R        *redis.Client
-	Prefix   string
-	DedupTTL time.Duration
+	R           *redis.Client
+	Prefix      string
+	DedupTTL    time.Duration
+	MaxAttempts int
 }
 
 // Enqueue inserts the task into the queue. If an idempotency key is supplied the
@@ -43,11 +49,18 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 		Kind:        kind,
 		Key:         t.IdempotencyKey,
 		Payload:     t.Payload,
-		Attempt:     0,
+		Attempt:     t.Attempt,
 		MaxAttempts: t.MaxAttempts,
 	}
+	if msg.Attempt < 0 {
+		msg.Attempt = 0
+	}
 	if msg.MaxAttempts <= 0 {
-		msg.MaxAttempts = 10
+		if e.MaxAttempts > 0 {
+			msg.MaxAttempts = e.MaxAttempts
+		} else {
+			msg.MaxAttempts = 10
+		}
 	}
 	availableAt := time.Now().Add(t.Delay)
 	msg.AvailableAt = availableAt.UnixNano()
@@ -73,7 +86,15 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 	}
 	queueKey := e.queueKey(kind)
 	score := float64(msg.AvailableAt)
-	return e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err()
+	if err := e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err(); err != nil {
+		return err
+	}
+	if QueueDepth != nil {
+		if depth, err := e.R.ZCard(ctx, queueKey).Result(); err == nil {
+			QueueDepth.WithLabelValues(kind).Set(float64(depth))
+		}
+	}
+	return nil
 }
 
 func (e Enqueuer) queueKey(kind string) string {
@@ -117,6 +138,10 @@ type Worker struct {
 	Handler           func(context.Context, Task) error
 	RetryBase         time.Duration
 	RetryJitter       float64
+	Store             Store
+	HeartbeatInterval time.Duration
+	SoftDeadline      time.Duration
+	Logger            *zerolog.Logger
 }
 
 // Run starts processing tasks until the context is cancelled. Active tasks are
@@ -140,6 +165,24 @@ func (w Worker) Run(ctx context.Context) error {
 	if visibility <= 0 {
 		visibility = 30 * time.Second
 	}
+	heartbeat := w.HeartbeatInterval
+	if heartbeat <= 0 {
+		heartbeat = 5 * time.Second
+	}
+	softDeadline := w.SoftDeadline
+	if softDeadline <= 0 || softDeadline >= visibility {
+		margin := visibility / 4
+		if margin <= 0 {
+			margin = time.Second
+		}
+		softDeadline = visibility - margin
+		if softDeadline <= 0 {
+			softDeadline = visibility / 2
+			if softDeadline <= 0 {
+				softDeadline = visibility
+			}
+		}
+	}
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -152,16 +195,32 @@ func (w Worker) Run(ctx context.Context) error {
 
 	requeueTicker := time.NewTicker(time.Second)
 	defer requeueTicker.Stop()
+	heartbeatTicker := time.NewTicker(heartbeat)
+	defer heartbeatTicker.Stop()
+
+	logger := w.logger().With().Str("queue_kind", kind).Logger()
 
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info().Msg("worker shutdown initiated")
 			wg.Wait()
+			_ = w.requeueExpired(context.Background(), processingKey, queueKey)
+			w.updateDepth(context.Background(), queueKey, kind)
+			w.updateDLQSize(context.Background(), kind)
 			return nil
 		case <-requeueTicker.C:
 			if err := w.requeueExpired(ctx, processingKey, queueKey); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					continue
+				}
+				logger.Error().Err(err).Msg("requeue expired jobs failed")
 				return err
 			}
+			w.updateDepth(ctx, queueKey, kind)
+		case <-heartbeatTicker.C:
+			w.updateDepth(ctx, queueKey, kind)
+			w.updateDLQSize(ctx, kind)
 		default:
 		}
 
@@ -191,7 +250,7 @@ func (w Worker) Run(ctx context.Context) error {
 		now := time.Now().UnixNano()
 		if msg.AvailableAt > now {
 			// not due yet, push back and wait
-			w.R.ZAdd(ctx, queueKey, redis.Z{Score: float64(msg.AvailableAt), Member: member})
+			_ = w.R.ZAdd(ctx, queueKey, redis.Z{Score: float64(msg.AvailableAt), Member: member})
 			sleep := time.Duration(msg.AvailableAt-now) * time.Nanosecond
 			if sleep > time.Second {
 				sleep = time.Second
@@ -211,16 +270,22 @@ func (w Worker) Run(ctx context.Context) error {
 			return err
 		}
 
+		w.updateDepth(ctx, queueKey, kind)
+
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(raw string, m taskMessage) {
 			defer func() { <-sem }()
 			defer wg.Done()
-			jobCtx, cancel := context.WithCancel(ctx)
+			jobCtx, cancel := context.WithTimeout(ctx, softDeadline)
 			defer cancel()
-			err := w.Handler(jobCtx, Task{Kind: kind, Payload: m.Payload, IdempotencyKey: m.Key})
+			task := Task{Kind: kind, Payload: m.Payload, IdempotencyKey: m.Key, MaxAttempts: m.MaxAttempts, Attempt: m.Attempt}
+			err := w.Handler(jobCtx, task)
 			if err != nil {
-				w.handleFailure(jobCtx, queueKey, processingKey, raw, m, retryBase)
+				if err != context.Canceled && err != context.DeadlineExceeded {
+					logger.Warn().Err(err).Str("status", "retry").Msg("job failed")
+				}
+				w.handleFailure(jobCtx, queueKey, processingKey, raw, m, retryBase, err)
 				return
 			}
 			w.ack(jobCtx, processingKey, raw, m)
@@ -228,20 +293,23 @@ func (w Worker) Run(ctx context.Context) error {
 	}
 }
 
-func (w Worker) handleFailure(ctx context.Context, queueKey, processingKey, raw string, msg taskMessage, base time.Duration) {
+func (w Worker) handleFailure(ctx context.Context, queueKey, processingKey, raw string, msg taskMessage, base time.Duration, cause error) {
 	if raw != "" {
 		_ = w.R.ZRem(ctx, processingKey, raw)
 	}
+	if cause != nil {
+		msg.LastError = cause.Error()
+	}
 	if msg.MaxAttempts > 0 && msg.Attempt >= msg.MaxAttempts {
-		dlqKey := w.dlqKey(msg.Kind)
-		rawBytes, err := json.Marshal(msg)
-		if err != nil {
-			return
+		w.pushToDLQ(ctx, raw, msg)
+		if QueueProcessedTotal != nil {
+			label := queueLabel(msg.Kind)
+			QueueProcessedTotal.WithLabelValues(label, "dlq").Inc()
 		}
-		_ = w.R.LPush(ctx, dlqKey, rawBytes).Err()
 		if msg.Key != "" {
 			_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
 		}
+		w.updateDLQSize(ctx, msg.Kind)
 		return
 	}
 	delay := resilience.Backoff(base, msg.Attempt, w.RetryJitter)
@@ -251,6 +319,11 @@ func (w Worker) handleFailure(ctx context.Context, queueKey, processingKey, raw 
 		return
 	}
 	_ = w.R.ZAdd(ctx, queueKey, redis.Z{Score: float64(msg.AvailableAt), Member: string(rawBytes)}).Err()
+	if QueueProcessedTotal != nil {
+		label := queueLabel(msg.Kind)
+		QueueProcessedTotal.WithLabelValues(label, "retry").Inc()
+	}
+	w.updateDepth(ctx, queueKey, msg.Kind)
 }
 
 func (w Worker) ack(ctx context.Context, processingKey, raw string, msg taskMessage) {
@@ -260,6 +333,10 @@ func (w Worker) ack(ctx context.Context, processingKey, raw string, msg taskMess
 	if msg.Key != "" {
 		_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
 	}
+	if QueueProcessedTotal != nil {
+		QueueProcessedTotal.WithLabelValues(queueLabel(msg.Kind), "success").Inc()
+	}
+	w.updateDepth(ctx, w.queueKey(msg.Kind), msg.Kind)
 }
 
 func (w Worker) requeueExpired(ctx context.Context, processingKey, queueKey string) error {
@@ -298,13 +375,6 @@ func (w Worker) processingKey(kind string) string {
 	return fmt.Sprintf("%s:%s:processing", w.Prefix, kind)
 }
 
-func (w Worker) dlqKey(kind string) string {
-	if w.Prefix == "" {
-		return fmt.Sprintf("queue:%s:dlq", kind)
-	}
-	return fmt.Sprintf("%s:%s:dlq", w.Prefix, kind)
-}
-
 func (w Worker) dedupKey(kind, key string) string {
 	if w.Prefix == "" {
 		return fmt.Sprintf("queue:dedup:%s:%s", kind, key)
@@ -320,6 +390,67 @@ func decodeMessage(raw string) (taskMessage, error) {
 	return msg, nil
 }
 
+func queueLabel(kind string) string {
+	trimmed := strings.TrimSpace(kind)
+	if trimmed == "" {
+		return "default"
+	}
+	if sanitized := sanitizeKind(trimmed); sanitized != "" {
+		return sanitized
+	}
+	return trimmed
+}
+
+func (w Worker) updateDepth(ctx context.Context, queueKey, kind string) {
+	if QueueDepth == nil || w.R == nil {
+		return
+	}
+	depth, err := w.R.ZCard(ctx, queueKey).Result()
+	if err != nil {
+		return
+	}
+	QueueDepth.WithLabelValues(queueLabel(kind)).Set(float64(depth))
+}
+
+func (w Worker) updateDLQSize(ctx context.Context, kind string) {
+	if QueueDLQSize == nil || w.Store == nil {
+		return
+	}
+	label := queueLabel(kind)
+	count, err := w.Store.CountQueueDlq(ctx, label)
+	if err != nil {
+		return
+	}
+	QueueDLQSize.WithLabelValues(label).Set(float64(count))
+}
+
+func (w Worker) pushToDLQ(ctx context.Context, raw string, msg taskMessage) {
+	if w.Store == nil {
+		return
+	}
+	entry := DLQEntry{
+		Kind:           msg.Kind,
+		IdempotencyKey: msg.Key,
+		Payload:        []byte(raw),
+		Attempts:       msg.Attempt,
+	}
+	if msg.LastError != "" {
+		entry.LastError = &msg.LastError
+	}
+	if _, err := w.Store.InsertQueueDlq(ctx, entry); err != nil {
+		if !errors.Is(err, ErrStoreUnavailable) {
+			w.logger().Error().Err(err).Str("queue_kind", queueLabel(msg.Kind)).Msg("insert dlq entry failed")
+		}
+	}
+}
+
+func (w Worker) logger() *zerolog.Logger {
+	if w.Logger == nil {
+		return &nopLogger
+	}
+	return w.Logger
+}
+
 type taskMessage struct {
 	Kind        string `json:"kind"`
 	Key         string `json:"key,omitempty"`
@@ -327,4 +458,5 @@ type taskMessage struct {
 	Attempt     int    `json:"attempt"`
 	MaxAttempts int    `json:"max_attempts"`
 	AvailableAt int64  `json:"available_at"`
+	LastError   string `json:"last_error,omitempty"`
 }
