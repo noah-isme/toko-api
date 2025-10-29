@@ -1,0 +1,91 @@
+groups:
+  - name: backend-toko
+    rules:
+      - alert: HighErrorRateWarning
+        expr: sum(rate(toko_http_requests_total{status=~"5.."}[5m])) / sum(rate(toko_http_requests_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx > SLO"
+          description: "5xx ratio exceeded 1% over the last 5 minutes."
+      - alert: HighErrorRateCritical
+        expr: sum(rate(toko_http_requests_total{status=~"5.."}[5m])) / sum(rate(toko_http_requests_total[5m])) > 0.03
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx critical"
+          description: "5xx ratio exceeded 3% over the last 3 minutes."
+      - alert: HighLatencyP95Warning
+        expr: histogram_quantile(0.95, sum(rate(toko_http_request_duration_ms_bucket[5m])) by (le, route)) > 250
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency > SLO"
+          description: "Route {{ $labels.route }} p95 above 250ms."
+      - alert: HighLatencyP95Critical
+        expr: histogram_quantile(0.95, sum(rate(toko_http_request_duration_ms_bucket[5m])) by (le, route)) > 350
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "p95 latency severe"
+          description: "Route {{ $labels.route }} p95 above 350ms."
+      - alert: WebhookP99Slow
+        expr: histogram_quantile(0.99, sum(rate(webhook_attempt_duration_ms_bucket[5m])) by (le)) > 1500
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Webhook p99 > SLO"
+          description: "Webhook delivery p99 above 1.5s."
+      - alert: InFlightSaturationWarning
+        expr: toko_http_in_flight_requests > 320
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "In-flight requests high"
+          description: "In-flight requests exceeded 80% of configured limit."
+      - alert: InFlightSaturationCritical
+        expr: toko_http_in_flight_requests > 400
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "In-flight limit reached"
+          description: "In-flight requests exceeded concurrency budget."
+      - alert: RedisCommandErrors
+        expr: rate(redis_client_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis command errors"
+          description: "Redis client has returned errors in the last 5 minutes."
+      - alert: RedisCommandErrorsCritical
+        expr: rate(redis_client_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis command errors spike"
+          description: "Redis errors above 0.1/s."
+      - alert: DBPoolSaturationWarning
+        expr: db_pool_in_use_ratio > 0.75
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB pool saturation"
+          description: "DB pool in-use ratio above 75%."
+      - alert: DBPoolSaturationCritical
+        expr: db_pool_in_use_ratio > 0.9
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB pool saturation critical"
+          description: "DB pool in-use ratio above 90%."

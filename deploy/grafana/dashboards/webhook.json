@@ -1,0 +1,75 @@
+{
+  "id": null,
+  "uid": "toko-webhook",
+  "title": "Webhook Delivery",
+  "tags": ["toko", "webhook"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Webhook Attempts",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "rate(webhook_deliveries_total[$__interval])",
+          "legendFormat": "attempts/s"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops/s"}},
+      "options": {"legend": {"displayMode": "hidden"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Success vs Failed vs DLQ",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "rate(webhook_deliveries_total{result='success'}[$__interval])",
+          "legendFormat": "success"
+        },
+        {
+          "expr": "rate(webhook_deliveries_total{result='failed'}[$__interval])",
+          "legendFormat": "failed"
+        },
+        {
+          "expr": "rate(webhook_dispatch_dlq_total[$__interval])",
+          "legendFormat": "dlq"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops/s"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95/p99",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(webhook_attempt_duration_ms_bucket[$__interval])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(webhook_attempt_duration_ms_bucket[$__interval])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    }
+  ]
+}

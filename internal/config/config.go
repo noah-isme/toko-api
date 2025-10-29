@@ -22,11 +22,17 @@ type Config struct {
 	Port                      string
 	DatabaseURL               string
 	RedisURL                  string
-        JWTSecret                 string
-        JWTIssuer                 string
-        JWTAudience               string
-        JWTClockSkew              time.Duration
-        CORSAllowedOrigins        []string
+	RedisCachePrefix          string
+	DBMaxOpenConns            int
+	DBMaxIdleConns            int
+	DBConnMaxLifetime         time.Duration
+	DBStatementCacheCapacity  int
+	HTTPMaxInFlight           int
+	JWTSecret                 string
+	JWTIssuer                 string
+	JWTAudience               string
+	JWTClockSkew              time.Duration
+	CORSAllowedOrigins        []string
 	MidtransServerKey         string
 	MidtransClientKey         string
 	MidtransBaseURL           string
@@ -87,15 +93,30 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("load env: %w", err)
 	}
 
+	catalogTTL := parsePositiveIntAllowZero(k.String("REDIS_CACHE_TTL_CATALOG_SEC"), 0)
+	if catalogTTL <= 0 {
+		catalogTTL = parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)
+	}
+	analyticsTTL := parsePositiveIntAllowZero(k.String("REDIS_CACHE_TTL_ANALYTICS_SEC"), 0)
+	if analyticsTTL <= 0 {
+		analyticsTTL = parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)
+	}
+
 	cfg := &Config{
 		AppEnv:                    valueOrDefault(k.String("APP_ENV"), "development"),
 		Port:                      valueOrDefault(k.String("PORT"), "8080"),
 		DatabaseURL:               k.String("DATABASE_URL"),
 		RedisURL:                  k.String("REDIS_URL"),
-                JWTSecret:                 k.String("JWT_SECRET"),
-                JWTIssuer:                 strings.TrimSpace(valueOrDefault(k.String("JWT_ISSUER"), "backend-toko")),
-                JWTAudience:               strings.TrimSpace(valueOrDefault(k.String("JWT_AUDIENCE"), "toko-frontend")),
-                JWTClockSkew:              time.Duration(parsePositiveIntAllowZero(k.String("JWT_CLOCK_SKEW_SEC"), 60)) * time.Second,
+		RedisCachePrefix:          strings.TrimSpace(valueOrDefault(k.String("REDIS_CACHE_PREFIX"), "cache")),
+		DBMaxOpenConns:            parsePositiveIntAllowZero(k.String("DB_MAX_OPEN_CONNS"), 40),
+		DBMaxIdleConns:            parsePositiveIntAllowZero(k.String("DB_MAX_IDLE_CONNS"), 10),
+		DBConnMaxLifetime:         time.Duration(parsePositiveIntAllowZero(k.String("DB_CONN_MAX_LIFETIME_MIN"), 30)) * time.Minute,
+		DBStatementCacheCapacity:  parsePositiveIntAllowZero(k.String("DB_STATEMENT_CACHE_CAPACITY"), 256),
+		HTTPMaxInFlight:           parsePositiveIntAllowZero(k.String("HTTP_MAX_INFLIGHT"), 400),
+		JWTSecret:                 k.String("JWT_SECRET"),
+		JWTIssuer:                 strings.TrimSpace(valueOrDefault(k.String("JWT_ISSUER"), "backend-toko")),
+		JWTAudience:               strings.TrimSpace(valueOrDefault(k.String("JWT_AUDIENCE"), "toko-frontend")),
+		JWTClockSkew:              time.Duration(parsePositiveIntAllowZero(k.String("JWT_CLOCK_SKEW_SEC"), 60)) * time.Second,
 		CORSAllowedOrigins:        splitAndTrim(k.String("CORS_ALLOWED_ORIGINS")),
 		MidtransServerKey:         k.String("MIDTRANS_SERVER_KEY"),
 		MidtransClientKey:         k.String("MIDTRANS_CLIENT_KEY"),
@@ -125,7 +146,7 @@ func Load() (*Config, error) {
 		CatalogDefaultPage:        parsePositiveInt(k.String("CATALOG_DEFAULT_PAGE"), 1),
 		CatalogDefaultLimit:       parsePositiveInt(k.String("CATALOG_DEFAULT_LIMIT"), 20),
 		CatalogMaxLimit:           parsePositiveInt(k.String("CATALOG_MAX_LIMIT"), 100),
-		CatalogCacheTTL:           time.Duration(parsePositiveInt(k.String("CATALOG_CACHE_TTL_SEC"), 120)) * time.Second,
+		CatalogCacheTTL:           time.Duration(catalogTTL) * time.Second,
 		CartTTL:                   time.Duration(parsePositiveInt(k.String("CART_TTL_HOURS"), 168)) * time.Hour,
 		PricingTaxRateBPS:         parsePositiveInt(k.String("PRICING_TAX_RATE_BPS"), 1100),
 		CurrencyCode:              valueOrDefault(k.String("CURRENCY_CODE"), "IDR"),
@@ -134,7 +155,7 @@ func Load() (*Config, error) {
 		VoucherMaxStack:           parsePositiveIntAllowZero(k.String("VOUCHER_MAX_STACK"), 1),
 		VoucherDefaultPriority:    parsePositiveIntAllowZero(k.String("VOUCHER_DEFAULT_PRIORITY"), 100),
 		VoucherPerUserLimit:       parsePositiveIntAllowZero(k.String("VOUCHER_PER_USER_LIMIT_DEFAULT"), 1),
-		AnalyticsCacheTTL:         time.Duration(parsePositiveIntAllowZero(k.String("ANALYTICS_CACHE_TTL_SEC"), 120)) * time.Second,
+		AnalyticsCacheTTL:         time.Duration(analyticsTTL) * time.Second,
 		AnalyticsDefaultRange:     parsePositiveIntAllowZero(k.String("ANALYTICS_DEFAULT_RANGE_DAYS"), 30),
 		NotifyEmailEnabled:        parseBoolWithDefault(k.String("NOTIFY_EMAIL_ENABLED"), true),
 		NotifyEmailFrom:           valueOrDefault(k.String("NOTIFY_FROM_EMAIL"), "no-reply@toko.local"),
@@ -219,6 +240,31 @@ func Load() (*Config, error) {
 
 	if cfg.CurrencyCode == "" {
 		cfg.CurrencyCode = "IDR"
+	}
+
+	if cfg.DBMaxOpenConns <= 0 {
+		cfg.DBMaxOpenConns = 40
+	}
+	if cfg.DBMaxIdleConns < 0 {
+		cfg.DBMaxIdleConns = 0
+	}
+	if cfg.DBConnMaxLifetime <= 0 {
+		cfg.DBConnMaxLifetime = 30 * time.Minute
+	}
+	if cfg.DBStatementCacheCapacity < 0 {
+		cfg.DBStatementCacheCapacity = 0
+	}
+	if cfg.HTTPMaxInFlight <= 0 {
+		cfg.HTTPMaxInFlight = 400
+	}
+	if cfg.RedisCachePrefix == "" {
+		cfg.RedisCachePrefix = "cache"
+	}
+	if cfg.CatalogCacheTTL <= 0 {
+		cfg.CatalogCacheTTL = 120 * time.Second
+	}
+	if cfg.AnalyticsCacheTTL <= 0 {
+		cfg.AnalyticsCacheTTL = 120 * time.Second
 	}
 
 	if cfg.DatabaseURL == "" {

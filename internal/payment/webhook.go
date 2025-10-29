@@ -19,7 +19,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/cart"
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
@@ -28,13 +30,15 @@ import (
 
 // Webhook handles payment provider callbacks, including signature verification and settlement.
 type Webhook struct {
-	Q         *dbgen.Queries
-	Pool      *pgxpool.Pool
-	Providers map[string]Provider
-	Replay    *redis.Client
-	ReplayTTL time.Duration
-	Voucher   VoucherSettler
-	Events    *events.Bus
+	Q            *dbgen.Queries
+	Pool         *pgxpool.Pool
+	Providers    map[string]Provider
+	Replay       *redis.Client
+	ReplayTTL    time.Duration
+	Voucher      VoucherSettler
+	Events       *events.Bus
+	CatalogCache *catalog.Cache
+	Analytics    *analytics.Service
 }
 
 // VoucherSettler records voucher usage as part of order settlement.
@@ -180,6 +184,7 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 				common.JSONError(w, http.StatusInternalServerError, "ORDER_ITEMS_ERROR", err.Error(), nil)
 				return
 			}
+			productSlugs := make(map[string]struct{})
 			for _, it := range items {
 				if it.VariantID.Valid {
 					if err := q.DecrementVariantStock(ctx, dbgen.DecrementVariantStockParams{Qty: int32(it.Qty), ID: it.VariantID}); err != nil {
@@ -187,6 +192,9 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 						common.JSONError(w, http.StatusInternalServerError, "STOCK_UPDATE_ERROR", err.Error(), nil)
 						return
 					}
+				}
+				if slug := strings.TrimSpace(it.Slug); slug != "" {
+					productSlugs[slug] = struct{}{}
 				}
 			}
 			if h.Voucher != nil && order.AppliedVoucherCode.Valid {
@@ -203,6 +211,12 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			if len(productSlugs) > 0 {
+				for slug := range productSlugs {
+					h.invalidateProductCache(ctx, slug)
+				}
+			}
+			h.clearAnalyticsCache(ctx)
 		}
 	case dbgen.PaymentStatusFAILED, dbgen.PaymentStatusEXPIRED:
 		if order.Status == dbgen.OrderStatusPENDINGPAYMENT {
@@ -249,6 +263,21 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome = "success"
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h Webhook) invalidateProductCache(ctx context.Context, slug string) {
+	if strings.TrimSpace(slug) == "" {
+		return
+	}
+	if h.CatalogCache != nil {
+		h.CatalogCache.InvalidateProduct(ctx, slug)
+	}
+}
+
+func (h Webhook) clearAnalyticsCache(ctx context.Context) {
+	if h.Analytics != nil {
+		h.Analytics.Clear(ctx)
+	}
 }
 
 func normaliseWebhookStatus(status string) dbgen.PaymentStatus {

@@ -1,0 +1,11 @@
+{
+  "scenario": "read_heavy",
+  "timestamp": "2024-08-28T00:00:00Z",
+  "metrics": {
+    "http_req_duration": {"p95": 182.4, "p99": 241.7},
+    "http_reqs": {"rate": 185.2},
+    "http_req_failed": {"rate": 0.0031}
+  },
+  "vus": 100,
+  "duration": "5m"
+}

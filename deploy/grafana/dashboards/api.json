@@ -1,0 +1,78 @@
+{
+  "id": null,
+  "uid": "toko-api",
+  "title": "API Latency & Errors",
+  "tags": ["toko", "api"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-12h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "refresh": 1
+      },
+      {
+        "name": "route",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "$ds"},
+        "refresh": 2,
+        "definition": "label_values(toko_http_request_duration_ms_count, route)",
+        "current": {"text": "All", "value": ""},
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Latency per Route",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(toko_http_request_duration_ms_bucket{route=~$route}[$__interval])) by (le, route))",
+          "legendFormat": "{{route}} p95"
+        }
+      ],
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Status Breakdown",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "sum(rate(toko_http_requests_total{route=~$route}[$__interval])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "req/s"}},
+      "options": {"legend": {"displayMode": "table", "placement": "right"}}
+    },
+    {
+      "type": "table",
+      "title": "Top Slow Routes (p95)",
+      "datasource": {"type": "prometheus", "uid": "$ds"},
+      "targets": [
+        {
+          "expr": "topk(10, histogram_quantile(0.95, sum(rate(toko_http_request_duration_ms_bucket[$__interval])) by (le, route)))",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {"renameByName": {"Value": "p95 (ms)", "metric": "route"}}
+        }
+      ],
+      "options": {"showHeader": true}
+    }
+  ]
+}

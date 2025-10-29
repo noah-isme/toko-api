@@ -26,6 +26,7 @@ type Service struct {
 	TTL          time.Duration
 	DefaultRange int
 	Now          func() time.Time
+	Prefix       string
 }
 
 func (s *Service) now() time.Time {
@@ -35,8 +36,12 @@ func (s *Service) now() time.Time {
 	return time.Now()
 }
 
-func cacheKey(parts ...any) string {
+func (s *Service) key(parts ...any) string {
 	formatted := make([]string, 0, len(parts))
+	prefix := strings.Trim(s.Prefix, ": ")
+	if prefix != "" {
+		formatted = append(formatted, prefix)
+	}
 	for _, part := range parts {
 		formatted = append(formatted, fmt.Sprint(part))
 	}
@@ -48,7 +53,7 @@ func (s *Service) SalesRange(ctx context.Context, from, to time.Time) ([]dbgen.G
 	if s == nil || s.Q == nil {
 		return nil, fmt.Errorf("analytics service not configured")
 	}
-	key := cacheKey("an", "sales", from.Format("2006-01-02"), to.Format("2006-01-02"))
+	key := s.key("analytics", "sales", from.Format(time.DateOnly), to.Format(time.DateOnly))
 	if rows, ok := s.getSalesFromCache(ctx, key); ok {
 		return rows, nil
 	}
@@ -75,7 +80,7 @@ func (s *Service) TopProducts(ctx context.Context, limit, offset int32) ([]dbgen
 	if offset < 0 {
 		offset = 0
 	}
-	key := cacheKey("an", "top", limit, offset)
+	key := s.key("analytics", "top", limit, offset)
 	if rows, ok := s.getTopFromCache(ctx, key); ok {
 		return rows, nil
 	}
@@ -88,7 +93,7 @@ func (s *Service) TopProducts(ctx context.Context, limit, offset int32) ([]dbgen
 }
 
 func (s *Service) getSalesFromCache(ctx context.Context, key string) ([]dbgen.GetSalesDailyRangeRow, bool) {
-	if s.R == nil || s.TTL <= 0 {
+	if s.R == nil || s.TTL <= 0 || strings.TrimSpace(key) == "" {
 		return nil, false
 	}
 	data, err := s.R.Get(ctx, key).Bytes()
@@ -103,7 +108,7 @@ func (s *Service) getSalesFromCache(ctx context.Context, key string) ([]dbgen.Ge
 }
 
 func (s *Service) getTopFromCache(ctx context.Context, key string) ([]dbgen.MvTopProduct, bool) {
-	if s.R == nil || s.TTL <= 0 {
+	if s.R == nil || s.TTL <= 0 || strings.TrimSpace(key) == "" {
 		return nil, false
 	}
 	data, err := s.R.Get(ctx, key).Bytes()
@@ -118,7 +123,7 @@ func (s *Service) getTopFromCache(ctx context.Context, key string) ([]dbgen.MvTo
 }
 
 func (s *Service) store(ctx context.Context, key string, value any) {
-	if s.R == nil || s.TTL <= 0 {
+	if s.R == nil || s.TTL <= 0 || strings.TrimSpace(key) == "" {
 		return
 	}
 	data, err := json.Marshal(value)
@@ -126,4 +131,20 @@ func (s *Service) store(ctx context.Context, key string, value any) {
 		return
 	}
 	_ = s.R.Set(ctx, key, data, s.TTL).Err()
+}
+
+// Clear evicts cached analytics payloads.
+func (s *Service) Clear(ctx context.Context) {
+	if s == nil || s.R == nil {
+		return
+	}
+	pattern := s.key("analytics", "*")
+	if pattern == "" {
+		pattern = "analytics:*"
+	}
+	iter := s.R.Scan(ctx, 0, pattern, 0).Iterator()
+	for iter.Next(ctx) {
+		_ = s.R.Del(ctx, iter.Val()).Err()
+	}
+	_ = iter.Err()
 }

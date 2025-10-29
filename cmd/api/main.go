@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	redis "github.com/redis/go-redis/v9"
@@ -93,6 +94,31 @@ func main() {
 		poolConfig.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	poolConfig.ConnConfig.RuntimeParams["application_name"] = "toko-api"
+	if cfg.DBStatementCacheCapacity >= 0 {
+		poolConfig.ConnConfig.StatementCacheCapacity = cfg.DBStatementCacheCapacity
+	}
+	if cfg.DBMaxOpenConns > 0 {
+		poolConfig.MaxConns = int32(cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns > 0 {
+		idle := cfg.DBMaxIdleConns
+		if cfg.DBMaxOpenConns > 0 && idle > cfg.DBMaxOpenConns {
+			idle = cfg.DBMaxOpenConns
+		}
+		poolConfig.MinConns = int32(idle)
+		poolConfig.MinIdleConns = int32(idle)
+	}
+	if cfg.DBConnMaxLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.DBConnMaxLifetime
+		idle := cfg.DBConnMaxLifetime / 2
+		if idle <= 0 {
+			idle = cfg.DBConnMaxLifetime
+		}
+		poolConfig.MaxConnIdleTime = idle
+	}
+	if poolConfig.HealthCheckPeriod <= 0 {
+		poolConfig.HealthCheckPeriod = time.Minute
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -105,6 +131,44 @@ func main() {
 	}
 
 	queries := dbgen.New(pool)
+
+	if metricsEnabled {
+		prometheus.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Name:      "db_pool_acquired_conns",
+			Help:      "Current number of acquired PostgreSQL connections.",
+		}, func() float64 {
+			if pool == nil {
+				return 0
+			}
+			return float64(pool.Stat().AcquiredConns())
+		}))
+		prometheus.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Name:      "db_pool_idle_conns",
+			Help:      "Current number of idle PostgreSQL connections.",
+		}, func() float64 {
+			if pool == nil {
+				return 0
+			}
+			return float64(pool.Stat().IdleConns())
+		}))
+		prometheus.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Name:      "db_pool_in_use_ratio",
+			Help:      "Fraction of PostgreSQL pool connections currently acquired.",
+		}, func() float64 {
+			if pool == nil {
+				return 0
+			}
+			stat := pool.Stat()
+			max := stat.MaxConns()
+			if max <= 0 {
+				return 0
+			}
+			return float64(stat.AcquiredConns()) / float64(max)
+		}))
+	}
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
@@ -127,9 +191,10 @@ func main() {
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		logger.Fatal().Err(err).Msg("ping redis")
 	}
+	catalogCache := catalog.NewCache(redisClient, cfg.CatalogCacheTTL, cfg.RedisCachePrefix)
 	catalogService, err := catalog.NewService(catalog.ServiceConfig{
 		Queries:      queries,
-		Cache:        catalog.NewCache(redisClient, cfg.CatalogCacheTTL),
+		Cache:        catalogCache,
 		DefaultPage:  cfg.CatalogDefaultPage,
 		DefaultLimit: cfg.CatalogDefaultLimit,
 		MaxLimit:     cfg.CatalogMaxLimit,
@@ -170,7 +235,7 @@ func main() {
 
 	cartSvc := &cart.Service{Q: queries, TTL: cfg.CartTTL, VoucherPerUserLimitDefault: cfg.VoucherPerUserLimit}
 	voucherSvc := &voucher.Service{Q: queries, DefaultPerUserLimit: cfg.VoucherPerUserLimit}
-	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, DefaultPriority: cfg.VoucherDefaultPriority}
+	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, DefaultPriority: cfg.VoucherDefaultPriority, CatalogCache: catalogCache, Analytics: nil}
 	cartHandler := &cart.Handler{
 		Q:              queries,
 		Svc:            cartSvc,
@@ -258,16 +323,20 @@ func main() {
 	}
 	paymentHandler := &payment.Handler{Svc: paymentSvc, Q: queries}
 	webhookHandler := payment.Webhook{
-		Q:         queries,
-		Pool:      pool,
-		Providers: providers,
-		Replay:    redisClient,
-		ReplayTTL: cfg.WebhookReplayTTL,
-		Voucher:   voucherSvc,
-		Events:    bus,
+		Q:            queries,
+		Pool:         pool,
+		Providers:    providers,
+		Replay:       redisClient,
+		ReplayTTL:    cfg.WebhookReplayTTL,
+		Voucher:      voucherSvc,
+		Events:       bus,
+		CatalogCache: catalogCache,
+		Analytics:    nil,
 	}
 
-	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange}
+	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange, Prefix: cfg.RedisCachePrefix}
+	voucherHandler.Analytics = analyticsSvc
+	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
 	auditSample := envFloat("AUDIT_SAMPLING_RATE", 1.0)
@@ -380,11 +449,28 @@ func main() {
 		httpMetrics = obs.NewHTTPMetrics(metricsNamespace, buckets, nil)
 	}
 
+	maxInFlight := cfg.HTTPMaxInFlight
+	if maxInFlight <= 0 {
+		maxInFlight = 400
+	}
+	inflightSem := make(chan struct{}, maxInFlight)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(obs.RoutePatternMiddleware)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			select {
+			case inflightSem <- struct{}{}:
+				defer func() { <-inflightSem }()
+				next.ServeHTTP(w, req)
+			case <-req.Context().Done():
+				http.Error(w, "request cancelled", http.StatusRequestTimeout)
+			}
+		})
+	})
 	if tracingEnabled {
 		r.Use(obs.TracingMiddleware)
 	}

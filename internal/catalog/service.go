@@ -329,7 +329,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		items = append(items, item)
 	}
 	result := ProductListResult{Items: items, Total: total, Page: params.Page, Limit: params.Limit}
-	if shouldUseCache && s.cache != nil {
+	if shouldUseCache && s.cache != nil && key != "" {
 		_ = s.cache.SetJSON(ctx, key, cachedList{Items: items, Total: total})
 	}
 	return result, nil
@@ -341,8 +341,9 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 	if slug == "" {
 		return ProductDetail{}, badRequest("slug", "slug is required", nil)
 	}
-	cacheKey := detailCacheKey(slug)
+	var cacheKey string
 	if s.cache != nil {
+		cacheKey = s.cache.ProductDetailKey(slug)
 		var cached ProductDetail
 		ok, err := s.cache.GetJSON(ctx, cacheKey, &cached)
 		if err == nil && ok {
@@ -424,7 +425,7 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 	for _, row := range specs {
 		detail.Specs = append(detail.Specs, Spec{Key: row.Key, Value: row.Value})
 	}
-	if s.cache != nil {
+	if s.cache != nil && cacheKey != "" {
 		_ = s.cache.SetJSON(ctx, cacheKey, detail)
 	}
 	return detail, nil
@@ -504,6 +505,9 @@ type cachedList struct {
 }
 
 func (s *Service) listCacheKey(params ListParams) (string, bool) {
+	if s.cache == nil {
+		return "", false
+	}
 	if params.Page != s.defaultPage {
 		return "", false
 	}
@@ -513,11 +517,7 @@ func (s *Service) listCacheKey(params ListParams) (string, bool) {
 	if params.Query != "" || params.Category != "" || params.Brand != "" || params.MinPrice != nil || params.MaxPrice != nil || params.InStock != nil || params.Sort != "" {
 		return "", false
 	}
-	return "catalog:products:list:popular", true
-}
-
-func detailCacheKey(slug string) string {
-	return "catalog:products:detail:" + slug
+	return s.cache.ProductListKey(), true
 }
 
 func optionalStringValue(value string) any {
