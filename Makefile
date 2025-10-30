@@ -7,4 +7,7 @@ test:
 migrate-up:
 	migrate -path migrations -database $$DATABASE_URL up
 sqlc:
-	sqlc generate
+	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0 generate
+
+tenant-guard:
+	go run ./cmd/tools/tenant_guard
