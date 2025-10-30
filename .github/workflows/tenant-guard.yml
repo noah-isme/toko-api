@@ -1,0 +1,12 @@
+name: tenant-guard
+on: [pull_request]
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Run tenant guard
+        run: go run ./cmd/tools/tenant_guard || (echo 'tenant guard violation' && exit 1)
