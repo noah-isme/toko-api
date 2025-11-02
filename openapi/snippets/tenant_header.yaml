@@ -1,0 +1,9 @@
+components:
+  parameters:
+    XTenantID:
+      name: X-Tenant-ID
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional tenant selector; when absent, server resolves via subdomain or defaults.
