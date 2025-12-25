@@ -61,7 +61,12 @@ func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUI
 	var items []ListOrderItemsForStockRow
 	for rows.Next() {
 		var i ListOrderItemsForStockRow
-		if err := rows.Scan(&i.ProductID, &i.VariantID, &i.Qty, &i.Slug); err != nil {
+		if err := rows.Scan(
+			&i.ProductID,
+			&i.VariantID,
+			&i.Qty,
+			&i.Slug,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

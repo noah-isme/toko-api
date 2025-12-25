@@ -2,6 +2,14 @@
 
 Backend service powering catalogue, checkout, and webhook flows for Toko.
 
+## 📚 Documentation
+
+- **[API Contract](docs/API_CONTRACT.md)** - Complete API documentation for frontend integration
+- **[Quick Start for Frontend](docs/QUICK_START_FRONTEND.md)** - Quick guide for frontend developers (Bahasa Indonesia)
+- **[TypeScript Types](docs/types.ts)** - TypeScript type definitions for API contracts
+- **[Operations SLO](docs/ops/SLO.md)** - Service Level Objectives and performance targets
+- **[Runbook](docs/ops/RUNBOOK.md)** - Operations and incident response guide
+
 ## Observability & Performance
 - **SLO**: public HTTP endpoints p95 < ${PERF_SLO_HTTP_P95_MS} ms and error rate < ${PERF_SLO_HTTP_ERROR_RATE}; webhook dispatch p99 < ${PERF_SLO_WEBHOOK_P99_MS} ms. See [`docs/ops/SLO.md`](docs/ops/SLO.md).
 - **Prometheus alerts**: defined in [`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml) covering latency, error rate, HTTP saturation, Redis errors, and DB pool saturation. Tune thresholds via environment variables or by editing the rule file.
@@ -23,3 +31,21 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
 - Redis-backed distributed locks guard idempotent delivery and settlement replay flows.
 - Graceful shutdown toggles readiness and drains inflight HTTP requests and queue jobs.
 - Chaos playbooks live under `perf/chaos` to rehearse provider, Redis, and DB failure scenarios.
+
+## 🛠 Development
+
+### Prerequisites
+- Go 1.22+
+- Docker & Docker Compose
+- [Air](https://github.com/cosmtrek/air) (for live reload)
+
+### Local Development
+1. Start infrastructure: `docker-compose up -d`
+2. Run with live reload:
+   ```bash
+   make dev
+   ```
+   Or run directly with air:
+   ```bash
+   air
+   ```

@@ -27,7 +27,7 @@ func (q *Queries) CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (i
 const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, applied_voucher_code)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
+RETURNING id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id
 `
 
 type CreateOrderParams struct {
@@ -80,6 +80,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AppliedVoucherCode,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -115,7 +116,7 @@ func (q *Queries) CreateOrderItem(ctx context.Context, arg CreateOrderItemParams
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id
 FROM orders
 WHERE id = $1
 LIMIT 1
@@ -141,12 +142,13 @@ func (q *Queries) GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AppliedVoucherCode,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getOrderByIDForUser = `-- name: GetOrderByIDForUser :one
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id
 FROM orders
 WHERE id = $1 AND user_id = $2
 LIMIT 1
@@ -177,6 +179,7 @@ func (q *Queries) GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUs
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AppliedVoucherCode,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -219,7 +222,7 @@ func (q *Queries) ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID
 }
 
 const listOrdersForUser = `-- name: ListOrdersForUser :many
-SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id
 FROM orders
 WHERE user_id = $1
 ORDER BY created_at DESC
@@ -258,6 +261,7 @@ func (q *Queries) ListOrdersForUser(ctx context.Context, arg ListOrdersForUserPa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.AppliedVoucherCode,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}

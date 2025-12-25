@@ -1,5 +1,5 @@
 dev: ## run api in dev mode
-	air
+	go run github.com/air-verse/air@latest
 lint:
 	golangci-lint run
 test:

@@ -33,7 +33,7 @@ func (q *Queries) CountVoucherUsageByUser(ctx context.Context, arg CountVoucherU
 const createVoucher = `-- name: CreateVoucher :one
 INSERT INTO vouchers (code, value, kind, percent_bps, min_spend, usage_limit, valid_from, valid_to, product_ids, category_ids, brand_ids, combinable, priority, per_user_limit)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-RETURNING id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids
+RETURNING id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids, tenant_id
 `
 
 type CreateVoucherParams struct {
@@ -90,12 +90,13 @@ func (q *Queries) CreateVoucher(ctx context.Context, arg CreateVoucherParams) (V
 		&i.Priority,
 		&i.PerUserLimit,
 		&i.BrandIds,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getVoucherByCodeForUpdate = `-- name: GetVoucherByCodeForUpdate :one
-SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids
+SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids, tenant_id
 FROM vouchers
 WHERE code = $1
 FOR UPDATE
@@ -123,6 +124,7 @@ func (q *Queries) GetVoucherByCodeForUpdate(ctx context.Context, code string) (V
 		&i.Priority,
 		&i.PerUserLimit,
 		&i.BrandIds,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -194,7 +196,7 @@ SET value = $2,
     per_user_limit = $14,
     updated_at = now()
 WHERE code = $1
-RETURNING id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids
+RETURNING id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids, tenant_id
 `
 
 type UpdateVoucherParams struct {
@@ -251,6 +253,7 @@ func (q *Queries) UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (V
 		&i.Priority,
 		&i.PerUserLimit,
 		&i.BrandIds,
+		&i.TenantID,
 	)
 	return i, err
 }

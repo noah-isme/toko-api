@@ -1,0 +1,315 @@
+###
+# Toko API - HTTP Client Examples
+# 
+# File ini bisa digunakan dengan:
+# - VS Code REST Client extension
+# - IntelliJ IDEA HTTP Client
+# - Copy-paste ke Postman/Insomnia
+#
+# @baseUrl = http://localhost:8080
+# @baseUrl = https://api.toko.com
+###
+
+@baseUrl = http://localhost:8080
+@accessToken = your-access-token-here
+
+### ============================================================================
+### AUTHENTICATION
+### ============================================================================
+
+### Register
+POST {{baseUrl}}/api/v1/auth/register
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "password": "SecurePass123!"
+}
+
+### Login
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "john@example.com",
+  "password": "SecurePass123!"
+}
+
+### Refresh Token
+POST {{baseUrl}}/api/v1/auth/refresh
+
+### Get Current User
+GET {{baseUrl}}/api/v1/auth/me
+Authorization: Bearer {{accessToken}}
+
+### Logout
+POST {{baseUrl}}/api/v1/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### Forgot Password
+POST {{baseUrl}}/api/v1/auth/password/forgot
+Content-Type: application/json
+
+{
+  "email": "john@example.com"
+}
+
+### Reset Password
+POST {{baseUrl}}/api/v1/auth/password/reset
+Content-Type: application/json
+
+{
+  "token": "reset-token-from-email",
+  "newPassword": "NewSecurePass123!"
+}
+
+### ============================================================================
+### CATALOG
+### ============================================================================
+
+### List Categories
+GET {{baseUrl}}/api/v1/categories
+
+### List Brands
+GET {{baseUrl}}/api/v1/brands
+
+### List Products (No Filter)
+GET {{baseUrl}}/api/v1/products
+
+### List Products (With Filters)
+GET {{baseUrl}}/api/v1/products?category=smartphones&minPrice=5000000&maxPrice=15000000&sort=price:asc&page=1&limit=20
+
+### Search Products
+GET {{baseUrl}}/api/v1/products?q=samsung+galaxy
+
+### Get Product Detail
+GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24
+
+### Get Related Products
+GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24/related
+
+### ============================================================================
+### CART (Guest)
+### ============================================================================
+
+### Create Guest Cart
+POST {{baseUrl}}/api/v1/carts
+Content-Type: application/json
+
+{}
+
+### Get Cart
+GET {{baseUrl}}/api/v1/carts/{{cartId}}
+
+### Add Item to Cart
+POST {{baseUrl}}/api/v1/carts/{{cartId}}/items
+Content-Type: application/json
+
+{
+  "productId": "product-uuid",
+  "qty": 2
+}
+
+### Update Cart Item Quantity
+PATCH {{baseUrl}}/api/v1/carts/{{cartId}}/items/{{itemId}}
+Content-Type: application/json
+
+{
+  "qty": 3
+}
+
+### Remove Cart Item
+DELETE {{baseUrl}}/api/v1/carts/{{cartId}}/items/{{itemId}}
+
+### Apply Voucher
+POST {{baseUrl}}/api/v1/carts/{{cartId}}/apply-voucher
+Content-Type: application/json
+
+{
+  "code": "DISC20"
+}
+
+### Remove Voucher
+DELETE {{baseUrl}}/api/v1/carts/{{cartId}}/voucher
+
+### Get Shipping Quote
+POST {{baseUrl}}/api/v1/carts/{{cartId}}/quote/shipping
+Content-Type: application/json
+
+{
+  "destination": "Jakarta Selatan",
+  "courier": "jne",
+  "weightGram": 1000
+}
+
+### Get Tax Quote
+POST {{baseUrl}}/api/v1/carts/{{cartId}}/quote/tax
+
+### ============================================================================
+### CART (Authenticated)
+### ============================================================================
+
+### Merge Guest Cart to User Cart
+POST {{baseUrl}}/api/v1/carts/merge
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "cartId": "guest-cart-uuid"
+}
+
+### ============================================================================
+### USER ADDRESSES
+### ============================================================================
+
+### List Addresses
+GET {{baseUrl}}/api/v1/users/me/addresses?page=1&limit=20
+Authorization: Bearer {{accessToken}}
+
+### Create Address
+POST {{baseUrl}}/api/v1/users/me/addresses
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "label": "Home",
+  "receiver_name": "John Doe",
+  "phone": "+6281234567890",
+  "country": "Indonesia",
+  "province": "DKI Jakarta",
+  "city": "Jakarta Selatan",
+  "postal_code": "12190",
+  "address_line1": "Jl. Sudirman No. 123",
+  "address_line2": "Apt 45B",
+  "is_default": true
+}
+
+### Update Address
+PATCH {{baseUrl}}/api/v1/users/me/addresses/{{addressId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "label": "Home (Updated)",
+  "is_default": true
+}
+
+### Delete Address
+DELETE {{baseUrl}}/api/v1/users/me/addresses/{{addressId}}
+Authorization: Bearer {{accessToken}}
+
+### ============================================================================
+### CHECKOUT & ORDERS
+### ============================================================================
+
+### Create Order (Checkout)
+POST {{baseUrl}}/api/v1/checkout
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "cartId": "cart-uuid",
+  "shippingAddressId": "address-uuid",
+  "shippingService": "jne-reg",
+  "shippingCost": 15000,
+  "paymentMethod": "bank_transfer",
+  "notes": "Please call before delivery"
+}
+
+### List User Orders
+GET {{baseUrl}}/api/v1/orders?page=1&limit=20
+Authorization: Bearer {{accessToken}}
+
+### Get Order Detail
+GET {{baseUrl}}/api/v1/orders/{{orderId}}
+Authorization: Bearer {{accessToken}}
+
+### Cancel Order
+POST {{baseUrl}}/api/v1/orders/{{orderId}}/cancel
+Authorization: Bearer {{accessToken}}
+
+### Get Shipment Detail
+GET {{baseUrl}}/api/v1/orders/{{orderId}}/shipment
+Authorization: Bearer {{accessToken}}
+
+### ============================================================================
+### ADMIN - VOUCHERS
+### ============================================================================
+
+### Create Voucher
+POST {{baseUrl}}/api/v1/admin/vouchers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "code": "DISC20",
+  "type": "percentage",
+  "value": 20,
+  "minSpend": 100000,
+  "maxDiscount": 50000,
+  "usageLimit": 100,
+  "perUserLimit": 1,
+  "validFrom": "2025-12-01T00:00:00Z",
+  "validUntil": "2025-12-31T23:59:59Z",
+  "description": "20% discount up to 50k"
+}
+
+### Update Voucher
+PUT {{baseUrl}}/api/v1/admin/vouchers/{{code}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "value": 25,
+  "description": "Updated: 25% discount"
+}
+
+### Preview Voucher (Dry-run)
+POST {{baseUrl}}/api/v1/admin/vouchers/preview
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "code": "DISC20",
+  "subtotal": 500000,
+  "userId": "user-uuid"
+}
+
+### ============================================================================
+### ADMIN - ORDERS
+### ============================================================================
+
+### Update Order Status
+PATCH {{baseUrl}}/api/v1/admin/orders/{{orderId}}/status
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "processing"
+}
+
+### Create Shipment
+POST {{baseUrl}}/api/v1/admin/orders/{{orderId}}/shipment
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "courier": "jne",
+  "service": "REG",
+  "trackingNumber": "JP1234567890",
+  "estimatedDelivery": "2-3 hari"
+}
+
+### ============================================================================
+### HEALTH & MONITORING
+### ============================================================================
+
+### Liveness Probe
+GET {{baseUrl}}/health/live
+
+### Readiness Probe
+GET {{baseUrl}}/health/ready
+
+### Prometheus Metrics
+GET {{baseUrl}}/metrics

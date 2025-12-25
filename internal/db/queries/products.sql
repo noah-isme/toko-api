@@ -3,12 +3,12 @@ SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q) IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
-  AND (sqlc.narg(category_slug) IS NULL OR c.slug = sqlc.arg(category_slug))
-  AND (sqlc.narg(brand_slug) IS NULL OR b.slug = sqlc.arg(brand_slug))
-  AND (sqlc.narg(min_price) IS NULL OR p.price >= sqlc.arg(min_price))
-  AND (sqlc.narg(max_price) IS NULL OR p.price <= sqlc.arg(max_price))
-  AND (sqlc.narg(in_stock) IS NULL OR p.in_stock = sqlc.arg(in_stock));
+WHERE (sqlc.narg(q)::text IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
+  AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
+  AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
+  AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
+  AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock));
 
 -- name: ListProductsPublic :many
 SELECT p.id,
@@ -23,16 +23,16 @@ SELECT p.id,
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q) IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
-  AND (sqlc.narg(category_slug) IS NULL OR c.slug = sqlc.arg(category_slug))
-  AND (sqlc.narg(brand_slug) IS NULL OR b.slug = sqlc.arg(brand_slug))
-  AND (sqlc.narg(min_price) IS NULL OR p.price >= sqlc.arg(min_price))
-  AND (sqlc.narg(max_price) IS NULL OR p.price <= sqlc.arg(max_price))
-  AND (sqlc.narg(in_stock) IS NULL OR p.in_stock = sqlc.arg(in_stock))
-ORDER BY CASE WHEN sqlc.arg(sort) = 'price:asc' THEN p.price END ASC,
-         CASE WHEN sqlc.arg(sort) = 'price:desc' THEN p.price END DESC,
-         CASE WHEN sqlc.arg(sort) = 'title:asc' THEN p.title END ASC,
-         CASE WHEN sqlc.arg(sort) = 'title:desc' THEN p.title END DESC,
+WHERE (sqlc.narg(q)::text IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
+  AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
+  AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
+  AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
+  AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+ORDER BY CASE WHEN sqlc.arg(sort)::text = 'price:asc' THEN p.price END ASC,
+         CASE WHEN sqlc.arg(sort)::text = 'price:desc' THEN p.price END DESC,
+         CASE WHEN sqlc.arg(sort)::text = 'title:asc' THEN p.title END ASC,
+         CASE WHEN sqlc.arg(sort)::text = 'title:desc' THEN p.title END DESC,
          p.created_at DESC
 LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
 

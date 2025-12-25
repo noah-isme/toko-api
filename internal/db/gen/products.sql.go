@@ -16,21 +16,21 @@ SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1 IS NULL OR p.title ILIKE '%%' || $1 || '%%')
-  AND ($2 IS NULL OR c.slug = $2)
-  AND ($3 IS NULL OR b.slug = $3)
-  AND ($4 IS NULL OR p.price >= $4)
-  AND ($5 IS NULL OR p.price <= $5)
-  AND ($6 IS NULL OR p.in_stock = $6)
+WHERE ($1::text IS NULL OR p.title ILIKE '%%' || $1 || '%%')
+  AND ($2::text IS NULL OR c.slug = $2)
+  AND ($3::text IS NULL OR b.slug = $3)
+  AND ($4::bigint IS NULL OR p.price >= $4)
+  AND ($5::bigint IS NULL OR p.price <= $5)
+  AND ($6::boolean IS NULL OR p.in_stock = $6)
 `
 
 type CountProductsPublicParams struct {
-	Q            interface{} `json:"q"`
-	CategorySlug interface{} `json:"category_slug"`
-	BrandSlug    interface{} `json:"brand_slug"`
-	MinPrice     interface{} `json:"min_price"`
-	MaxPrice     interface{} `json:"max_price"`
-	InStock      interface{} `json:"in_stock"`
+	Q            pgtype.Text `json:"q"`
+	CategorySlug pgtype.Text `json:"category_slug"`
+	BrandSlug    pgtype.Text `json:"brand_slug"`
+	MinPrice     pgtype.Int8 `json:"min_price"`
+	MaxPrice     pgtype.Int8 `json:"max_price"`
+	InStock      pgtype.Bool `json:"in_stock"`
 }
 
 func (q *Queries) CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error) {
@@ -209,28 +209,28 @@ SELECT p.id,
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1 IS NULL OR p.title ILIKE '%%' || $1 || '%%')
-  AND ($2 IS NULL OR c.slug = $2)
-  AND ($3 IS NULL OR b.slug = $3)
-  AND ($4 IS NULL OR p.price >= $4)
-  AND ($5 IS NULL OR p.price <= $5)
-  AND ($6 IS NULL OR p.in_stock = $6)
-ORDER BY CASE WHEN $7 = 'price:asc' THEN p.price END ASC,
-         CASE WHEN $7 = 'price:desc' THEN p.price END DESC,
-         CASE WHEN $7 = 'title:asc' THEN p.title END ASC,
-         CASE WHEN $7 = 'title:desc' THEN p.title END DESC,
+WHERE ($1::text IS NULL OR p.title ILIKE '%%' || $1 || '%%')
+  AND ($2::text IS NULL OR c.slug = $2)
+  AND ($3::text IS NULL OR b.slug = $3)
+  AND ($4::bigint IS NULL OR p.price >= $4)
+  AND ($5::bigint IS NULL OR p.price <= $5)
+  AND ($6::boolean IS NULL OR p.in_stock = $6)
+ORDER BY CASE WHEN $7::text = 'price:asc' THEN p.price END ASC,
+         CASE WHEN $7::text = 'price:desc' THEN p.price END DESC,
+         CASE WHEN $7::text = 'title:asc' THEN p.title END ASC,
+         CASE WHEN $7::text = 'title:desc' THEN p.title END DESC,
          p.created_at DESC
 LIMIT $9 OFFSET $8
 `
 
 type ListProductsPublicParams struct {
-	Q            interface{} `json:"q"`
-	CategorySlug interface{} `json:"category_slug"`
-	BrandSlug    interface{} `json:"brand_slug"`
-	MinPrice     interface{} `json:"min_price"`
-	MaxPrice     interface{} `json:"max_price"`
-	InStock      interface{} `json:"in_stock"`
-	Sort         interface{} `json:"sort"`
+	Q            pgtype.Text `json:"q"`
+	CategorySlug pgtype.Text `json:"category_slug"`
+	BrandSlug    pgtype.Text `json:"brand_slug"`
+	MinPrice     pgtype.Int8 `json:"min_price"`
+	MaxPrice     pgtype.Int8 `json:"max_price"`
+	InStock      pgtype.Bool `json:"in_stock"`
+	Sort         string      `json:"sort"`
 	OffsetValue  int32       `json:"offset_value"`
 	LimitValue   int32       `json:"limit_value"`
 }

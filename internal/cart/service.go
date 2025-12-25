@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // ErrNotFound indicates the requested cart could not be located.
@@ -25,6 +26,16 @@ type Service struct {
 	TTL                        time.Duration
 	Now                        func() time.Time
 	VoucherPerUserLimitDefault int
+	DefaultTenantID            pgtype.UUID
+}
+
+func (s *Service) resolveTenant(ctx context.Context) pgtype.UUID {
+	if tID, ok := tenant.FromContext(ctx); ok {
+		if id, err := toUUID(tID); err == nil {
+			return id
+		}
+	}
+	return s.DefaultTenantID
 }
 
 func (s *Service) ttl() time.Duration {
@@ -46,10 +57,7 @@ func (s *Service) EnsureCart(ctx context.Context, userID *string, anonID *string
 	if s == nil || s.Q == nil {
 		return dbgen.Cart{}, errors.New("cart service not configured")
 	}
-	var (
-		cart dbgen.Cart
-		err  error
-	)
+	var cart dbgen.Cart
 	ttl := s.ttl()
 	expires := pgtype.Timestamptz{Time: s.now().Add(ttl), Valid: true}
 
@@ -58,34 +66,84 @@ func (s *Service) EnsureCart(ctx context.Context, userID *string, anonID *string
 		if err != nil {
 			return dbgen.Cart{}, fmt.Errorf("parse user id: %w", err)
 		}
-		cart, err = s.Q.GetActiveCartByUser(ctx, uid)
+		row, err := s.Q.GetActiveCartByUser(ctx, uid)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				cart, err = s.Q.CreateCart(ctx, dbgen.CreateCartParams{
+				tID := s.resolveTenant(ctx)
+				row, err := s.Q.CreateCart(ctx, dbgen.CreateCartParams{
 					UserID:    uid,
 					AnonID:    pgtype.Text{},
 					ExpiresAt: expires,
+					TenantID:  tID,
 				})
-				return cart, err
+				if err != nil {
+					return dbgen.Cart{}, err
+				}
+				cart = dbgen.Cart{
+					ID:                 row.ID,
+					UserID:             row.UserID,
+					AnonID:             row.AnonID,
+					AppliedVoucherCode: row.AppliedVoucherCode,
+					CreatedAt:          row.CreatedAt,
+					UpdatedAt:          row.UpdatedAt,
+					ExpiresAt:          row.ExpiresAt,
+					TenantID:           row.TenantID,
+				}
+				return cart, nil
 			}
 			return dbgen.Cart{}, err
+		}
+		cart = dbgen.Cart{
+			ID:                 row.ID,
+			UserID:             row.UserID,
+			AnonID:             row.AnonID,
+			AppliedVoucherCode: row.AppliedVoucherCode,
+			CreatedAt:          row.CreatedAt,
+			UpdatedAt:          row.UpdatedAt,
+			ExpiresAt:          row.ExpiresAt,
+			TenantID:           row.TenantID,
 		}
 		_ = s.Q.TouchCart(ctx, dbgen.TouchCartParams{ID: cart.ID, ExpiresAt: expires})
 		return cart, nil
 	}
 
 	if anonID != nil && *anonID != "" {
-		cart, err = s.Q.GetActiveCartByAnon(ctx, pgtype.Text{String: *anonID, Valid: true})
+		row, err := s.Q.GetActiveCartByAnon(ctx, pgtype.Text{String: *anonID, Valid: true})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				cart, err = s.Q.CreateCart(ctx, dbgen.CreateCartParams{
+				tID := s.resolveTenant(ctx)
+				row, err := s.Q.CreateCart(ctx, dbgen.CreateCartParams{
 					UserID:    pgtype.UUID{},
 					AnonID:    pgtype.Text{String: *anonID, Valid: true},
 					ExpiresAt: expires,
+					TenantID:  tID,
 				})
-				return cart, err
+				if err != nil {
+					return dbgen.Cart{}, err
+				}
+				cart = dbgen.Cart{
+					ID:                 row.ID,
+					UserID:             row.UserID,
+					AnonID:             row.AnonID,
+					AppliedVoucherCode: row.AppliedVoucherCode,
+					CreatedAt:          row.CreatedAt,
+					UpdatedAt:          row.UpdatedAt,
+					ExpiresAt:          row.ExpiresAt,
+					TenantID:           row.TenantID,
+				}
+				return cart, nil
 			}
 			return dbgen.Cart{}, err
+		}
+		cart = dbgen.Cart{
+			ID:                 row.ID,
+			UserID:             row.UserID,
+			AnonID:             row.AnonID,
+			AppliedVoucherCode: row.AppliedVoucherCode,
+			CreatedAt:          row.CreatedAt,
+			UpdatedAt:          row.UpdatedAt,
+			ExpiresAt:          row.ExpiresAt,
+			TenantID:           row.TenantID,
 		}
 		_ = s.Q.TouchCart(ctx, dbgen.TouchCartParams{ID: cart.ID, ExpiresAt: expires})
 		return cart, nil
@@ -240,12 +298,21 @@ func (s *Service) ApplyVoucher(ctx context.Context, cartID string, code string) 
 	if err != nil {
 		return 0, fmt.Errorf("parse cart id: %w", err)
 	}
-	cart, err := s.Q.GetCartByID(ctx, cID)
+	row, err := s.Q.GetCartByID(ctx, cID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrNotFound
 		}
 		return 0, err
+	}
+	cart := dbgen.Cart{
+		ID:                 row.ID,
+		UserID:             row.UserID,
+		AnonID:             row.AnonID,
+		AppliedVoucherCode: row.AppliedVoucherCode,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+		ExpiresAt:          row.ExpiresAt,
 	}
 	discount, voucher, err := s.evaluateVoucher(ctx, cart, code)
 	if err != nil {
@@ -469,15 +536,11 @@ func (s *Service) loadCartItems(ctx context.Context, cartID pgtype.UUID) ([]dbge
 }
 
 func toUUID(value string) (pgtype.UUID, error) {
-	var id pgtype.UUID
 	parsed, err := uuid.Parse(value)
 	if err != nil {
-		return id, err
-	}
-	if err := id.Scan(parsed[:]); err != nil {
 		return pgtype.UUID{}, err
 	}
-	return id, nil
+	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
 }
 
 func uuidString(id pgtype.UUID) string {
@@ -507,9 +570,18 @@ func (s *Service) EvaluateVoucher(ctx context.Context, cartID pgtype.UUID, code 
 	if s == nil {
 		return 0, dbgen.Voucher{}, errors.New("cart service not configured")
 	}
-	cart, err := s.Q.GetCartByID(ctx, cartID)
+	row, err := s.Q.GetCartByID(ctx, cartID)
 	if err != nil {
 		return 0, dbgen.Voucher{}, err
+	}
+	cart := dbgen.Cart{
+		ID:                 row.ID,
+		UserID:             row.UserID,
+		AnonID:             row.AnonID,
+		AppliedVoucherCode: row.AppliedVoucherCode,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+		ExpiresAt:          row.ExpiresAt,
 	}
 	return s.evaluateVoucher(ctx, cart, code)
 }

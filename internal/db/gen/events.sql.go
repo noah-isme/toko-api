@@ -23,9 +23,17 @@ type InsertDomainEventParams struct {
 	Payload     []byte      `json:"payload"`
 }
 
-func (q *Queries) InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error) {
+type InsertDomainEventRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Topic       string             `json:"topic"`
+	AggregateID pgtype.UUID        `json:"aggregate_id"`
+	Payload     []byte             `json:"payload"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+}
+
+func (q *Queries) InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error) {
 	row := q.db.QueryRow(ctx, insertDomainEvent, arg.Topic, arg.AggregateID, arg.Payload)
-	var i DomainEvent
+	var i InsertDomainEventRow
 	err := row.Scan(
 		&i.ID,
 		&i.Topic,
@@ -50,15 +58,23 @@ type ListDomainEventsByTopicParams struct {
 	Offset int32  `json:"offset"`
 }
 
-func (q *Queries) ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]DomainEvent, error) {
+type ListDomainEventsByTopicRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Topic       string             `json:"topic"`
+	AggregateID pgtype.UUID        `json:"aggregate_id"`
+	Payload     []byte             `json:"payload"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+}
+
+func (q *Queries) ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error) {
 	rows, err := q.db.Query(ctx, listDomainEventsByTopic, arg.Topic, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []DomainEvent
+	var items []ListDomainEventsByTopicRow
 	for rows.Next() {
-		var i DomainEvent
+		var i ListDomainEventsByTopicRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Topic,

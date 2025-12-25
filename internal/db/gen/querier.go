@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	AddFavorite(ctx context.Context, arg AddFavoriteParams) error
+	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
+	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
@@ -22,9 +25,10 @@ type Querier interface {
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) error
 	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
-	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
+	CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error)
+	CreateReview(ctx context.Context, arg CreateReviewParams) (Review, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
-	CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error)
+	CreateShipment(ctx context.Context, arg CreateShipmentParams) (CreateShipmentRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
@@ -34,6 +38,7 @@ type Querier interface {
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
+	DeleteReview(ctx context.Context, arg DeleteReviewParams) error
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
@@ -50,29 +55,34 @@ type Querier interface {
 	GetCategoryByID(ctx context.Context, id pgtype.UUID) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
-	GetDomainEvent(ctx context.Context, id pgtype.UUID) (DomainEvent, error)
-	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
+	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
+	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (GetLatestPaymentByOrderRow, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
+	GetOrderByTenant(ctx context.Context, arg GetOrderByTenantParams) (GetOrderByTenantRow, error)
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
+	GetProductDetailByTenant(ctx context.Context, arg GetProductDetailByTenantParams) (GetProductDetailByTenantRow, error)
 	GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error)
+	GetProductReviews(ctx context.Context, arg GetProductReviewsParams) ([]Review, error)
+	GetReviewStats(ctx context.Context, arg GetReviewStatsParams) (GetReviewStatsRow, error)
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
-	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (Shipment, error)
+	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
 	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
+	GetVoucherByTenant(ctx context.Context, arg GetVoucherByTenantParams) (GetVoucherByTenantRow, error)
 	GetVoucherUsageByOrder(ctx context.Context, arg GetVoucherUsageByOrderParams) (VoucherUsage, error)
 	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (WebhookEndpoint, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)
-	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error)
+	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error)
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
@@ -83,11 +93,14 @@ type Querier interface {
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
 	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
-	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]DomainEvent, error)
+	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
+	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
 	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
 	ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUID) ([]ListOrderItemsForStockRow, error)
+	ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenantParams) ([]ListOrdersByTenantRow, error)
 	ListOrdersForUser(ctx context.Context, arg ListOrdersForUserParams) ([]Order, error)
+	ListProductsByTenant(ctx context.Context, arg ListProductsByTenantParams) ([]ListProductsByTenantRow, error)
 	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
 	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
@@ -102,6 +115,7 @@ type Querier interface {
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
+	RemoveFavorite(ctx context.Context, arg RemoveFavoriteParams) error
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error

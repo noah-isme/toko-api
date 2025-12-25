@@ -23,9 +23,20 @@ type CreateShipmentParams struct {
 	TrackingNumber pgtype.Text `json:"tracking_number"`
 }
 
-func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error) {
+type CreateShipmentRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	Status         ShipmentStatus     `json:"status"`
+	Courier        pgtype.Text        `json:"courier"`
+	TrackingNumber pgtype.Text        `json:"tracking_number"`
+	History        []byte             `json:"history"`
+	LastStatus     NullShipmentStatus `json:"last_status"`
+	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
+}
+
+func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) (CreateShipmentRow, error) {
 	row := q.db.QueryRow(ctx, createShipment, arg.OrderID, arg.Courier, arg.TrackingNumber)
-	var i Shipment
+	var i CreateShipmentRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,
@@ -46,9 +57,20 @@ WHERE order_id = $1
 LIMIT 1
 `
 
-func (q *Queries) GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (Shipment, error) {
+type GetShipmentByOrderRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	Status         ShipmentStatus     `json:"status"`
+	Courier        pgtype.Text        `json:"courier"`
+	TrackingNumber pgtype.Text        `json:"tracking_number"`
+	History        []byte             `json:"history"`
+	LastStatus     NullShipmentStatus `json:"last_status"`
+	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
+}
+
+func (q *Queries) GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error) {
 	row := q.db.QueryRow(ctx, getShipmentByOrder, orderID)
-	var i Shipment
+	var i GetShipmentByOrderRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,

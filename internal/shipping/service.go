@@ -25,8 +25,8 @@ var (
 
 type queryProvider interface {
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (dbgen.Order, error)
-	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.Shipment, error)
-	CreateShipment(ctx context.Context, arg dbgen.CreateShipmentParams) (dbgen.Shipment, error)
+	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.GetShipmentByOrderRow, error)
+	CreateShipment(ctx context.Context, arg dbgen.CreateShipmentParams) (dbgen.CreateShipmentRow, error)
 	UpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
 	InsertShipmentEvent(ctx context.Context, arg dbgen.InsertShipmentEventParams) (dbgen.ShipmentEvent, error)
 	UpdateShipmentStatus(ctx context.Context, arg dbgen.UpdateShipmentStatusParams) (pgtype.UUID, error)
@@ -63,13 +63,23 @@ func (s *Service) Create(ctx context.Context, orderID pgtype.UUID, courier, trac
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return dbgen.Shipment{}, err
 	}
-	shipment, err := s.Q.CreateShipment(ctx, dbgen.CreateShipmentParams{
+	row, err := s.Q.CreateShipment(ctx, dbgen.CreateShipmentParams{
 		OrderID:        orderID,
 		Courier:        optionalText(courier),
 		TrackingNumber: optionalText(tracking),
 	})
 	if err != nil {
 		return dbgen.Shipment{}, err
+	}
+	shipment := dbgen.Shipment{
+		ID:             row.ID,
+		OrderID:        row.OrderID,
+		Status:         row.Status,
+		Courier:        row.Courier,
+		TrackingNumber: row.TrackingNumber,
+		History:        row.History,
+		LastStatus:     row.LastStatus,
+		LastEventAt:    row.LastEventAt,
 	}
 	// Transition order into PACKED when shipment is created.
 	_, updateErr := s.Q.UpdateOrderStatusIfAllowed(ctx, dbgen.UpdateOrderStatusIfAllowedParams{
@@ -87,9 +97,19 @@ func (s *Service) AppendEvent(ctx context.Context, orderID pgtype.UUID, status d
 	if s.Q == nil {
 		return dbgen.ShipmentEvent{}, dbgen.Shipment{}, errors.New("shipment queries not configured")
 	}
-	shipment, err := s.Q.GetShipmentByOrder(ctx, orderID)
+	row, err := s.Q.GetShipmentByOrder(ctx, orderID)
 	if err != nil {
 		return dbgen.ShipmentEvent{}, dbgen.Shipment{}, err
+	}
+	shipment := dbgen.Shipment{
+		ID:             row.ID,
+		OrderID:        row.OrderID,
+		Status:         row.Status,
+		Courier:        row.Courier,
+		TrackingNumber: row.TrackingNumber,
+		History:        row.History,
+		LastStatus:     row.LastStatus,
+		LastEventAt:    row.LastEventAt,
 	}
 	current := shipment.Status
 	if shipment.LastStatus.Valid {

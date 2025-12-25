@@ -14,7 +14,7 @@ import (
 
 // EventStore defines the persistence operations required by the event bus.
 type EventStore interface {
-	InsertDomainEvent(ctx context.Context, arg dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error)
+	InsertDomainEvent(ctx context.Context, arg dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error)
 }
 
 // DeliveryScheduler schedules webhook deliveries for emitted events.
@@ -50,13 +50,20 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 	if err != nil {
 		return dbgen.DomainEvent{}, fmt.Errorf("events: encode payload: %w", err)
 	}
-	ev, err := b.Store.InsertDomainEvent(ctx, dbgen.InsertDomainEventParams{
+	row, err := b.Store.InsertDomainEvent(ctx, dbgen.InsertDomainEventParams{
 		Topic:       topic,
 		AggregateID: aggregateID,
 		Payload:     encoded,
 	})
 	if err != nil {
 		return dbgen.DomainEvent{}, fmt.Errorf("events: persist event: %w", err)
+	}
+	ev := dbgen.DomainEvent{
+		ID:          row.ID,
+		Topic:       row.Topic,
+		AggregateID: row.AggregateID,
+		Payload:     row.Payload,
+		OccurredAt:  row.OccurredAt,
 	}
 	var joined error
 	if b.Scheduler != nil {

@@ -12,7 +12,7 @@ import (
 )
 
 const getVoucherByCode = `-- name: GetVoucherByCode :one
-SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids
+SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids, tenant_id
 FROM vouchers
 WHERE code = $1
 LIMIT 1
@@ -40,6 +40,7 @@ func (q *Queries) GetVoucherByCode(ctx context.Context, code string) (Voucher, e
 		&i.Priority,
 		&i.PerUserLimit,
 		&i.BrandIds,
+		&i.TenantID,
 	)
 	return i, err
 }

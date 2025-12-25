@@ -17,9 +17,17 @@ FROM domain_events
 WHERE id = $1
 `
 
-func (q *Queries) GetDomainEvent(ctx context.Context, id pgtype.UUID) (DomainEvent, error) {
+type GetDomainEventRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Topic       string             `json:"topic"`
+	AggregateID pgtype.UUID        `json:"aggregate_id"`
+	Payload     []byte             `json:"payload"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+}
+
+func (q *Queries) GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error) {
 	row := q.db.QueryRow(ctx, getDomainEvent, id)
-	var i DomainEvent
+	var i GetDomainEventRow
 	err := row.Scan(
 		&i.ID,
 		&i.Topic,

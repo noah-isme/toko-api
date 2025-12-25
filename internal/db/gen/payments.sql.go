@@ -42,7 +42,22 @@ type CreatePaymentParams struct {
 	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
 }
 
-func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error) {
+type CreatePaymentRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	OrderID         pgtype.UUID        `json:"order_id"`
+	Provider        pgtype.Text        `json:"provider"`
+	Status          PaymentStatus      `json:"status"`
+	ProviderPayload []byte             `json:"provider_payload"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	Channel         pgtype.Text        `json:"channel"`
+	IntentToken     pgtype.Text        `json:"intent_token"`
+	RedirectUrl     pgtype.Text        `json:"redirect_url"`
+	Amount          pgtype.Int8        `json:"amount"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error) {
 	row := q.db.QueryRow(ctx, createPayment,
 		arg.OrderID,
 		arg.Provider,
@@ -54,7 +69,7 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		arg.Amount,
 		arg.ExpiresAt,
 	)
-	var i Payment
+	var i CreatePaymentRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,
@@ -81,9 +96,24 @@ ORDER BY created_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error) {
+type GetLatestPaymentByOrderRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	OrderID         pgtype.UUID        `json:"order_id"`
+	Provider        pgtype.Text        `json:"provider"`
+	Status          PaymentStatus      `json:"status"`
+	ProviderPayload []byte             `json:"provider_payload"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	Channel         pgtype.Text        `json:"channel"`
+	IntentToken     pgtype.Text        `json:"intent_token"`
+	RedirectUrl     pgtype.Text        `json:"redirect_url"`
+	Amount          pgtype.Int8        `json:"amount"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (GetLatestPaymentByOrderRow, error) {
 	row := q.db.QueryRow(ctx, getLatestPaymentByOrder, orderID)
-	var i Payment
+	var i GetLatestPaymentByOrderRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,

@@ -12,19 +12,25 @@ import (
 )
 
 const createCart = `-- name: CreateCart :one
-INSERT INTO carts (user_id, anon_id, expires_at)
-VALUES ($1, $2, $3)
-RETURNING id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at
+INSERT INTO carts (user_id, anon_id, expires_at, tenant_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 `
 
 type CreateCartParams struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	AnonID    pgtype.Text        `json:"anon_id"`
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
 }
 
 func (q *Queries) CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error) {
-	row := q.db.QueryRow(ctx, createCart, arg.UserID, arg.AnonID, arg.ExpiresAt)
+	row := q.db.QueryRow(ctx, createCart,
+		arg.UserID,
+		arg.AnonID,
+		arg.ExpiresAt,
+		arg.TenantID,
+	)
 	var i Cart
 	err := row.Scan(
 		&i.ID,
@@ -34,12 +40,13 @@ func (q *Queries) CreateCart(ctx context.Context, arg CreateCartParams) (Cart, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ExpiresAt,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getActiveCartByAnon = `-- name: GetActiveCartByAnon :one
-SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at
+SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
 WHERE anon_id = $1 AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
@@ -57,12 +64,13 @@ func (q *Queries) GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ExpiresAt,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getActiveCartByUser = `-- name: GetActiveCartByUser :one
-SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at
+SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
 WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
@@ -80,12 +88,13 @@ func (q *Queries) GetActiveCartByUser(ctx context.Context, userID pgtype.UUID) (
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ExpiresAt,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getCartByID = `-- name: GetCartByID :one
-SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at
+SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
 WHERE id = $1
 LIMIT 1
@@ -102,6 +111,7 @@ func (q *Queries) GetCartByID(ctx context.Context, id pgtype.UUID) (Cart, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ExpiresAt,
+		&i.TenantID,
 	)
 	return i, err
 }

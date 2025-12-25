@@ -72,7 +72,7 @@ func (h *Handler) GetByOrder(w http.ResponseWriter, r *http.Request) {
 			"status":         shipment.Status,
 			"courier":        nullableText(shipment.Courier),
 			"trackingNumber": nullableText(shipment.TrackingNumber),
-			"lastStatus":     latestShipmentStatus(shipment),
+			"lastStatus":     resolveStatus(shipment.Status, shipment.LastStatus),
 			"lastEventAt":    nullableTime(shipment.LastEventAt),
 			"events":         serialiseEvents(events),
 		},
@@ -125,7 +125,7 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 			"status":         shipment.Status,
 			"courier":        nullableText(shipment.Courier),
 			"trackingNumber": nullableText(shipment.TrackingNumber),
-			"lastStatus":     latestShipmentStatus(shipment),
+			"lastStatus":     resolveStatus(shipment.Status, shipment.LastStatus),
 			"lastEventAt":    nullableTime(shipment.LastEventAt),
 			"events":         []any{},
 		},
@@ -146,11 +146,11 @@ func serialiseEvents(events []dbgen.ShipmentEvent) []map[string]any {
 	return result
 }
 
-func latestShipmentStatus(sh dbgen.Shipment) dbgen.ShipmentStatus {
-	if sh.LastStatus.Valid {
-		return sh.LastStatus.ShipmentStatus
+func resolveStatus(status dbgen.ShipmentStatus, lastStatus dbgen.NullShipmentStatus) dbgen.ShipmentStatus {
+	if lastStatus.Valid {
+		return lastStatus.ShipmentStatus
 	}
-	return sh.Status
+	return status
 }
 
 func nullableText(v pgtype.Text) *string {

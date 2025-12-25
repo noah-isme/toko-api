@@ -35,7 +35,7 @@ func (q *Queries) CountWebhookDeliveries(ctx context.Context, arg CountWebhookDe
 const createWebhookEndpoint = `-- name: CreateWebhookEndpoint :one
 INSERT INTO webhook_endpoints (name, url, secret, active, topics)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, url, secret, active, topics, created_at, updated_at
+RETURNING id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 `
 
 type CreateWebhookEndpointParams struct {
@@ -64,6 +64,7 @@ func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEn
 		&i.Topics,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -89,7 +90,7 @@ func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) err
 }
 
 const dequeueDueDeliveries = `-- name: DequeueDueDeliveries :many
-SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at
+SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
 FROM webhook_deliveries
 WHERE status IN ('PENDING', 'FAILED')
   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
@@ -119,6 +120,7 @@ func (q *Queries) DequeueDueDeliveries(ctx context.Context, limit int32) ([]Webh
 			&i.ResponseBody,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -133,7 +135,7 @@ func (q *Queries) DequeueDueDeliveries(ctx context.Context, limit int32) ([]Webh
 const enqueueDelivery = `-- name: EnqueueDelivery :one
 INSERT INTO webhook_deliveries (endpoint_id, event_id, status, max_attempt, next_attempt_at)
 VALUES ($1, $2, 'PENDING', $3, now())
-RETURNING id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at
+RETURNING id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
 `
 
 type EnqueueDeliveryParams struct {
@@ -158,12 +160,13 @@ func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams
 		&i.ResponseBody,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getDeliveryByID = `-- name: GetDeliveryByID :one
-SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at
+SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
 FROM webhook_deliveries
 WHERE id = $1
 `
@@ -184,12 +187,13 @@ func (q *Queries) GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookD
 		&i.ResponseBody,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
-SELECT id, name, url, secret, active, topics, created_at, updated_at
+SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
 WHERE id = $1
 `
@@ -206,6 +210,7 @@ func (q *Queries) GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (Webho
 		&i.Topics,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -234,7 +239,7 @@ func (q *Queries) InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqPara
 }
 
 const listActiveEndpointsForTopic = `-- name: ListActiveEndpointsForTopic :many
-SELECT id, name, url, secret, active, topics, created_at, updated_at
+SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
 WHERE active = true
   AND (coalesce(array_length(topics, 1), 0) = 0 OR $1::text = ANY(topics))
@@ -259,6 +264,7 @@ func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, topic string)
 			&i.Topics,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -271,7 +277,7 @@ func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, topic string)
 }
 
 const listWebhookDeliveries = `-- name: ListWebhookDeliveries :many
-SELECT wd.id, wd.endpoint_id, wd.event_id, wd.status, wd.attempt, wd.max_attempt, wd.next_attempt_at, wd.last_error, wd.response_status, wd.response_body, wd.created_at, wd.updated_at, we.name AS endpoint_name, we.url AS endpoint_url, we.active AS endpoint_active
+SELECT wd.id, wd.endpoint_id, wd.event_id, wd.status, wd.attempt, wd.max_attempt, wd.next_attempt_at, wd.last_error, wd.response_status, wd.response_body, wd.created_at, wd.updated_at, wd.tenant_id, we.name AS endpoint_name, we.url AS endpoint_url, we.active AS endpoint_active
 FROM webhook_deliveries wd
 JOIN webhook_endpoints we ON we.id = wd.endpoint_id
 WHERE ($1::uuid IS NULL OR wd.endpoint_id = $1::uuid)
@@ -302,6 +308,7 @@ type ListWebhookDeliveriesRow struct {
 	ResponseBody   pgtype.Text        `json:"response_body"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
 	EndpointName   string             `json:"endpoint_name"`
 	EndpointUrl    string             `json:"endpoint_url"`
 	EndpointActive bool               `json:"endpoint_active"`
@@ -335,6 +342,7 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeli
 			&i.ResponseBody,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TenantID,
 			&i.EndpointName,
 			&i.EndpointUrl,
 			&i.EndpointActive,
@@ -350,7 +358,7 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeli
 }
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
-SELECT id, name, url, secret, active, topics, created_at, updated_at
+SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $1
@@ -379,6 +387,7 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpo
 			&i.Topics,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -473,7 +482,7 @@ SET status = 'PENDING',
     response_body = NULL,
     updated_at = now()
 WHERE id = $1
-RETURNING id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at
+RETURNING id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
 `
 
 func (q *Queries) ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error) {
@@ -492,6 +501,7 @@ func (q *Queries) ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (W
 		&i.ResponseBody,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -505,7 +515,7 @@ SET name = $1,
     topics = $5,
     updated_at = now()
 WHERE id = $6
-RETURNING id, name, url, secret, active, topics, created_at, updated_at
+RETURNING id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 `
 
 type UpdateWebhookEndpointParams struct {
@@ -536,6 +546,7 @@ func (q *Queries) UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEn
 		&i.Topics,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TenantID,
 	)
 	return i, err
 }

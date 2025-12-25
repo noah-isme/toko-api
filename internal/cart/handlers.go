@@ -107,7 +107,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	var discount int64
 	if cart.AppliedVoucherCode.Valid && cart.AppliedVoucherCode.String != "" && h.Svc != nil {
-		discount, _, err = h.Svc.evaluateVoucher(r.Context(), cart, cart.AppliedVoucherCode.String)
+		cartModel := dbgen.Cart{
+			ID:                 cart.ID,
+			UserID:             cart.UserID,
+			AnonID:             cart.AnonID,
+			AppliedVoucherCode: cart.AppliedVoucherCode,
+			CreatedAt:          cart.CreatedAt,
+			UpdatedAt:          cart.UpdatedAt,
+			ExpiresAt:          cart.ExpiresAt,
+		}
+		discount, _, err = h.Svc.evaluateVoucher(r.Context(), cartModel, cart.AppliedVoucherCode.String)
 		if err != nil {
 			discount = 0
 		}
@@ -127,6 +136,46 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 				"total":    summary.Total,
 			},
 			"currency": h.Currency,
+		},
+	})
+}
+
+// GetActive resolves the current active cart for the user or anon ID.
+func (h *Handler) GetActive(w http.ResponseWriter, r *http.Request) {
+	if h.Svc == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "cart service not configured", nil)
+		return
+	}
+	ctx := r.Context()
+	
+	// Try to resolve user ID first
+	var userID *string
+	if uID, ok := common.UserID(ctx); ok && strings.TrimSpace(uID) != "" {
+		userID = &uID
+	}
+
+	// Try to resolve anon ID from query param
+	var anonID *string
+	if aID := r.URL.Query().Get("anonId"); strings.TrimSpace(aID) != "" {
+		anonID = &aID
+	}
+
+	if userID == nil && anonID == nil {
+		common.JSONError(w, http.StatusOK, "NO_CONTENT", "no active cart context", nil)
+		return
+	}
+
+	cart, err := h.Svc.EnsureCart(ctx, userID, anonID)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	common.JSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"id":      UUIDString(cart.ID),
+			"anonId":  nullableText(cart.AnonID),
+			"voucher": nullableText(cart.AppliedVoucherCode),
 		},
 	})
 }

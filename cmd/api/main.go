@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"os/signal"
 	"slices"
@@ -33,6 +34,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/favorites"
 	"github.com/noah-isme/backend-toko/internal/health"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
@@ -41,8 +43,10 @@ import (
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
 	"github.com/noah-isme/backend-toko/internal/resilience"
+	"github.com/noah-isme/backend-toko/internal/reviews"
 	"github.com/noah-isme/backend-toko/internal/security"
 	"github.com/noah-isme/backend-toko/internal/shipping"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 	"github.com/noah-isme/backend-toko/internal/user"
 	"github.com/noah-isme/backend-toko/internal/voucher"
 )
@@ -237,7 +241,25 @@ func main() {
 
 	idem := common.Idem{R: redisClient, TTL: cfg.IdempotencyTTL}
 
-	cartSvc := &cart.Service{Q: queries, TTL: cfg.CartTTL, VoucherPerUserLimitDefault: cfg.VoucherPerUserLimit}
+	defaultTenantIDStr := envOrDefault("TENANT_DEFAULT_ID", "17c19dca-9a70-4e30-bd34-9af2b1e7b01b")
+	defaultTenantID, err := cart.ToUUID(defaultTenantIDStr)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("parse default tenant id")
+	}
+
+	baseURL, _ := url.Parse(cfg.PublicBaseURL)
+	baseDomain := "localhost"
+	if baseURL != nil && baseURL.Hostname() != "" {
+		baseDomain = baseURL.Hostname()
+	}
+	tenantResolver := tenant.NewResolver("X-Tenant-ID", baseDomain, defaultTenantIDStr)
+
+	cartSvc := &cart.Service{
+		Q:                          queries,
+		TTL:                        cfg.CartTTL,
+		VoucherPerUserLimitDefault: cfg.VoucherPerUserLimit,
+		DefaultTenantID:            defaultTenantID,
+	}
 	voucherSvc := &voucher.Service{Q: queries, DefaultPerUserLimit: cfg.VoucherPerUserLimit}
 	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, DefaultPriority: cfg.VoucherDefaultPriority, CatalogCache: catalogCache, Analytics: nil}
 	cartHandler := &cart.Handler{
@@ -361,6 +383,12 @@ func main() {
 	voucherHandler.Analytics = analyticsSvc
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
+
+	reviewsSvc := &reviews.Service{Q: queries}
+	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
+
+	favoritesSvc := &favorites.Service{Q: queries}
+	favoritesHandler := &favorites.Handler{Svc: favoritesSvc}
 
 	auditSample := envFloat("AUDIT_SAMPLING_RATE", 1.0)
 	if auditSample < 0 {
@@ -532,11 +560,27 @@ func main() {
 		v.Use(globalLimiter)
 		v.Use(ipLimiter)
 		v.Use(userLimiter)
+		v.Use(tenantResolver.Middleware)
+
 		v.Get("/categories", catalogHandler.Categories)
 		v.Get("/brands", catalogHandler.Brands)
 		v.Get("/products", catalogHandler.Products)
 		v.Get("/products/{slug}", catalogHandler.ProductDetail)
 		v.Get("/products/{slug}/related", catalogHandler.Related)
+
+		// Reviews
+		v.Get("/products/{id}/reviews", reviewsHandler.List)
+		v.Get("/products/{id}/reviews/stats", reviewsHandler.Stats)
+		v.With(authMiddleware.RequireAuth).Post("/products/{id}/reviews", reviewsHandler.Create)
+		v.With(authMiddleware.RequireAuth).Delete("/products/{id}/reviews", reviewsHandler.Delete) // Optional
+
+		// Favorites
+		v.Route("/favorites", func(f chi.Router) {
+			f.Use(authMiddleware.RequireAuth)
+			f.Get("/", favoritesHandler.List)
+			f.Post("/", favoritesHandler.Toggle)
+			f.Get("/{id}", favoritesHandler.Check)
+		})
 
 		v.Route("/auth", func(a chi.Router) {
 			a.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "auth"}))
@@ -564,6 +608,7 @@ func main() {
 		})
 
 		v.Route("/carts", func(c chi.Router) {
+			c.Get("/", cartHandler.GetActive)
 			c.Get("/{id}", cartHandler.Get)
 			c.Group(func(g chi.Router) {
 				g.Use(idem.Middleware)

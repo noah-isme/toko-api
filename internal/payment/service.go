@@ -86,7 +86,21 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 					providerName = normaliseLabel(existing.Provider.String)
 				}
 				result = "reused"
-				return existing, nil
+				return dbgen.Payment{
+					ID:              existing.ID,
+					OrderID:         existing.OrderID,
+					Provider:        existing.Provider,
+					Status:          existing.Status,
+					ProviderPayload: existing.ProviderPayload,
+					CreatedAt:       existing.CreatedAt,
+					UpdatedAt:       existing.UpdatedAt,
+					Channel:         existing.Channel,
+					IntentToken:     existing.IntentToken,
+					RedirectUrl:     existing.RedirectUrl,
+					Amount:          existing.Amount,
+					ExpiresAt:       existing.ExpiresAt,
+					TenantID:        pgtype.UUID{}, // Not in Row yet?
+				}, nil
 			}
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -142,7 +156,20 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		Status:    dbgen.PaymentStatusPENDING,
 		Payload:   payload,
 	})
-	return payment, nil
+	return dbgen.Payment{
+		ID:              payment.ID,
+		OrderID:         payment.OrderID,
+		Provider:        payment.Provider,
+		Status:          payment.Status,
+		ProviderPayload: payment.ProviderPayload,
+		CreatedAt:       payment.CreatedAt,
+		UpdatedAt:       payment.UpdatedAt,
+		Channel:         payment.Channel,
+		IntentToken:     payment.IntentToken,
+		RedirectUrl:     payment.RedirectUrl,
+		Amount:          payment.Amount,
+		ExpiresAt:       payment.ExpiresAt,
+	}, nil
 }
 
 // ConsolidatedStatus returns the best-known status for an order payment.

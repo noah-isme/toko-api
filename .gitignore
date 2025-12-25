@@ -3,4 +3,4 @@ vendor/
 .env
 coverage.out
 node_modules/
-.air.toml
+tmp/

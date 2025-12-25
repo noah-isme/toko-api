@@ -12,24 +12,24 @@ ALTER TABLE shipments         ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES
 ALTER TABLE webhook_endpoints ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
 ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS tenant_id UUID;
 ALTER TABLE domain_events     ADD COLUMN IF NOT EXISTS tenant_id UUID;
-ALTER TABLE analytics_materialized ADD COLUMN IF NOT EXISTS tenant_id UUID;
+
 
 -- Backfill with default tenant (by slug 'default')
-WITH def AS (
-  SELECT id FROM tenants WHERE slug = 'default' LIMIT 1
-)
-UPDATE products          SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE categories        SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE brands            SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE vouchers          SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE carts             SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE orders            SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE payments          SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE shipments         SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE webhook_endpoints SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE webhook_deliveries SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE domain_events     SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
-UPDATE analytics_materialized SET tenant_id=(SELECT id FROM def) WHERE tenant_id IS NULL;
+-- Insert default tenant if not exists
+INSERT INTO tenants (name, slug) VALUES ('Default Tenant', 'default') ON CONFLICT (slug) DO NOTHING;
+
+UPDATE products          SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE categories        SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE brands            SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE vouchers          SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE carts             SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE orders            SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE payments          SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE shipments         SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE webhook_endpoints SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE webhook_deliveries SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+UPDATE domain_events     SET tenant_id=(SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+
 
 -- Enforce NOT NULL where relationally required
 ALTER TABLE products          ALTER COLUMN tenant_id SET NOT NULL;

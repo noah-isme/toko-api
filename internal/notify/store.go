@@ -121,5 +121,15 @@ func (s QueriesStore) CountWebhookDeliveries(ctx context.Context, arg dbgen.Coun
 }
 
 func (s QueriesStore) GetDomainEvent(ctx context.Context, id pgtype.UUID) (dbgen.DomainEvent, error) {
-	return s.Queries.GetDomainEvent(ctx, id)
+	row, err := s.Queries.GetDomainEvent(ctx, id)
+	if err != nil {
+		return dbgen.DomainEvent{}, err
+	}
+	return dbgen.DomainEvent{
+		ID:          row.ID,
+		Topic:       row.Topic,
+		AggregateID: row.AggregateID,
+		Payload:     row.Payload,
+		OccurredAt:  row.OccurredAt,
+	}, nil
 }

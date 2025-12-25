@@ -300,7 +300,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		MinPrice:     countParams.MinPrice,
 		MaxPrice:     countParams.MaxPrice,
 		InStock:      countParams.InStock,
-		Sort:         optionalStringValue(params.Sort),
+		Sort:         params.Sort,
 		OffsetValue:  offset,
 		LimitValue:   int32(params.Limit),
 	}
@@ -520,26 +520,26 @@ func (s *Service) listCacheKey(params ListParams) (string, bool) {
 	return s.cache.ProductListKey(), true
 }
 
-func optionalStringValue(value string) any {
+func optionalStringValue(value string) pgtype.Text {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return nil
+		return pgtype.Text{}
 	}
-	return trimmed
+	return pgtype.Text{String: trimmed, Valid: true}
 }
 
-func optionalInt64(ptr *int64) any {
+func optionalInt64(ptr *int64) pgtype.Int8 {
 	if ptr == nil {
-		return nil
+		return pgtype.Int8{}
 	}
-	return *ptr
+	return pgtype.Int8{Int64: *ptr, Valid: true}
 }
 
-func optionalBool(ptr *bool) any {
+func optionalBool(ptr *bool) pgtype.Bool {
 	if ptr == nil {
-		return nil
+		return pgtype.Bool{}
 	}
-	return *ptr
+	return pgtype.Bool{Bool: *ptr, Valid: true}
 }
 
 func parseBool(value string) (bool, error) {
