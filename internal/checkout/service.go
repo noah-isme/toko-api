@@ -14,6 +14,7 @@ import (
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/pricing"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 type Addr struct {
@@ -70,6 +71,14 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	}
 	if in.CartID == "" {
 		return Output{}, errors.New("cartId is required")
+	}
+	tenantID, ok := tenant.FromContext(ctx)
+	if !ok || tenantID == "" {
+		return Output{}, errors.New("tenant is required")
+	}
+	tID, err := cart.ToUUID(tenantID)
+	if err != nil {
+		return Output{}, fmt.Errorf("invalid tenant id: %w", err)
 	}
 	cID, err := cart.ToUUID(in.CartID)
 	if err != nil {
@@ -131,6 +140,7 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		ShippingOption:     toJSON(in.Shipping),
 		Notes:              toNullableText(in.Notes),
 		AppliedVoucherCode: cartRow.AppliedVoucherCode,
+		TenantID:           tID,
 	})
 	if err != nil {
 		return Output{}, err

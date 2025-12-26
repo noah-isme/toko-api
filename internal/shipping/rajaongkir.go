@@ -12,9 +12,10 @@ type RateReq struct {
 
 // Rate describes a returned shipping rate option.
 type Rate struct {
-	Service string
-	Price   int64
-	ETD     string
+	Service string `json:"service"`
+	Price   int64  `json:"cost"`
+	ETD     string `json:"etd"`
+	Courier string `json:"courier,omitempty"`
 }
 
 // Client defines the behaviour required to quote shipping rates.
@@ -26,10 +27,11 @@ type Client interface {
 type MockClient struct{}
 
 // Rates returns canned rates regardless of the request payload.
+// Rates returns canned rates regardless of the request payload.
 func (MockClient) Rates(ctx context.Context, r RateReq) ([]Rate, error) {
 	_ = ctx
 	return []Rate{
-		{Service: "REG", Price: 15000, ETD: "2-3"},
-		{Service: "YES", Price: 30000, ETD: "1"},
+		{Service: "REG", Price: 15000, ETD: "2-3", Courier: r.Courier},
+		{Service: "YES", Price: 30000, ETD: "1", Courier: r.Courier},
 	}, nil
 }

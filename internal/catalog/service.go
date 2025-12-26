@@ -71,6 +71,7 @@ type ProductListItem struct {
 	Price     int64    `json:"price"`
 	CompareAt *int64   `json:"compareAt,omitempty"`
 	InStock   bool     `json:"inStock"`
+	Stock     int      `json:"stock"`
 	Thumbnail *string  `json:"thumbnail,omitempty"`
 	Badges    []string `json:"badges"`
 }
@@ -83,6 +84,7 @@ type ProductDetail struct {
 	Price        int64     `json:"price"`
 	CompareAt    *int64    `json:"compareAt,omitempty"`
 	InStock      bool      `json:"inStock"`
+	Stock        int       `json:"stock"`
 	Thumbnail    *string   `json:"thumbnail,omitempty"`
 	Badges       []string  `json:"badges"`
 	Variants     []Variant `json:"variants"`
@@ -316,6 +318,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 			Slug:    row.Slug,
 			Price:   row.Price,
 			InStock: row.InStock,
+			Stock:   int(row.TotalStock),
 			Badges:  row.Badges,
 		}
 		if row.CompareAt.Valid {
@@ -363,6 +366,7 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 		Slug:    product.Slug,
 		Price:   product.Price,
 		InStock: product.InStock,
+		Stock:   int(product.TotalStock),
 		Badges:  product.Badges,
 	}
 	if product.CompareAt.Valid {

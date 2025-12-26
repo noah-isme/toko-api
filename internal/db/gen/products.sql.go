@@ -58,7 +58,8 @@ SELECT id,
        badges,
        brand_id,
        category_id,
-       created_at
+       created_at,
+       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
 WHERE slug = $1
 LIMIT 1
@@ -76,6 +77,7 @@ type GetProductBySlugRow struct {
 	BrandID    pgtype.UUID        `json:"brand_id"`
 	CategoryID pgtype.UUID        `json:"category_id"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	TotalStock int32              `json:"total_stock"`
 }
 
 func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error) {
@@ -93,6 +95,7 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProduct
 		&i.BrandID,
 		&i.CategoryID,
 		&i.CreatedAt,
+		&i.TotalStock,
 	)
 	return i, err
 }
@@ -205,7 +208,8 @@ SELECT p.id,
        p.in_stock,
        p.thumbnail,
        p.badges,
-       p.created_at
+       p.created_at,
+       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
@@ -236,15 +240,16 @@ type ListProductsPublicParams struct {
 }
 
 type ListProductsPublicRow struct {
-	ID        pgtype.UUID        `json:"id"`
-	Title     string             `json:"title"`
-	Slug      string             `json:"slug"`
-	Price     int64              `json:"price"`
-	CompareAt pgtype.Int8        `json:"compare_at"`
-	InStock   bool               `json:"in_stock"`
-	Thumbnail pgtype.Text        `json:"thumbnail"`
-	Badges    []string           `json:"badges"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID         pgtype.UUID        `json:"id"`
+	Title      string             `json:"title"`
+	Slug       string             `json:"slug"`
+	Price      int64              `json:"price"`
+	CompareAt  pgtype.Int8        `json:"compare_at"`
+	InStock    bool               `json:"in_stock"`
+	Thumbnail  pgtype.Text        `json:"thumbnail"`
+	Badges     []string           `json:"badges"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	TotalStock int32              `json:"total_stock"`
 }
 
 func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error) {
@@ -276,6 +281,7 @@ func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublic
 			&i.Thumbnail,
 			&i.Badges,
 			&i.CreatedAt,
+			&i.TotalStock,
 		); err != nil {
 			return nil, err
 		}

@@ -19,7 +19,8 @@ SELECT p.id,
        p.in_stock,
        p.thumbnail,
        p.badges,
-       p.created_at
+       p.created_at,
+       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
@@ -47,7 +48,8 @@ SELECT id,
        badges,
        brand_id,
        category_id,
-       created_at
+       created_at,
+       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
 WHERE slug = $1
 LIMIT 1;
