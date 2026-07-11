@@ -3,7 +3,7 @@ SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q)::text IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
+WHERE (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -24,7 +24,7 @@ SELECT p.id,
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q)::text IS NULL OR p.title ILIKE '%%' || sqlc.arg(q) || '%%')
+WHERE (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -34,6 +34,7 @@ ORDER BY CASE WHEN sqlc.arg(sort)::text = 'price:asc' THEN p.price END ASC,
          CASE WHEN sqlc.arg(sort)::text = 'price:desc' THEN p.price END DESC,
          CASE WHEN sqlc.arg(sort)::text = 'title:asc' THEN p.title END ASC,
          CASE WHEN sqlc.arg(sort)::text = 'title:desc' THEN p.title END DESC,
+         CASE WHEN sqlc.narg(q)::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', sqlc.arg(q))) END DESC,
          p.created_at DESC
 LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
 
@@ -41,6 +42,7 @@ LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
 SELECT id,
        title,
        slug,
+       description,
        price,
        compare_at,
        in_stock,

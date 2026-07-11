@@ -60,22 +60,30 @@ func (m *mockQueries) GetOrderByID(ctx context.Context, id pgtype.UUID) (dbgen.O
 	return dbgen.Order{}, pgx.ErrNoRows
 }
 
-func (m *mockQueries) GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.Shipment, error) {
+func (m *mockQueries) GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.GetShipmentByOrderRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if shipment, ok := m.shipments[uuidFromPG(orderID).String()]; ok {
-		copyShipment := *shipment
-		return copyShipment, nil
+		return dbgen.GetShipmentByOrderRow{
+			ID:             shipment.ID,
+			OrderID:        shipment.OrderID,
+			Status:         shipment.Status,
+			Courier:        shipment.Courier,
+			TrackingNumber: shipment.TrackingNumber,
+			History:        shipment.History,
+			LastStatus:     shipment.LastStatus,
+			LastEventAt:    shipment.LastEventAt,
+		}, nil
 	}
-	return dbgen.Shipment{}, pgx.ErrNoRows
+	return dbgen.GetShipmentByOrderRow{}, pgx.ErrNoRows
 }
 
-func (m *mockQueries) CreateShipment(ctx context.Context, arg dbgen.CreateShipmentParams) (dbgen.Shipment, error) {
+func (m *mockQueries) CreateShipment(ctx context.Context, arg dbgen.CreateShipmentParams) (dbgen.CreateShipmentRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := uuidFromPG(arg.OrderID).String()
 	if _, exists := m.shipments[key]; exists {
-		return dbgen.Shipment{}, errors.New("shipment exists")
+		return dbgen.CreateShipmentRow{}, errors.New("shipment exists")
 	}
 	shipment := dbgen.Shipment{
 		ID:             toPGUUID(uuid.New()),
@@ -88,7 +96,16 @@ func (m *mockQueries) CreateShipment(ctx context.Context, arg dbgen.CreateShipme
 		LastEventAt:    pgtype.Timestamptz{Time: time.Now(), Valid: true},
 	}
 	m.storeShipment(shipment)
-	return shipment, nil
+	return dbgen.CreateShipmentRow{
+		ID:             shipment.ID,
+		OrderID:        shipment.OrderID,
+		Status:         shipment.Status,
+		Courier:        shipment.Courier,
+		TrackingNumber: shipment.TrackingNumber,
+		History:        shipment.History,
+		LastStatus:     shipment.LastStatus,
+		LastEventAt:    shipment.LastEventAt,
+	}, nil
 }
 
 func (m *mockQueries) UpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error) {

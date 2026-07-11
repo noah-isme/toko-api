@@ -16,10 +16,10 @@ import (
 
 type stubStore struct {
 	lastParams dbgen.InsertDomainEventParams
-	event      dbgen.DomainEvent
+	event      dbgen.InsertDomainEventRow
 }
 
-func (s *stubStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
+func (s *stubStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
 	s.lastParams = arg
 	if !s.event.ID.Valid {
 		id := uuid.New()

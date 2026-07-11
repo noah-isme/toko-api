@@ -353,8 +353,8 @@ func (f *fakeCatalogQueries) filterProducts(arg dbgen.CountProductsPublicParams)
 		if !matchesMin(arg.MinPrice, row.Price) || !matchesMax(arg.MaxPrice, row.Price) {
 			continue
 		}
-		if arg.InStock != nil {
-			if b, ok := arg.InStock.(bool); ok && b != row.InStock {
+		if arg.InStock.Valid {
+			if arg.InStock.Bool != row.InStock {
 				continue
 			}
 		}

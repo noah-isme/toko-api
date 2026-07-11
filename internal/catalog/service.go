@@ -81,6 +81,7 @@ type ProductDetail struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
 	Slug         string    `json:"slug"`
+	Description  string    `json:"description"`
 	Price        int64     `json:"price"`
 	CompareAt    *int64    `json:"compareAt,omitempty"`
 	InStock      bool      `json:"inStock"`
@@ -368,6 +369,9 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 		InStock: product.InStock,
 		Stock:   int(product.TotalStock),
 		Badges:  product.Badges,
+	}
+	if product.Description.Valid {
+		detail.Description = product.Description.String
 	}
 	if product.CompareAt.Valid {
 		compareAt := product.CompareAt.Int64

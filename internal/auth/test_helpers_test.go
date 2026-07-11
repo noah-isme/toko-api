@@ -213,8 +213,8 @@ func (f *fakeQueries) GetDeliveryByID(context.Context, pgtype.UUID) (dbgen.Webho
 	return dbgen.WebhookDelivery{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.DomainEvent, error) {
-	return dbgen.DomainEvent{}, errNotImplemented
+func (f *fakeQueries) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.GetDomainEventRow, error) {
+	return dbgen.GetDomainEventRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdateUserPassword(ctx context.Context, arg dbgen.UpdateUserPasswordParams) (dbgen.UpdateUserPasswordRow, error) {
@@ -414,12 +414,12 @@ func (f *fakeQueries) CreateOrderItem(context.Context, dbgen.CreateOrderItemPara
 	return errNotImplemented
 }
 
-func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.Payment, error) {
-	return dbgen.Payment{}, errNotImplemented
+func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.CreatePaymentRow, error) {
+	return dbgen.CreatePaymentRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetLatestPaymentByOrder(context.Context, pgtype.UUID) (dbgen.Payment, error) {
-	return dbgen.Payment{}, errNotImplemented
+func (f *fakeQueries) GetLatestPaymentByOrder(context.Context, pgtype.UUID) (dbgen.GetLatestPaymentByOrderRow, error) {
+	return dbgen.GetLatestPaymentByOrderRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdatePaymentStatus(context.Context, dbgen.UpdatePaymentStatusParams) error {
@@ -538,12 +538,12 @@ func (f *fakeQueries) UpdateOrderStatus(context.Context, dbgen.UpdateOrderStatus
 	return errNotImplemented
 }
 
-func (f *fakeQueries) CreateShipment(context.Context, dbgen.CreateShipmentParams) (dbgen.Shipment, error) {
-	return dbgen.Shipment{}, errNotImplemented
+func (f *fakeQueries) CreateShipment(context.Context, dbgen.CreateShipmentParams) (dbgen.CreateShipmentRow, error) {
+	return dbgen.CreateShipmentRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetShipmentByOrder(context.Context, pgtype.UUID) (dbgen.Shipment, error) {
-	return dbgen.Shipment{}, errNotImplemented
+func (f *fakeQueries) GetShipmentByOrder(context.Context, pgtype.UUID) (dbgen.GetShipmentByOrderRow, error) {
+	return dbgen.GetShipmentByOrderRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) InsertShipmentEvent(context.Context, dbgen.InsertShipmentEventParams) (dbgen.ShipmentEvent, error) {
@@ -582,8 +582,8 @@ func (f *fakeQueries) RefreshTopProducts(context.Context) error {
 	return errNotImplemented
 }
 
-func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
-	return dbgen.DomainEvent{}, errNotImplemented
+func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
+	return dbgen.InsertDomainEventRow{}, errNotImplemented
 }
 
 func (f *fakeQueries) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlqParams) (dbgen.WebhookDlq, error) {
@@ -594,7 +594,7 @@ func (f *fakeQueries) ListActiveEndpointsForTopic(context.Context, string) ([]db
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.DomainEvent, error) {
+func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.ListDomainEventsByTopicRow, error) {
 	return nil, errNotImplemented
 }
 
@@ -636,4 +636,60 @@ func (f *fakeQueries) EnqueueDelivery(context.Context, dbgen.EnqueueDeliveryPara
 
 func (f *fakeQueries) GetWebhookEndpoint(context.Context, pgtype.UUID) (dbgen.WebhookEndpoint, error) {
 	return dbgen.WebhookEndpoint{}, errNotImplemented
+}
+
+func (f *fakeQueries) AddFavorite(ctx context.Context, arg dbgen.AddFavoriteParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) CheckFavorite(ctx context.Context, arg dbgen.CheckFavoriteParams) (int32, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) CheckUserReview(ctx context.Context, arg dbgen.CheckUserReviewParams) (pgtype.UUID, error) {
+	return pgtype.UUID{}, errNotImplemented
+}
+
+func (f *fakeQueries) CreateReview(ctx context.Context, arg dbgen.CreateReviewParams) (dbgen.Review, error) {
+	return dbgen.Review{}, errNotImplemented
+}
+
+func (f *fakeQueries) DeleteReview(ctx context.Context, arg dbgen.DeleteReviewParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) GetOrderByTenant(ctx context.Context, arg dbgen.GetOrderByTenantParams) (dbgen.GetOrderByTenantRow, error) {
+	return dbgen.GetOrderByTenantRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetProductDetailByTenant(ctx context.Context, arg dbgen.GetProductDetailByTenantParams) (dbgen.GetProductDetailByTenantRow, error) {
+	return dbgen.GetProductDetailByTenantRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetProductReviews(ctx context.Context, arg dbgen.GetProductReviewsParams) ([]dbgen.Review, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) GetReviewStats(ctx context.Context, arg dbgen.GetReviewStatsParams) (dbgen.GetReviewStatsRow, error) {
+	return dbgen.GetReviewStatsRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) GetVoucherByTenant(ctx context.Context, arg dbgen.GetVoucherByTenantParams) (dbgen.GetVoucherByTenantRow, error) {
+	return dbgen.GetVoucherByTenantRow{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListFavorites(ctx context.Context, arg dbgen.ListFavoritesParams) ([]dbgen.ListFavoritesRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListOrdersByTenant(ctx context.Context, arg dbgen.ListOrdersByTenantParams) ([]dbgen.ListOrdersByTenantRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListProductsByTenant(ctx context.Context, arg dbgen.ListProductsByTenantParams) ([]dbgen.ListProductsByTenantRow, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) RemoveFavorite(ctx context.Context, arg dbgen.RemoveFavoriteParams) error {
+	return errNotImplemented
 }

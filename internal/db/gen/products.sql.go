@@ -16,7 +16,7 @@ SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL OR p.title ILIKE '%%' || $1 || '%%')
+WHERE ($1::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $1))
   AND ($2::text IS NULL OR c.slug = $2)
   AND ($3::text IS NULL OR b.slug = $3)
   AND ($4::bigint IS NULL OR p.price >= $4)
@@ -51,6 +51,7 @@ const getProductBySlug = `-- name: GetProductBySlug :one
 SELECT id,
        title,
        slug,
+       description,
        price,
        compare_at,
        in_stock,
@@ -66,18 +67,19 @@ LIMIT 1
 `
 
 type GetProductBySlugRow struct {
-	ID         pgtype.UUID        `json:"id"`
-	Title      string             `json:"title"`
-	Slug       string             `json:"slug"`
-	Price      int64              `json:"price"`
-	CompareAt  pgtype.Int8        `json:"compare_at"`
-	InStock    bool               `json:"in_stock"`
-	Thumbnail  pgtype.Text        `json:"thumbnail"`
-	Badges     []string           `json:"badges"`
-	BrandID    pgtype.UUID        `json:"brand_id"`
-	CategoryID pgtype.UUID        `json:"category_id"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	TotalStock int32              `json:"total_stock"`
+	ID          pgtype.UUID        `json:"id"`
+	Title       string             `json:"title"`
+	Slug        string             `json:"slug"`
+	Description pgtype.Text        `json:"description"`
+	Price       int64              `json:"price"`
+	CompareAt   pgtype.Int8        `json:"compare_at"`
+	InStock     bool               `json:"in_stock"`
+	Thumbnail   pgtype.Text        `json:"thumbnail"`
+	Badges      []string           `json:"badges"`
+	BrandID     pgtype.UUID        `json:"brand_id"`
+	CategoryID  pgtype.UUID        `json:"category_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	TotalStock  int32              `json:"total_stock"`
 }
 
 func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error) {
@@ -87,6 +89,7 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProduct
 		&i.ID,
 		&i.Title,
 		&i.Slug,
+		&i.Description,
 		&i.Price,
 		&i.CompareAt,
 		&i.InStock,
@@ -213,7 +216,7 @@ SELECT p.id,
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
 LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL OR p.title ILIKE '%%' || $1 || '%%')
+WHERE ($1::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $1))
   AND ($2::text IS NULL OR c.slug = $2)
   AND ($3::text IS NULL OR b.slug = $3)
   AND ($4::bigint IS NULL OR p.price >= $4)
@@ -223,6 +226,7 @@ ORDER BY CASE WHEN $7::text = 'price:asc' THEN p.price END ASC,
          CASE WHEN $7::text = 'price:desc' THEN p.price END DESC,
          CASE WHEN $7::text = 'title:asc' THEN p.title END ASC,
          CASE WHEN $7::text = 'title:desc' THEN p.title END DESC,
+         CASE WHEN $1::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', $1)) END DESC,
          p.created_at DESC
 LIMIT $9 OFFSET $8
 `
