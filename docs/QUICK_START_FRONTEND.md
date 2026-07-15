@@ -7,9 +7,9 @@ Panduan cepat integrasi API Toko untuk tim frontend.
 ### Base URL
 ```javascript
 // .env.local
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1
 # atau production
-NEXT_PUBLIC_API_BASE_URL=https://api.toko.com
+NEXT_PUBLIC_API_BASE_URL=https://api.toko.com/api/v1
 ```
 
 ### API Client Setup (Axios)

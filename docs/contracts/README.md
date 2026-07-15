@@ -1,7 +1,7 @@
 # Documentation API Contract - Toko API
 
 **Version:** 0.2.0  
-**Base URL:** `https://api.toko.com` (production) | `http://localhost:8080` (development)  
+**Base URL:** `https://api.toko.com/api/v1` (production) | `http://localhost:8080/api/v1` (development)  
 **Last Updated:** 2025-12-07
 
 ## 📋 Table of Contents
