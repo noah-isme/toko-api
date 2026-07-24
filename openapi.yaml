@@ -237,6 +237,73 @@ paths:
           description: Invalid product ID
         '500':
           description: Server error
+  /api/v1/favorites:
+    get:
+      summary: List user favorites
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of favorite products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Favorite'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
+    post:
+      summary: Toggle favorite for a product
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FavoriteToggleRequest'
+      responses:
+        '200':
+          description: Favorite toggled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteToggleResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
+  /api/v1/favorites/{id}:
+    get:
+      summary: Check favorite status for a product
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+      responses:
+        '200':
+          description: Favorite status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteToggleResponse'
+        '400':
+          description: Invalid product ID
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
   /api/v1/carts:
     post:
       summary: Create cart (guest)
@@ -740,6 +807,45 @@ components:
           maximum: 5
         comment:
           type: string
+    Favorite:
+      type: object
+      required:
+        - product_id
+        - product_name
+        - product_slug
+        - price
+        - created_at
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        product_name:
+          type: string
+        product_slug:
+          type: string
+        price:
+          type: integer
+        image_url:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    FavoriteToggleRequest:
+      type: object
+      required:
+        - productId
+      properties:
+        productId:
+          type: string
+          format: uuid
+    FavoriteToggleResponse:
+      type: object
+      required:
+        - favorited
+      properties:
+        favorited:
+          type: boolean
     Pagination:
       type: object
       properties:

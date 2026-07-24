@@ -15,6 +15,7 @@
 - [Payment](contracts/payment.md)
 - [User Addresses](contracts/user.md)
 - [Reviews](contracts/reviews.md)
+- [Favorites](contracts/favorites.md)
 - [Admin](contracts/admin.md)
 - [Webhooks](contracts/webhooks.md)
 - [Testing & Development](contracts/testing.md)
