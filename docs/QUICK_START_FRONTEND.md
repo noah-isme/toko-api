@@ -530,8 +530,8 @@ export const ORDER_STATUS_LABELS = {
     color: 'blue',
     icon: 'check',
   },
-  processing: {
-    label: 'Diproses',
+  packed: {
+    label: 'Dikemas',
     color: 'blue',
     icon: 'box',
   },
@@ -539,6 +539,11 @@ export const ORDER_STATUS_LABELS = {
     label: 'Dikirim',
     color: 'purple',
     icon: 'truck',
+  },
+  out_for_delivery: {
+    label: 'Dalam Pengiriman',
+    color: 'purple',
+    icon: 'map-pin',
   },
   delivered: {
     label: 'Selesai',

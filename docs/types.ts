@@ -306,11 +306,12 @@ export interface TaxQuoteResponse {
 // Order Types
 // ============================================================================
 
-export type OrderStatus = 
+export type OrderStatus =
   | 'pending_payment'
   | 'paid'
-  | 'processing'
+  | 'packed'
   | 'shipped'
+  | 'out_for_delivery'
   | 'delivered'
   | 'cancelled';
 
@@ -615,15 +616,20 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, StatusLabel> = {
     color: 'blue',
     icon: 'check',
   },
-  processing: {
-    label: 'Diproses',
+  packed: {
+    label: 'Dikemas',
     color: 'blue',
     icon: 'box',
   },
   shipped: {
-    label: 'Dikirim',
+    label: 'Sedang Dikirim',
     color: 'purple',
     icon: 'truck',
+  },
+  out_for_delivery: {
+    label: 'Dalam Pengiriman',
+    color: 'purple',
+    icon: 'map-pin',
   },
   delivered: {
     label: 'Selesai',

@@ -87,7 +87,7 @@ If no payment provider is configured or intent creation fails, the order is stil
 
 ### Order Status Flow
 ```
-pending_payment → paid → processing → shipped → delivered
+pending_payment → paid → packed → shipped → out_for_delivery → delivered
                    ↓
                 cancelled
 ```

@@ -489,7 +489,6 @@ components:
           enum:
             - pending_payment
             - paid
-            - processing
             - packed
             - shipped
             - out_for_delivery

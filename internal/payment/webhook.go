@@ -220,9 +220,9 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	case dbgen.PaymentStatusFAILED, dbgen.PaymentStatusEXPIRED:
 		if order.Status == dbgen.OrderStatusPENDINGPAYMENT {
-			if err := q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELED}); err == nil {
+			if err := q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED}); err == nil {
 				orderCanceled = true
-				order.Status = dbgen.OrderStatusCANCELED
+				order.Status = dbgen.OrderStatusCANCELLED
 			}
 		}
 	}

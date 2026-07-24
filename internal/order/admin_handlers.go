@@ -75,7 +75,7 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 
 func isAllowedAdminTarget(status dbgen.OrderStatus) bool {
 	switch status {
-	case dbgen.OrderStatusPACKED, dbgen.OrderStatusSHIPPED, dbgen.OrderStatusOUTFORDELIVERY, dbgen.OrderStatusDELIVERED, dbgen.OrderStatusCANCELED:
+	case dbgen.OrderStatusPACKED, dbgen.OrderStatusSHIPPED, dbgen.OrderStatusOUTFORDELIVERY, dbgen.OrderStatusDELIVERED, dbgen.OrderStatusCANCELLED:
 		return true
 	}
 	return false
@@ -95,7 +95,7 @@ func orderStatusRank(status dbgen.OrderStatus) int {
 		return 4
 	case dbgen.OrderStatusDELIVERED:
 		return 5
-	case dbgen.OrderStatusCANCELED:
+	case dbgen.OrderStatusCANCELLED:
 		return -1
 	default:
 		return -2

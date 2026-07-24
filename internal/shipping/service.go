@@ -280,7 +280,7 @@ func orderStatusRank(status dbgen.OrderStatus) int {
 		return 4
 	case dbgen.OrderStatusDELIVERED:
 		return 5
-	case dbgen.OrderStatusCANCELED:
+	case dbgen.OrderStatusCANCELLED:
 		return -1
 	default:
 		return -2

@@ -207,9 +207,9 @@ func (m *mockQueries) ListShipmentEvents(ctx context.Context, shipmentID pgtype.
 func allowedOrderTransition(current, next dbgen.OrderStatus) bool {
 	switch current {
 	case dbgen.OrderStatusPENDINGPAYMENT:
-		return next == dbgen.OrderStatusPAID || next == dbgen.OrderStatusCANCELED
+		return next == dbgen.OrderStatusPAID || next == dbgen.OrderStatusCANCELLED
 	case dbgen.OrderStatusPAID:
-		return next == dbgen.OrderStatusPACKED || next == dbgen.OrderStatusCANCELED
+		return next == dbgen.OrderStatusPACKED || next == dbgen.OrderStatusCANCELLED
 	case dbgen.OrderStatusPACKED:
 		return next == dbgen.OrderStatusSHIPPED
 	case dbgen.OrderStatusSHIPPED:

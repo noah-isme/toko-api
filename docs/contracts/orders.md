@@ -118,11 +118,15 @@ Authorization: Bearer <token>
         "timestamp": "2025-12-07T11:30:00Z"
       },
       {
-        "status": "processing",
-        "timestamp": "2025-12-07T13:00:00Z"
+        "status": "packed",
+        "timestamp": "2025-12-07T12:00:00Z"
       },
       {
         "status": "shipped",
+        "timestamp": "2025-12-07T13:00:00Z"
+      },
+      {
+        "status": "out_for_delivery",
         "timestamp": "2025-12-07T14:00:00Z"
       }
     ]
@@ -151,8 +155,8 @@ Authorization: Bearer <token>
 ```
 
 **Notes:**
-- Hanya bisa cancel order dengan status `pending_payment` atau `paid`
-- Order yang sudah `processing`, `shipped`, atau `delivered` tidak bisa dicancel
+- Hanya bisa cancel order dengan status `pending_payment`
+- Order yang sudah `packed`, `shipped`, `out_for_delivery`, atau `delivered` tidak bisa dicancel
 
 ---
 

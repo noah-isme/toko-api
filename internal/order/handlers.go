@@ -279,11 +279,11 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "order lookup failed", nil)
 		return
 	}
-	if ord.Status != "PENDING_PAYMENT" {
+	if ord.Status != dbgen.OrderStatusPENDINGPAYMENT {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_STATE", "only pending orders can be canceled", nil)
 		return
 	}
-	if err := h.Q.UpdateOrderStatus(r.Context(), dbgen.UpdateOrderStatusParams{ID: ord.ID, Status: "CANCELED"}); err != nil {
+	if err := h.Q.UpdateOrderStatus(r.Context(), dbgen.UpdateOrderStatusParams{ID: ord.ID, Status: dbgen.OrderStatusCANCELLED}); err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to cancel order", nil)
 		return
 	}
@@ -294,7 +294,7 @@ func buildStatusHistory(ord dbgen.Order, currentStatus string) []map[string]any 
 	history := []map[string]any{
 		{"status": "pending_payment", "timestamp": ord.CreatedAt},
 	}
-	if currentStatus == "cancelled" || currentStatus == "canceled" {
+	if currentStatus == "cancelled" {
 		history = append(history, map[string]any{"status": "cancelled", "timestamp": ord.UpdatedAt})
 		return history
 	}

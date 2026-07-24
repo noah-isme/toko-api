@@ -6,8 +6,6 @@ func statusLabel(status string) string {
 		return "Menunggu Pembayaran"
 	case "paid":
 		return "Dibayar"
-	case "processing":
-		return "Diproses"
 	case "packed":
 		return "Dikemas"
 	case "shipped":
@@ -16,7 +14,7 @@ func statusLabel(status string) string {
 		return "Dalam Pengiriman"
 	case "delivered":
 		return "Selesai"
-	case "cancelled", "canceled":
+	case "cancelled":
 		return "Dibatalkan"
 	default:
 		return status

@@ -43,15 +43,16 @@ Authorization: Bearer <admin_token>
 **Request:**
 ```json
 {
-  "status": "processing"
+  "status": "packed"
 }
 ```
 
 **Valid Status Transitions:**
 - `pending_payment` → `paid`, `cancelled`
-- `paid` → `processing`, `cancelled`
-- `processing` → `shipped`
-- `shipped` → `delivered`
+- `paid` → `packed`, `cancelled`
+- `packed` → `shipped`
+- `shipped` → `out_for_delivery`
+- `out_for_delivery` → `delivered`
 
 **Response:** `200 OK`
 
