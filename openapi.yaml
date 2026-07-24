@@ -535,12 +535,103 @@ paths:
   /api/v1/analytics/sales:
     get:
       summary: Sales trend (daily)
+      description: Returns daily sales aggregates for the requested date range. Range is inclusive of `from` and exclusive of `to`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start date as RFC3339
+          example: '2025-11-01T00:00:00Z'
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End date as RFC3339
+          example: '2025-12-01T00:00:00Z'
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+          description: Number of days to look back when from/to are omitted
+      responses:
+        '200':
+          description: Daily sales aggregates
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AnalyticsSalesDay'
+        '400':
+          description: Invalid date range
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden (admin required)
+        '500':
+          description: Analytics service error
   /api/v1/analytics/top-products:
     get:
       summary: Top products by qty
+      description: Returns top-selling products ordered by quantity sold.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+          description: Number of items to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of items to skip
+      responses:
+        '200':
+          description: Top selling products
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AnalyticsTopProduct'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden (admin required)
+        '500':
+          description: Analytics service error
   /api/v1/analytics/overview:
     get:
       summary: Overview for dashboard
+      description: Dashboard summary. Not currently implemented.
+      security:
+        - bearerAuth: []
+      responses:
+        '501':
+          description: Not implemented
   /api/v1/payments/intent:
     post:
       summary: Create or reuse a payment intent
@@ -734,6 +825,44 @@ components:
             - EXPIRED
             - REFUNDED
           description: Consolidated payment status (uppercase)
+    AnalyticsSalesDay:
+      type: object
+      required:
+        - day
+        - paid_orders
+        - all_orders
+        - revenue
+      properties:
+        day:
+          type: string
+          format: date-time
+          description: Aggregation day
+        paid_orders:
+          type: integer
+          description: Paid orders in the period
+        all_orders:
+          type: integer
+          description: Total orders in the period
+        revenue:
+          type: integer
+          description: Gross revenue from paid orders in IDR
+    AnalyticsTopProduct:
+      type: object
+      required:
+        - product_id
+        - qty_sold
+        - gross
+      properties:
+        product_id:
+          type: string
+          format: uuid
+          description: Product ID
+        qty_sold:
+          type: integer
+          description: Total units sold
+        gross:
+          type: integer
+          description: Gross revenue for the product in IDR
     Review:
       type: object
       required:

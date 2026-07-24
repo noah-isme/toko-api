@@ -16,6 +16,7 @@
 - [User Addresses](user.md)
 - [Reviews](reviews.md)
 - [Favorites](favorites.md)
+- [Analytics](analytics.md)
 - [Admin](admin.md)
 - [Webhooks](webhooks.md)
 - [Testing & Development](testing.md)
