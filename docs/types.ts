@@ -83,17 +83,17 @@ export interface ResetPasswordRequest {
 export interface Address {
   id: string;
   label: string;
-  receiverName: string;
+  receiver_name: string;
   phone: string;
   country: string;
   province: string;
   city: string;
-  postalCode: string;
-  addressLine1: string;
-  addressLine2: string;
-  isDefault: boolean;
-  createdAt: string;
-  updatedAt: string;
+  postal_code: string;
+  address_line1: string;
+  address_line2: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface CreateAddressRequest {
@@ -222,7 +222,6 @@ export interface CartItem {
   qty: number;
   unitPrice: number;
   subtotal: number;
-  imageUrl?: string;
 }
 
 export interface CartPricing {

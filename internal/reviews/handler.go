@@ -25,41 +25,41 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Comment string `json:"comment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_BODY", "invalid request body", err.Error())
 		return
 	}
 
 	productID, err := toUUID(productIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_product_id", "invalid product id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
 	
 	userIDStr, ok := common.UserID(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "UNAUTHORIZED", nil)
 		return
 	}
 	userID, err := toUUID(userIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_user_id", "invalid user id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_USER_ID", "invalid user id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
 	review, err := h.Svc.Create(ctx, userID, productID, tenantID, int32(req.Rating), req.Comment)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "create_failed", "failed to create review", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "CREATE_FAILED", "failed to create review", err.Error())
 		return
 	}
 
@@ -74,24 +74,24 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	productID, err := toUUID(productIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_product_id", "invalid product id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
 	reviews, err := h.Svc.List(ctx, productID, tenantID, int32(page), int32(limit))
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "list_failed", "failed to list reviews", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "LIST_FAILED", "failed to list reviews", err.Error())
 		return
 	}
 
@@ -104,24 +104,24 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 
 	productID, err := toUUID(productIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_product_id", "invalid product id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
 	stats, err := h.Svc.Stats(ctx, productID, tenantID)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "stats_failed", "failed to get stats", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "STATS_FAILED", "failed to get stats", err.Error())
 		return
 	}
 

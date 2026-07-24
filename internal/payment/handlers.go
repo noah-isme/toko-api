@@ -41,7 +41,7 @@ func (h *Handler) Intent(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, ok := common.UserID(r.Context())
 	if !ok || strings.TrimSpace(userID) == "" {
-		common.JSONError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "login required", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "login required", nil)
 		return
 	}
 	var req intentReq
@@ -66,7 +66,7 @@ func (h *Handler) Intent(w http.ResponseWriter, r *http.Request) {
 	}
 	order, err := h.Q.GetOrderByIDForUser(r.Context(), dbgen.GetOrderByIDForUserParams{ID: orderUUID, UserID: userUUID})
 	if err != nil {
-		common.JSONError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "order not found", nil)
+		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
 		return
 	}
 	payment, err := h.Svc.CreateIntent(r.Context(), req.OrderID, order.PricingTotal, req.Channel, h.Svc.CallbackBaseURL)
@@ -98,7 +98,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, ok := common.UserID(r.Context())
 	if !ok || strings.TrimSpace(userID) == "" {
-		common.JSONError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "login required", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "login required", nil)
 		return
 	}
 	orderID := strings.TrimSpace(chi.URLParam(r, "orderId"))
@@ -117,7 +117,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.Q.GetOrderByIDForUser(r.Context(), dbgen.GetOrderByIDForUserParams{ID: orderUUID, UserID: userUUID}); err != nil {
-		common.JSONError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "order not found", nil)
+		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
 		return
 	}
 	status, err := h.Svc.ConsolidatedStatus(r.Context(), orderID)

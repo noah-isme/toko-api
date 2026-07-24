@@ -14,17 +14,17 @@ Authorization: Bearer <token>
     {
       "id": "address-uuid",
       "label": "Home",
-      "receiverName": "John Doe",
+      "receiver_name": "John Doe",
       "phone": "+6281234567890",
       "country": "Indonesia",
       "province": "DKI Jakarta",
       "city": "Jakarta Selatan",
-      "postalCode": "12190",
-      "addressLine1": "Jl. Sudirman No. 123",
-      "addressLine2": "Apt 45B",
-      "isDefault": true,
-      "createdAt": "2025-11-01T00:00:00Z",
-      "updatedAt": "2025-11-01T00:00:00Z"
+      "postal_code": "12190",
+      "address_line1": "Jl. Sudirman No. 123",
+      "address_line2": "Apt 45B",
+      "is_default": true,
+      "created_at": "2025-11-01T00:00:00Z",
+      "updated_at": "2025-11-01T00:00:00Z"
     }
   ],
   "pagination": {
@@ -67,17 +67,17 @@ Authorization: Bearer <token>
   "data": {
     "id": "new-address-uuid",
     "label": "Office",
-    "receiverName": "John Doe",
+    "receiver_name": "John Doe",
     "phone": "+6281234567890",
     "country": "Indonesia",
     "province": "DKI Jakarta",
     "city": "Jakarta Pusat",
-    "postalCode": "10110",
-    "addressLine1": "Jl. Thamrin No. 1",
-    "addressLine2": "Tower A, Floor 5",
-    "isDefault": false,
-    "createdAt": "2025-12-07T10:00:00Z",
-    "updatedAt": "2025-12-07T10:00:00Z"
+    "postal_code": "10110",
+    "address_line1": "Jl. Thamrin No. 1",
+    "address_line2": "Tower A, Floor 5",
+    "is_default": false,
+    "created_at": "2025-12-07T10:00:00Z",
+    "updated_at": "2025-12-07T10:00:00Z"
   }
 }
 ```

@@ -20,29 +20,29 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userIDStr, ok := common.UserID(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "UNAUTHORIZED", nil)
 		return
 	}
 	userID, err := toUUID(userIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_user_id", "invalid user id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_USER_ID", "invalid user id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
 	favs, err := h.Svc.List(ctx, userID, tenantID)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "list_failed", "failed to list favorites", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "LIST_FAILED", "failed to list favorites", err.Error())
 		return
 	}
 
@@ -55,35 +55,35 @@ func (h *Handler) Toggle(w http.ResponseWriter, r *http.Request) {
 		ProductID string `json:"productId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_BODY", "invalid request body", err.Error())
 		return
 	}
 
 	productID, err := toUUID(req.ProductID)
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_product_id", "invalid product id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
 
 	userIDStr, ok := common.UserID(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "UNAUTHORIZED", nil)
 		return
 	}
 	userID, err := toUUID(userIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_user_id", "invalid user id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_USER_ID", "invalid user id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
@@ -91,12 +91,12 @@ func (h *Handler) Toggle(w http.ResponseWriter, r *http.Request) {
 	exists, _ := h.Svc.Check(ctx, userID, productID, tenantID)
 	if exists {
 		if err := h.Svc.Remove(ctx, userID, productID, tenantID); err != nil {
-			common.JSONError(w, http.StatusInternalServerError, "remove_failed", "failed to remove favorite", err.Error())
+			common.JSONError(w, http.StatusInternalServerError, "REMOVE_FAILED", "failed to remove favorite", err.Error())
 			return
 		}
 	} else {
 		if err := h.Svc.Add(ctx, userID, productID, tenantID); err != nil {
-			common.JSONError(w, http.StatusInternalServerError, "add_failed", "failed to add favorite", err.Error())
+			common.JSONError(w, http.StatusInternalServerError, "ADD_FAILED", "failed to add favorite", err.Error())
 			return
 		}
 	}
@@ -109,7 +109,7 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 	productIDStr := chi.URLParam(r, "id")
 	productID, err := toUUID(productIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_product_id", "invalid product id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
 	
@@ -121,24 +121,24 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := toUUID(userIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_user_id", "invalid user id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_USER_ID", "invalid user id", err.Error())
 		return
 	}
 
 	tenantIDStr, ok := tenant.FromContext(ctx)
 	if !ok {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return
 	}
 	tenantID, err := toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return
 	}
 
 	exists, err := h.Svc.Check(ctx, userID, productID, tenantID)
 	if err != nil && err != pgx.ErrNoRows {
-		common.JSONError(w, http.StatusInternalServerError, "check_failed", "failed to check favorite", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "CHECK_FAILED", "failed to check favorite", err.Error())
 		return
 	}
 	

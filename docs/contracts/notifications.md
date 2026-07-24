@@ -141,12 +141,12 @@ Marks every unread notification for the user as read.
 
 | Status | `code`             | When                                   |
 |--------|--------------------|----------------------------------------|
-| `401`  | `unauthorized`     | Missing or invalid access token.       |
-| `400`  | `missing_tenant`   | Tenant context could not be resolved.  |
-| `400`  | `invalid_id`       | Notification id is not a valid UUID.   |
-| `500`  | `list_failed` / `count_failed` / `mark_failed` | Unexpected persistence error. |
+| `401`  | `UNAUTHORIZED`     | Missing or invalid access token.       |
+| `400`  | `MISSING_TENANT`   | Tenant context could not be resolved.  |
+| `400`  | `INVALID_ID`       | Notification id is not a valid UUID.   |
+| `500`  | `LIST_FAILED` / `COUNT_FAILED` / `MARK_FAILED` | Unexpected persistence error. |
 
 Errors use the canonical envelope:
 ```json
-{ "error": { "code": "unauthorized", "message": "unauthorized" } }
+{ "error": { "code": "UNAUTHORIZED", "message": "UNAUTHORIZED" } }
 ```

@@ -47,7 +47,7 @@ Authorization: Bearer <token>
 }
 ```
 
-Common error codes: `UNAUTHENTICATED`, `BAD_REQUEST`, `ORDER_NOT_FOUND`, `INTENT_FAILED`.
+Common error codes: `UNAUTHORIZED`, `BAD_REQUEST`, `NOT_FOUND`, `INTENT_FAILED`.
 
 ---
 
@@ -87,4 +87,4 @@ Authorization: Bearer <token>
 }
 ```
 
-Common error codes: `UNAUTHENTICATED`, `BAD_REQUEST`, `ORDER_NOT_FOUND`, `STATUS_ERROR`.
+Common error codes: `UNAUTHORIZED`, `BAD_REQUEST`, `NOT_FOUND`, `STATUS_ERROR`.

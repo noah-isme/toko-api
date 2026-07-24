@@ -45,7 +45,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	page, perPage := common.ParsePagination(r, 20)
 	items, total, err := h.Svc.List(ctx, userID, tenantID, int32(page), int32(perPage))
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "list_failed", "failed to list notifications", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "LIST_FAILED", "failed to list notifications", err.Error())
 		return
 	}
 	data := make([]dto, 0, len(items))
@@ -71,7 +71,7 @@ func (h *Handler) UnreadCount(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := h.Svc.UnreadCount(ctx, userID, tenantID)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "count_failed", "failed to count notifications", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "COUNT_FAILED", "failed to count notifications", err.Error())
 		return
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"unread": count})
@@ -86,12 +86,12 @@ func (h *Handler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := toUUID(chi.URLParam(r, "id"))
 	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "invalid_id", "invalid notification id", err.Error())
+		common.JSONError(w, http.StatusBadRequest, "INVALID_ID", "invalid notification id", err.Error())
 		return
 	}
 	updated, err := h.Svc.MarkRead(ctx, id, userID, tenantID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		common.JSONError(w, http.StatusInternalServerError, "mark_failed", "failed to mark notification", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "MARK_FAILED", "failed to mark notification", err.Error())
 		return
 	}
 	// A missing row (not found for this user, or already read) is an idempotent
@@ -108,7 +108,7 @@ func (h *Handler) MarkAllRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Svc.MarkAllRead(ctx, userID, tenantID); err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "mark_failed", "failed to mark notifications", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "MARK_FAILED", "failed to mark notifications", err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -120,23 +120,23 @@ func identity(w http.ResponseWriter, r *http.Request) (userID, tenantID pgtype.U
 	ctx := r.Context()
 	userIDStr, has := common.UserID(ctx)
 	if !has {
-		common.JSONError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", nil)
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "UNAUTHORIZED", nil)
 		return userID, tenantID, false
 	}
 	var err error
 	userID, err = toUUID(userIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_user_id", "invalid user id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_USER_ID", "invalid user id", err.Error())
 		return userID, tenantID, false
 	}
 	tenantIDStr, has := tenant.FromContext(ctx)
 	if !has {
-		common.JSONError(w, http.StatusBadRequest, "missing_tenant", "missing tenant context", nil)
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
 		return userID, tenantID, false
 	}
 	tenantID, err = toUUID(tenantIDStr)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "invalid_tenant_id", "invalid tenant id", err.Error())
+		common.JSONError(w, http.StatusInternalServerError, "INVALID_TENANT_ID", "invalid tenant id", err.Error())
 		return userID, tenantID, false
 	}
 	return userID, tenantID, true
