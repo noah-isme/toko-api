@@ -1103,6 +1103,32 @@ paths:
   /api/v1/webhooks/shipping/{courier}:
     post:
       summary: Shipping webhook receiver (idempotent)
+      description: |
+        Courier callback that appends a shipment event and updates shipment status. Payload may be sent as JSON or query parameters. Idempotent via Redis replay protection.
+      parameters:
+        - name: courier
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Courier identifier (e.g. jne, sicepat)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShippingWebhookPayload'
+      responses:
+        '204':
+          description: Event recorded
+        '400':
+          description: Invalid request or unrecognised status
+        '404':
+          description: Shipment not found
+        '409':
+          description: Duplicate webhook payload or invalid shipment state transition
+        '500':
+          description: Server error
   /api/v1/payments/{orderId}/status:
     get:
       summary: Get consolidated payment status
@@ -1137,6 +1163,40 @@ paths:
   /api/v1/webhooks/payment/{provider}:
     post:
       summary: Payment webhook receiver
+      description: |
+        Payment provider callback that verifies the provider signature and updates the order payment status. Request body and signature header are provider-specific.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Payment provider key (e.g. midtrans, xendit)
+        - name: X-Signature
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Provider-specific signature header (name varies by provider)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhookPayload'
+      responses:
+        '200':
+          description: Webhook processed
+        '400':
+          description: Invalid body or order identifier
+        '401':
+          description: Signature verification failed
+        '404':
+          description: Provider not supported or payment not found
+        '409':
+          description: Duplicate webhook or amount mismatch
+        '500':
+          description: Server error
 components:
   securitySchemes:
     bearerAuth:
@@ -2112,3 +2172,39 @@ components:
           type: integer
         visibility_timeout:
           type: number
+    ShippingWebhookPayload:
+      type: object
+      required:
+        - orderId
+        - externalStatus
+      properties:
+        orderId:
+          type: string
+          description: Order UUID or order number
+        trackingNumber:
+          type: string
+          nullable: true
+        externalStatus:
+          type: string
+          description: External courier status label
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        occurredAt:
+          type: string
+          format: date-time
+          nullable: true
+      description: Payload may also be supplied as query parameters with the same field names.
+    PaymentWebhookPayload:
+      type: object
+      additionalProperties: true
+      description: Provider-specific payload. The example below is for Midtrans.
+      example:
+        transaction_id: xxx
+        order_id: ORD-20251207-001
+        payment_type: bank_transfer
+        transaction_status: settlement
+        gross_amount: '21135000'
