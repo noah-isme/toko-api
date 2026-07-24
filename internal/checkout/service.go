@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -13,53 +15,53 @@ import (
 	"github.com/noah-isme/backend-toko/internal/cart"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/pricing"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
-type Addr struct {
-	ReceiverName string `json:"receiverName"`
-	Phone        string `json:"phone"`
-	Country      string `json:"country"`
-	Province     string `json:"province"`
-	City         string `json:"city"`
-	PostalCode   string `json:"postalCode"`
-	AddressLine1 string `json:"addressLine1"`
-	AddressLine2 string `json:"addressLine2"`
+// allowedPaymentMethods mirrors the contract enum in
+// docs/contracts/checkout.md.
+var allowedPaymentMethods = map[string]struct{}{
+	"bank_transfer":   {},
+	"virtual_account": {},
+	"credit_card":     {},
+	"ewallet_gopay":   {},
+	"ewallet_ovo":     {},
+	"ewallet_dana":    {},
 }
 
-type ShipOpt struct {
-	Courier string `json:"courier"`
-	Service string `json:"service"`
-	Price   int64  `json:"price"`
-	ETD     string `json:"etd"`
-}
-
+// Input is the request shape for POST /api/v1/checkout, matching the contract.
 type Input struct {
-	CartID         string  `json:"cartId"`
-	Address        Addr    `json:"address"`
-	Shipping       ShipOpt `json:"shipping"`
-	Notes          *string `json:"notes"`
-	PaymentChannel *string `json:"paymentChannel"`
+	CartID            string  `json:"cartId"`
+	ShippingAddressID string  `json:"shippingAddressId"`
+	ShippingService   string  `json:"shippingService"`
+	ShippingCost      int64   `json:"shippingCost"`
+	PaymentMethod     string  `json:"paymentMethod"`
+	Notes             *string `json:"notes"`
 }
 
+// Output is the response shape for POST /api/v1/checkout, matching the contract.
 type Output struct {
-	OrderID string `json:"orderId"`
-	Status  string `json:"status"`
-	Payment struct {
-		Provider    string `json:"provider"`
-		Token       string `json:"token"`
-		RedirectURL string `json:"redirectUrl"`
-	} `json:"payment"`
+	OrderID       string     `json:"orderId"`
+	OrderNumber   string     `json:"orderNumber"`
+	Status        string     `json:"status"`
+	Total         int64      `json:"total"`
+	Currency      string     `json:"currency"`
+	PaymentMethod string     `json:"paymentMethod"`
+	PaymentURL    string     `json:"paymentUrl"`
+	PaymentExpiry *time.Time `json:"paymentExpiry"`
+	CreatedAt     time.Time  `json:"createdAt"`
 }
 
 type Service struct {
-	Q        *dbgen.Queries
-	Pool     *pgxpool.Pool
-	CartSvc  *cart.Service
-	TaxBps   int
-	Currency string
-	Events   *events.Bus
+	Q          *dbgen.Queries
+	Pool       *pgxpool.Pool
+	CartSvc    *cart.Service
+	PaymentSvc *payment.Service
+	TaxBps     int
+	Currency   string
+	Events     *events.Bus
 }
 
 func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output, error) {
@@ -72,6 +74,19 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	if in.CartID == "" {
 		return Output{}, errors.New("cartId is required")
 	}
+	if in.ShippingAddressID == "" {
+		return Output{}, errors.New("shippingAddressId is required")
+	}
+	if in.ShippingService == "" {
+		return Output{}, errors.New("shippingService is required")
+	}
+	if in.ShippingCost < 0 {
+		in.ShippingCost = 0
+	}
+	if _, ok := allowedPaymentMethods[in.PaymentMethod]; !ok {
+		return Output{}, fmt.Errorf("unsupported paymentMethod: %q", in.PaymentMethod)
+	}
+
 	tenantID, ok := tenant.FromContext(ctx)
 	if !ok || tenantID == "" {
 		return Output{}, errors.New("tenant is required")
@@ -88,6 +103,30 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	if err != nil {
 		return Output{}, fmt.Errorf("invalid user id: %w", err)
 	}
+	addrID, err := cart.ToUUID(in.ShippingAddressID)
+	if err != nil {
+		return Output{}, fmt.Errorf("invalid shipping address id: %w", err)
+	}
+
+	addrRow, err := s.Q.GetAddressByID(ctx, dbgen.GetAddressByIDParams{ID: addrID, UserID: uID})
+	if err != nil {
+		return Output{}, fmt.Errorf("shipping address not found: %w", err)
+	}
+	shippingAddress := toJSON(map[string]any{
+		"receiverName": textVal(addrRow.ReceiverName),
+		"phone":        textVal(addrRow.Phone),
+		"country":      textVal(addrRow.Country),
+		"province":     textVal(addrRow.Province),
+		"city":         textVal(addrRow.City),
+		"postalCode":   textVal(addrRow.PostalCode),
+		"addressLine1": textVal(addrRow.AddressLine1),
+		"addressLine2": textVal(addrRow.AddressLine2),
+	})
+	shippingOption := toJSON(map[string]any{
+		"service": in.ShippingService,
+		"cost":    in.ShippingCost,
+	})
+
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Output{}, err
@@ -96,6 +135,7 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		_ = tx.Rollback(ctx)
 	}()
 	qtx := s.Q.WithTx(tx)
+
 	cartRow, err := qtx.GetCartByID(ctx, cID)
 	if err != nil {
 		return Output{}, err
@@ -121,11 +161,13 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 			discount = 0
 		}
 	}
-	shippingCost := in.Shipping.Price
-	if shippingCost < 0 {
-		shippingCost = 0
+	summary := pricing.Compute(pricingItems, pricing.Money(discount), s.TaxBps, pricing.Money(in.ShippingCost))
+
+	orderNumber, err := nextOrderNumber(ctx, qtx, time.Now().UTC())
+	if err != nil {
+		return Output{}, err
 	}
-	summary := pricing.Compute(pricingItems, pricing.Money(discount), s.TaxBps, pricing.Money(shippingCost))
+
 	order, err := qtx.CreateOrder(ctx, dbgen.CreateOrderParams{
 		UserID:             uID,
 		CartID:             cID,
@@ -136,11 +178,12 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		PricingTax:         summary.Tax,
 		PricingShipping:    summary.Shipping,
 		PricingTotal:       summary.Total,
-		ShippingAddress:    toJSON(in.Address),
-		ShippingOption:     toJSON(in.Shipping),
+		ShippingAddress:    shippingAddress,
+		ShippingOption:     shippingOption,
 		Notes:              toNullableText(in.Notes),
 		AppliedVoucherCode: cartRow.AppliedVoucherCode,
 		TenantID:           tID,
+		OrderNumber:        pgtype.Text{String: orderNumber, Valid: true},
 	})
 	if err != nil {
 		return Output{}, err
@@ -162,25 +205,65 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	if err := tx.Commit(ctx); err != nil {
 		return Output{}, err
 	}
+
+	out := Output{
+		OrderID:       cart.UUIDString(order.ID),
+		OrderNumber:   orderNumber,
+		Status:        strings.ToLower(string(order.Status)),
+		Total:         int64(summary.Total),
+		Currency:      s.Currency,
+		PaymentMethod: in.PaymentMethod,
+		CreatedAt:     order.CreatedAt.Time,
+	}
+
+	if s.PaymentSvc != nil {
+		if pay, perr := s.PaymentSvc.CreateIntent(ctx, out.OrderID, int64(summary.Total), in.PaymentMethod, ""); perr == nil {
+			if pay.RedirectUrl.Valid {
+				out.PaymentURL = pay.RedirectUrl.String
+			}
+			if pay.ExpiresAt.Valid {
+				t := pay.ExpiresAt.Time
+				out.PaymentExpiry = &t
+			}
+		}
+	}
+
 	if s.Events != nil {
 		user, _ := s.Q.GetUserByID(ctx, uID)
 		payload := map[string]any{
-			"orderId": cart.UUIDString(order.ID),
-			"userId":  *userID,
-			"total":   summary.Total,
+			"orderId":     out.OrderID,
+			"orderNumber": out.OrderNumber,
+			"userId":      *userID,
+			"total":       summary.Total,
 		}
 		if user.Email != "" {
 			payload["email"] = user.Email
 		}
 		_, _ = s.Events.Emit(ctx, events.TopicOrderCreated, order.ID, payload)
 	}
-	var out Output
-	out.OrderID = cart.UUIDString(order.ID)
-	out.Status = string(order.Status)
-	out.Payment.Provider = ""
-	out.Payment.Token = ""
-	out.Payment.RedirectURL = ""
 	return out, nil
+}
+
+// nextOrderNumber allocates a per-day sequence (ORD-YYYYMMDD-NNN) within the
+// current transaction. The count is scoped to the UTC day window; a unique
+// partial index in the migration surfaces the rare concurrent-collision case.
+func nextOrderNumber(ctx context.Context, qtx *dbgen.Queries, now time.Time) (string, error) {
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+	count, err := qtx.CountOrdersForDay(ctx, dbgen.CountOrdersForDayParams{
+		StartAt: pgtype.Timestamptz{Time: startOfDay, Valid: true},
+		EndAt:   pgtype.Timestamptz{Time: endOfDay, Valid: true},
+	})
+	if err != nil {
+		return "", fmt.Errorf("count orders for day: %w", err)
+	}
+	return formatOrderNumber(startOfDay, count), nil
+}
+
+// formatOrderNumber renders the contract's ORD-YYYYMMDD-NNN sequence for the
+// given UTC day and zero-based same-day count.
+func formatOrderNumber(day time.Time, count int64) string {
+	return fmt.Sprintf("ORD-%s-%03d", day.Format("20060102"), count+1)
 }
 
 func toJSON(v any) []byte {
@@ -196,4 +279,11 @@ func toNullableText(v *string) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return pgtype.Text{String: *v, Valid: true}
+}
+
+func textVal(t pgtype.Text) string {
+	if !t.Valid {
+		return ""
+	}
+	return t.String
 }

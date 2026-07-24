@@ -169,12 +169,95 @@ paths:
   /api/v1/checkout:
     post:
       summary: Create order (pending payment)
+      description: |
+        Creates an order from the user's cart, resolves the shipping address by ID,
+        generates a human-readable order number, and opens a payment intent with the
+        configured provider (Midtrans/Xendit).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CheckoutResponse'
+        '400':
+          description: Invalid request (missing fields, invalid paymentMethod, negative shippingCost)
+        '401':
+          description: Authentication required
+        '500':
+          description: Address not found, cart empty, or tenant missing
   /api/v1/orders:
     get:
       summary: List user orders
+      description: Returns a paginated list of the authenticated user's orders.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated list of orders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrderListItem'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          description: Authentication required
   /api/v1/orders/{orderId}:
     get:
       summary: Get order detail
+      description: Returns the full order detail including items, pricing, payment, shipping, and status history.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/OrderDetail'
+        '401':
+          description: Authentication required
+        '404':
+          description: Order not found
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
@@ -304,7 +387,290 @@ paths:
     post:
       summary: Payment webhook receiver
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
+    CheckoutRequest:
+      type: object
+      required:
+        - cartId
+        - shippingAddressId
+        - shippingService
+        - shippingCost
+        - paymentMethod
+      properties:
+        cartId:
+          type: string
+          format: uuid
+          description: ID of the cart to check out
+        shippingAddressId:
+          type: string
+          format: uuid
+          description: ID of the user's saved shipping address (must belong to the authenticated user)
+        shippingService:
+          type: string
+          description: Shipping service code (e.g. jne-reg)
+        shippingCost:
+          type: integer
+          minimum: 0
+          description: Shipping cost in IDR
+        paymentMethod:
+          type: string
+          enum:
+            - bank_transfer
+            - virtual_account
+            - credit_card
+            - ewallet_gopay
+            - ewallet_ovo
+            - ewallet_dana
+          description: Payment method for the order
+        notes:
+          type: string
+          maxLength: 500
+          description: Optional order notes
+    CheckoutResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        orderNumber:
+          type: string
+          description: 'Human-readable order number (ORD-YYYYMMDD-NNN)'
+          example: ORD-20251207-001
+        status:
+          type: string
+          description: Order status (lowercase)
+          example: pending_payment
+        total:
+          type: integer
+          description: Total amount in IDR
+        currency:
+          type: string
+          example: IDR
+        paymentMethod:
+          type: string
+          description: Echo of request paymentMethod
+        paymentUrl:
+          type: string
+          description: Payment gateway redirect URL. Empty string if no provider configured.
+        paymentExpiry:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the payment intent expires. Null if no intent was created.
+        createdAt:
+          type: string
+          format: date-time
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        perPage:
+          type: integer
+        totalItems:
+          type: integer
+    OrderListItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderNumber:
+          type: string
+          description: 'Human-readable order number (ORD-YYYYMMDD-NNN)'
+        status:
+          type: string
+          description: Order status (lowercase)
+          enum:
+            - pending_payment
+            - paid
+            - processing
+            - packed
+            - shipped
+            - out_for_delivery
+            - delivered
+            - cancelled
+        statusLabel:
+          type: string
+          description: Indonesian human-readable status label
+        total:
+          type: integer
+          description: Total amount in IDR
+        currency:
+          type: string
+          example: IDR
+        itemCount:
+          type: integer
+          description: Number of distinct items in the order
+        thumbnailUrl:
+          type: string
+          description: First product image URL for the order. Empty string if no images.
+        paymentMethod:
+          type: string
+          description: Payment channel from the latest payment record. Empty string if no payment.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    OrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderListItem'
+        - type: object
+          properties:
+            user:
+              type: object
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                email:
+                  type: string
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/OrderItem'
+            shippingAddress:
+              $ref: '#/components/schemas/OrderShippingAddress'
+            pricing:
+              $ref: '#/components/schemas/OrderPricing'
+            voucher:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/OrderVoucher'
+            shipping:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/OrderShipping'
+            payment:
+              $ref: '#/components/schemas/OrderPayment'
+            notes:
+              type: string
+              nullable: true
+            statusHistory:
+              type: array
+              items:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+    OrderItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          nullable: true
+        productTitle:
+          type: string
+        productSlug:
+          type: string
+        qty:
+          type: integer
+        unitPrice:
+          type: integer
+        subtotal:
+          type: integer
+        imageUrl:
+          type: string
+          description: First product image URL. Empty string if no images.
+    OrderShippingAddress:
+      type: object
+      properties:
+        receiverName:
+          type: string
+        phone:
+          type: string
+        addressLine1:
+          type: string
+        addressLine2:
+          type: string
+          nullable: true
+        city:
+          type: string
+        province:
+          type: string
+        postalCode:
+          type: string
+        country:
+          type: string
+    OrderPricing:
+      type: object
+      properties:
+        subtotal:
+          type: integer
+        discount:
+          type: integer
+        tax:
+          type: integer
+        shipping:
+          type: integer
+        total:
+          type: integer
+    OrderVoucher:
+      type: object
+      properties:
+        code:
+          type: string
+        discount:
+          type: integer
+    OrderShipping:
+      type: object
+      properties:
+        courier:
+          type: string
+        service:
+          type: string
+        trackingNumber:
+          type: string
+          nullable: true
+        estimatedDelivery:
+          type: string
+          nullable: true
+        shippedAt:
+          type: string
+          format: date-time
+          nullable: true
+    OrderPayment:
+      type: object
+      properties:
+        method:
+          type: string
+        methodLabel:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - paid
+            - failed
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+        paymentUrl:
+          type: string
+        expiryAt:
+          type: string
+          format: date-time
+          nullable: true
     AdminQueueDLQItem:
       type: object
       properties:

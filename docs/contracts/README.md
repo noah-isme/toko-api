@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0  
 **Base URL:** `https://api.toko.com/api/v1` (production) | `http://localhost:8080/api/v1` (development)  
-**Last Updated:** 2025-12-07
+**Last Updated:** 2026-07-24
 
 ## 📋 Table of Contents
 
@@ -11,6 +11,7 @@
 - [Cart](cart.md)
 - [Checkout](checkout.md)
 - [Orders](orders.md)
+- [Notifications](notifications.md)
 - [User Addresses](user.md)
 - [Admin](admin.md)
 - [Webhooks](webhooks.md)

@@ -99,7 +99,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 					RedirectUrl:     existing.RedirectUrl,
 					Amount:          existing.Amount,
 					ExpiresAt:       existing.ExpiresAt,
-					TenantID:        pgtype.UUID{}, // Not in Row yet?
+					TenantID:        existing.TenantID,
 				}, nil
 			}
 		}
@@ -147,6 +147,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		RedirectUrl:     pgtype.Text{String: resp.RedirectURL, Valid: strings.TrimSpace(resp.RedirectURL) != ""},
 		Amount:          pgtype.Int8{Int64: expectedAmount, Valid: true},
 		ExpiresAt:       expiresAt,
+		TenantID:        order.TenantID,
 	})
 	if err != nil {
 		return zero, err
@@ -156,20 +157,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		Status:    dbgen.PaymentStatusPENDING,
 		Payload:   payload,
 	})
-	return dbgen.Payment{
-		ID:              payment.ID,
-		OrderID:         payment.OrderID,
-		Provider:        payment.Provider,
-		Status:          payment.Status,
-		ProviderPayload: payment.ProviderPayload,
-		CreatedAt:       payment.CreatedAt,
-		UpdatedAt:       payment.UpdatedAt,
-		Channel:         payment.Channel,
-		IntentToken:     payment.IntentToken,
-		RedirectUrl:     payment.RedirectUrl,
-		Amount:          payment.Amount,
-		ExpiresAt:       payment.ExpiresAt,
-	}, nil
+	return payment, nil
 }
 
 // ConsolidatedStatus returns the best-known status for an order payment.

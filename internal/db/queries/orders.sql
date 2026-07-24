@@ -1,7 +1,12 @@
 -- name: CreateOrder :one
-INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, applied_voucher_code, tenant_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+INSERT INTO orders (user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, applied_voucher_code, tenant_id, order_number)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 RETURNING *;
+
+-- name: CountOrdersForDay :one
+SELECT COUNT(*)
+FROM orders
+WHERE created_at >= sqlc.arg(start_at) AND created_at < sqlc.arg(end_at);
 
 -- name: CreateOrderItem :exec
 INSERT INTO order_items (order_id, product_id, variant_id, title, slug, qty, unit_price, subtotal)
@@ -42,3 +47,16 @@ SELECT id, order_id, product_id, variant_id, title, slug, qty, unit_price, subto
 FROM order_items
 WHERE order_id = $1
 ORDER BY title ASC, id;
+
+-- name: CountOrderItems :one
+SELECT COUNT(*)
+FROM order_items
+WHERE order_id = $1;
+
+-- name: GetOrderThumbnail :one
+SELECT pi.url
+FROM order_items oi
+JOIN product_images pi ON pi.product_id = oi.product_id
+WHERE oi.order_id = $1
+ORDER BY pi.sort_order ASC
+LIMIT 1;

@@ -414,12 +414,12 @@ func (f *fakeQueries) CreateOrderItem(context.Context, dbgen.CreateOrderItemPara
 	return errNotImplemented
 }
 
-func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.CreatePaymentRow, error) {
-	return dbgen.CreatePaymentRow{}, errNotImplemented
+func (f *fakeQueries) CreatePayment(context.Context, dbgen.CreatePaymentParams) (dbgen.Payment, error) {
+	return dbgen.Payment{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetLatestPaymentByOrder(context.Context, pgtype.UUID) (dbgen.GetLatestPaymentByOrderRow, error) {
-	return dbgen.GetLatestPaymentByOrderRow{}, errNotImplemented
+func (f *fakeQueries) GetLatestPaymentByOrder(context.Context, pgtype.UUID) (dbgen.Payment, error) {
+	return dbgen.Payment{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdatePaymentStatus(context.Context, dbgen.UpdatePaymentStatusParams) error {
@@ -692,4 +692,40 @@ func (f *fakeQueries) ListProductsByTenant(ctx context.Context, arg dbgen.ListPr
 
 func (f *fakeQueries) RemoveFavorite(ctx context.Context, arg dbgen.RemoveFavoriteParams) error {
 	return errNotImplemented
+}
+
+func (f *fakeQueries) CountOrdersForDay(ctx context.Context, arg dbgen.CountOrdersForDayParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) CountNotifications(ctx context.Context, arg dbgen.CountNotificationsParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) CountUnreadNotifications(ctx context.Context, arg dbgen.CountUnreadNotificationsParams) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) CreateNotification(ctx context.Context, arg dbgen.CreateNotificationParams) (dbgen.Notification, error) {
+	return dbgen.Notification{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListNotifications(ctx context.Context, arg dbgen.ListNotificationsParams) ([]dbgen.Notification, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) MarkAllNotificationsRead(ctx context.Context, arg dbgen.MarkAllNotificationsReadParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) MarkNotificationRead(ctx context.Context, arg dbgen.MarkNotificationReadParams) (pgtype.UUID, error) {
+	return pgtype.UUID{}, errNotImplemented
+}
+
+func (f *fakeQueries) CountOrderItems(ctx context.Context, orderID pgtype.UUID) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (f *fakeQueries) GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error) {
+	return "", errNotImplemented
 }

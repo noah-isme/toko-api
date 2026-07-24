@@ -36,6 +36,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/favorites"
 	"github.com/noah-isme/backend-toko/internal/health"
+	"github.com/noah-isme/backend-toko/internal/notifications"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/order"
@@ -299,21 +300,22 @@ func main() {
 		From:         cfg.NotifyEmailFrom,
 		TopicToggles: cfg.NotifyEmailTopics,
 	}
+	notificationsSvc := &notifications.Service{Q: queries}
+	notificationsHandler := &notifications.Handler{Svc: notificationsSvc}
+	notificationsNotifier := &notifications.Notifier{
+		Svc:    notificationsSvc,
+		Orders: queries,
+		OnError: func(err error) {
+			if err != nil {
+				logger.Error().Err(err).Msg("record in-app notification")
+			}
+		},
+	}
 	bus := &events.Bus{
 		Store:     queries,
 		Scheduler: dispatcher,
-		Notifiers: []events.Notifier{emailNotifier},
+		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier},
 	}
-
-	checkoutSvc := &checkout.Service{
-		Q:        queries,
-		Pool:     pool,
-		CartSvc:  cartSvc,
-		TaxBps:   cfg.PricingTaxRateBPS,
-		Currency: cfg.CurrencyCode,
-		Events:   bus,
-	}
-	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
 
 	orderHandler := &order.Handler{Q: queries}
 	orderAdmin := &order.AdminHandler{Q: queries}
@@ -367,6 +369,18 @@ func main() {
 		CallbackBaseURL: cfg.PaymentCallbackBaseURL,
 	}
 	paymentHandler := &payment.Handler{Svc: paymentSvc, Q: queries}
+
+	checkoutSvc := &checkout.Service{
+		Q:          queries,
+		Pool:       pool,
+		CartSvc:    cartSvc,
+		PaymentSvc: paymentSvc,
+		TaxBps:     cfg.PricingTaxRateBPS,
+		Currency:   cfg.CurrencyCode,
+		Events:     bus,
+	}
+	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
+
 	webhookHandler := payment.Webhook{
 		Q:            queries,
 		Pool:         pool,
@@ -632,6 +646,11 @@ func main() {
 			authR.Get("/orders/{orderId}", orderHandler.Get)
 			authR.Get("/orders/{orderId}/shipment", shipHandler.GetByOrder)
 			authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+
+			authR.Get("/notifications", notificationsHandler.List)
+			authR.Get("/notifications/unread-count", notificationsHandler.UnreadCount)
+			authR.Post("/notifications/read-all", notificationsHandler.MarkAllRead)
+			authR.Post("/notifications/{id}/read", notificationsHandler.MarkRead)
 		})
 
 		v.Route("/admin", func(admin chi.Router) {

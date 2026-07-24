@@ -176,23 +176,48 @@ echo ">>> 5. CHECKOUT & ORDERS"
 curl -s -X POST "$BASE_URL/carts/$CART_ID/apply-voucher" -H "Content-Type: application/json" -d '{"code":"DISC20"}' > /dev/null
 
 echo -n "  Create Order (Checkout)... "
-ORDER_PAYLOAD="{\"cartId\": \"$CART_ID\", \"address\": {\"receiverName\":\"Test\",\"phone\":\"08123456789\",\"addressLine1\":\"Jl. Test\",\"city\":\"Jakarta\",\"postalCode\":\"12345\",\"country\":\"Indonesia\"}, \"shipping\": {\"courier\":\"jne\",\"service\":\"REG\",\"price\":15000,\"etd\":\"2-3 days\"}}"
+ORDER_PAYLOAD="{\"cartId\": \"$CART_ID\", \"shippingAddressId\": \"$ADDR_ID\", \"shippingService\": \"jne-reg\", \"shippingCost\": 15000, \"paymentMethod\": \"bank_transfer\", \"notes\": \"Please call before delivery\"}"
 ORDER_RES=$(curl -s -w "\n%{http_code}" -X POST $BASE_URL/checkout \
   -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$ORDER_PAYLOAD")
 ORDER_BODY=$(echo "$ORDER_RES" | head -n1)
 ORDER_CODE=$(echo "$ORDER_RES" | tail -n1)
 check "Create Order" 201 $ORDER_CODE
-ORDER_ID=$(echo $ORDER_BODY | jq -r '.data.orderId')
+ORDER_ID=$(echo "$ORDER_BODY" | jq -r '.data.orderId')
+ORDER_NUMBER=$(echo "$ORDER_BODY" | jq -r '.data.orderNumber')
+ORDER_TOTAL=$(echo "$ORDER_BODY" | jq -r '.data.total')
+ORDER_CURR=$(echo "$ORDER_BODY" | jq -r '.data.currency')
+ORDER_PAY_METHOD=$(echo "$ORDER_BODY" | jq -r '.data.paymentMethod')
+ORDER_PAY_URL=$(echo "$ORDER_BODY" | jq -r '.data.paymentUrl // empty')
+echo "    orderId=$ORDER_ID orderNumber=$ORDER_NUMBER total=$ORDER_TOTAL $ORDER_CURR payMethod=$ORDER_PAY_METHOD payUrl=${ORDER_PAY_URL:-<none>}"
+if echo "$ORDER_NUMBER" | grep -qE '^ORD-[0-9]{8}-[0-9]{3}$'; then
+  echo "  PASS orderNumber format (ORD-YYYYMMDD-NNN)"
+else
+  echo "  FAIL orderNumber format: $ORDER_NUMBER"; exit 1
+fi
+if [ "$ORDER_PAY_METHOD" != "bank_transfer" ]; then echo "  FAIL paymentMethod echo: $ORDER_PAY_METHOD"; exit 1; fi
+if [ "$ORDER_CURR" != "IDR" ]; then echo "  FAIL currency: $ORDER_CURR"; exit 1; fi
 
 echo -n "  List Orders... "
 LIST_ORDERS_RES=$(curl -s -w "\n%{http_code}" -X GET $BASE_URL/orders -H "Authorization: Bearer $TOKEN")
 LIST_ORDERS_CODE=$(echo "$LIST_ORDERS_RES" | tail -n1)
 check "List Orders" 200 $LIST_ORDERS_CODE
+LIST_FIRST_NUM=$(echo "$LIST_ORDERS_RES" | head -n1 | jq -r '.data[0].orderNumber // empty')
+if [ "$LIST_FIRST_NUM" = "$ORDER_NUMBER" ]; then
+  echo "  PASS orderNumber present in list"
+else
+  echo "  FAIL orderNumber in list: got '$LIST_FIRST_NUM', want '$ORDER_NUMBER'"; exit 1
+fi
 
 echo -n "  Get Order Detail... "
 GET_ORDER_RES=$(curl -s -w "\n%{http_code}" -X GET "$BASE_URL/orders/$ORDER_ID" -H "Authorization: Bearer $TOKEN")
 GET_ORDER_CODE=$(echo "$GET_ORDER_RES" | tail -n1)
 check "Get Order" 200 $GET_ORDER_CODE
+GET_DETAIL_NUM=$(echo "$GET_ORDER_RES" | head -n1 | jq -r '.data.orderNumber // empty')
+if [ "$GET_DETAIL_NUM" = "$ORDER_NUMBER" ]; then
+  echo "  PASS orderNumber present in detail"
+else
+  echo "  FAIL orderNumber in detail: got '$GET_DETAIL_NUM', want '$ORDER_NUMBER'"; exit 1
+fi
 
 # =====================
 # 6. HEALTH
