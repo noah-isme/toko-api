@@ -137,6 +137,106 @@ paths:
   /api/v1/products/{slug}/related:
     get:
       summary: Related products
+  /api/v1/products/{id}/reviews:
+    get:
+      summary: List product reviews
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Page size
+      responses:
+        '200':
+          description: Array of reviews
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Review'
+    post:
+      summary: Create a product review
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewCreateRequest'
+      responses:
+        '201':
+          description: Created review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
+    delete:
+      summary: Delete a product review (not implemented)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+      responses:
+        '501':
+          description: Not implemented
+  /api/v1/products/{id}/reviews/stats:
+    get:
+      summary: Get product review stats
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+      responses:
+        '200':
+          description: Review statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewStats'
+        '400':
+          description: Invalid product ID
+        '500':
+          description: Server error
   /api/v1/carts:
     post:
       summary: Create cart (guest)
@@ -567,6 +667,79 @@ components:
             - EXPIRED
             - REFUNDED
           description: Consolidated payment status (uppercase)
+    Review:
+      type: object
+      required:
+        - id
+        - product_id
+        - user_id
+        - rating
+        - created_at
+        - updated_at
+        - tenant_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+    ReviewStats:
+      type: object
+      required:
+        - total_reviews
+        - average_rating
+        - count_5_star
+        - count_4_star
+        - count_3_star
+        - count_2_star
+        - count_1_star
+      properties:
+        total_reviews:
+          type: integer
+        average_rating:
+          type: number
+          format: float
+        count_5_star:
+          type: integer
+        count_4_star:
+          type: integer
+        count_3_star:
+          type: integer
+        count_2_star:
+          type: integer
+        count_1_star:
+          type: integer
+    ReviewCreateRequest:
+      type: object
+      required:
+        - rating
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
     Pagination:
       type: object
       properties:
