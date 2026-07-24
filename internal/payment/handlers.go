@@ -87,7 +87,7 @@ func (h *Handler) Intent(w http.ResponseWriter, r *http.Request) {
 		t := payment.ExpiresAt.Time
 		resp.ExpiresAt = &t
 	}
-	common.JSON(w, http.StatusOK, resp)
+	common.JSON(w, http.StatusOK, map[string]any{"data": resp})
 }
 
 // Status reports the consolidated payment status for an order belonging to the authenticated user.
@@ -125,5 +125,5 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "STATUS_ERROR", err.Error(), nil)
 		return
 	}
-	common.JSON(w, http.StatusOK, map[string]string{"status": status})
+	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]string{"status": status}})
 }

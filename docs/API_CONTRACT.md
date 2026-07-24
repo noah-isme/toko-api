@@ -12,6 +12,7 @@
 - [Cart](contracts/cart.md)
 - [Checkout](contracts/checkout.md)
 - [Orders](contracts/orders.md)
+- [Payment](contracts/payment.md)
 - [User Addresses](contracts/user.md)
 - [Admin](contracts/admin.md)
 - [Webhooks](contracts/webhooks.md)
