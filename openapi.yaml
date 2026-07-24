@@ -434,50 +434,437 @@ paths:
   /api/v1/admin/orders/{id}/shipment:
     post:
       summary: Create shipment for order
+      description: Registers courier and tracking data for an order.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Order ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminShipmentCreateRequest'
+      responses:
+        '201':
+          description: Shipment created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminShipmentResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Order not found
+        '409':
+          description: Conflict (invalid state or shipment already exists)
+        '500':
+          description: Server error
   /api/v1/admin/orders/{id}/status:
     patch:
       summary: Update order status (admin restricted)
+      description: Advances the order status using state-machine validation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Order ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOrderStatusPatchRequest'
+      responses:
+        '204':
+          description: Status updated
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Order not found
+        '409':
+          description: Invalid state transition
+        '500':
+          description: Server error
   /api/v1/admin/vouchers:
     post:
       summary: Create voucher
+      description: Creates a new voucher rule.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVoucherRequest'
+      responses:
+        '201':
+          description: Voucher created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Voucher'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '409':
+          description: Voucher code already exists
+        '500':
+          description: Server error
   /api/v1/admin/vouchers/{code}:
     put:
       summary: Update voucher
+      description: Updates the voucher identified by its code.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Voucher code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVoucherRequest'
+      responses:
+        '200':
+          description: Voucher updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Voucher'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Voucher not found
+        '500':
+          description: Server error
   /api/v1/admin/vouchers/preview:
     post:
       summary: Preview voucher discount (dry-run)
+      description: Dry-run evaluation of a voucher for a given cart context.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminVoucherPreviewRequest'
+      responses:
+        '200':
+          description: Preview result
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminVoucherPreviewResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/webhooks:
     post:
       summary: Create webhook endpoint
+      description: Registers a new webhook endpoint.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminWebhookEndpointRequest'
+      responses:
+        '201':
+          description: Webhook endpoint created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
     get:
       summary: List webhook endpoints
+      description: Returns configured webhook endpoints.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+          description: Page size
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Items to skip
+      responses:
+        '200':
+          description: List of endpoints
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/webhooks/{id}:
     put:
       summary: Update webhook endpoint
+      description: Updates the webhook endpoint identified by id.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Endpoint ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminWebhookEndpointRequest'
+      responses:
+        '200':
+          description: Webhook endpoint updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Endpoint not found
+        '500':
+          description: Server error
     delete:
       summary: Delete webhook endpoint
+      description: Removes the webhook endpoint identified by id.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Endpoint ID
+      responses:
+        '204':
+          description: Endpoint deleted
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Endpoint not found
+        '500':
+          description: Server error
   /api/v1/admin/webhook-deliveries:
     get:
       summary: List webhook deliveries
+      description: Returns webhook delivery attempts with optional filtering.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: endpointId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Endpoint ID filter
+        - name: eventId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Event ID filter
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: Delivery status filter
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+          description: Page size
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Items to skip
+      responses:
+        '200':
+          description: Deliveries and total count
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookDelivery'
+                  total:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
       summary: Replay a webhook delivery
+      description: Resets the delivery for retry and releases any related DLQ lock.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Delivery ID
+      responses:
+        '200':
+          description: Delivery replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDelivery'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Delivery not found
+        '500':
+          description: Server error
   /api/v1/admin/queue/dlq:
     get:
       summary: List dead-letter queue items
+      description: Returns DLQ entries filtered by kind with pagination.
+      security:
+        - bearerAuth: []
       parameters:
         - name: kind
           in: query
           schema:
             type: string
+          description: Queue kind filter
         - name: limit
           in: query
           schema:
             type: integer
+            default: 50
+            maximum: 200
+          description: Page size
         - name: offset
           in: query
           schema:
             type: integer
+            default: 0
+            minimum: 0
+          description: Items to skip
       responses:
         '200':
           description: DLQ entries
@@ -485,9 +872,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminQueueDLQListResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/queue/dlq/replay:
     post:
       summary: Replay DLQ items
+      description: Re-enqueues DLQ entries either by ID list or by batch kind.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -501,15 +897,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminQueueReplayResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/queue/stats:
     get:
       summary: Queue depth and DLQ metrics
+      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind.
+      security:
+        - bearerAuth: []
       parameters:
         - name: kind
           in: query
           required: true
           schema:
             type: string
+          description: Queue kind
       responses:
         '200':
           description: Queue stats
@@ -517,21 +925,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminQueueStatsResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/admin/audit-logs:
     get:
       summary: List audit logs (admin)
+      description: Returns a paginated list of audit logs.
+      security:
+        - bearerAuth: []
       parameters:
         - name: limit
           in: query
           schema:
             type: integer
+            default: 50
+            maximum: 200
+          description: Page size
         - name: offset
           in: query
           schema:
             type: integer
+            default: 0
+            minimum: 0
+          description: Items to skip
       responses:
         '200':
-          description: OK
+          description: Array of audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLog'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Server error
   /api/v1/analytics/sales:
     get:
       summary: Sales trend (daily)
@@ -1180,6 +1617,423 @@ components:
           type: string
           format: date-time
           nullable: true
+    AdminVoucherRequest:
+      type: object
+      required:
+        - code
+        - kind
+      properties:
+        code:
+          type: string
+        kind:
+          type: string
+          enum:
+            - fixed_amount
+            - percent
+        value:
+          type: integer
+          description: Discount value in IDR for fixed_amount vouchers
+        percentBps:
+          type: integer
+          description: Basis points for percent vouchers (e.g. 2000 = 20%)
+        minSpend:
+          type: integer
+        usageLimit:
+          type: integer
+        perUserLimit:
+          type: integer
+        validFrom:
+          type: string
+          format: date-time
+        validTo:
+          type: string
+          format: date-time
+        productIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        categoryIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        brandIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        combinable:
+          type: boolean
+        priority:
+          type: integer
+    Voucher:
+      type: object
+      required:
+        - id
+        - code
+        - kind
+        - value
+        - min_spend
+        - used_count
+        - combinable
+        - priority
+        - created_at
+        - updated_at
+        - tenant_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        kind:
+          type: string
+          enum:
+            - fixed_amount
+            - percent
+        value:
+          type: integer
+        min_spend:
+          type: integer
+        usage_limit:
+          type: integer
+          nullable: true
+        used_count:
+          type: integer
+        per_user_limit:
+          type: integer
+          nullable: true
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
+        product_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        category_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        brand_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        combinable:
+          type: boolean
+        priority:
+          type: integer
+        percent_bps:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+    AdminVoucherPreviewRequest:
+      type: object
+      required:
+        - code
+        - cartTotal
+        - items
+      properties:
+        code:
+          type: string
+        cartTotal:
+          type: integer
+          minimum: 0
+        userId:
+          type: string
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminVoucherPreviewItem'
+          minItems: 1
+    AdminVoucherPreviewItem:
+      type: object
+      required:
+        - subtotal
+      properties:
+        productId:
+          type: string
+          format: uuid
+          nullable: true
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        brandId:
+          type: string
+          format: uuid
+          nullable: true
+        subtotal:
+          type: integer
+          minimum: 1
+    AdminVoucherPreviewResponse:
+      type: object
+      required:
+        - discount
+        - eligible_amount
+        - code
+      properties:
+        discount:
+          type: integer
+        eligible_amount:
+          type: integer
+        code:
+          type: string
+    AdminOrderStatusPatchRequest:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - PACKED
+            - SHIPPED
+            - OUT_FOR_DELIVERY
+            - DELIVERED
+            - CANCELLED
+    AdminShipmentCreateRequest:
+      type: object
+      required:
+        - courier
+        - trackingNumber
+      properties:
+        courier:
+          type: string
+        trackingNumber:
+          type: string
+    AdminShipmentResponse:
+      type: object
+      required:
+        - id
+        - orderId
+        - status
+        - events
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        courier:
+          type: string
+          nullable: true
+        trackingNumber:
+          type: string
+          nullable: true
+        lastStatus:
+          type: string
+          nullable: true
+        lastEventAt:
+          type: string
+          format: date-time
+          nullable: true
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              status:
+                type: string
+              description:
+                type: string
+                nullable: true
+              location:
+                type: string
+                nullable: true
+              occurredAt:
+                type: string
+                format: date-time
+                nullable: true
+    AdminWebhookEndpointRequest:
+      type: object
+      required:
+        - name
+        - url
+        - secret
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+        active:
+          type: boolean
+          default: true
+        topics:
+          type: array
+          items:
+            type: string
+    WebhookEndpoint:
+      type: object
+      required:
+        - id
+        - name
+        - url
+        - secret
+        - active
+        - topics
+        - created_at
+        - updated_at
+        - tenant_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+        secret:
+          type: string
+        active:
+          type: boolean
+        topics:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+    WebhookDelivery:
+      type: object
+      required:
+        - id
+        - endpoint_id
+        - event_id
+        - status
+        - attempt
+        - max_attempt
+        - created_at
+        - updated_at
+        - tenant_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - PENDING
+            - DELIVERING
+            - DELIVERED
+            - FAILED
+            - DLQ
+        attempt:
+          type: integer
+        max_attempt:
+          type: integer
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        response_status:
+          type: integer
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+    AuditLog:
+      type: object
+      required:
+        - id
+        - actor_kind
+        - action
+        - resource_type
+        - method
+        - path
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_kind:
+          type: string
+        actor_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        action:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+          nullable: true
+        method:
+          type: string
+        path:
+          type: string
+        route:
+          type: string
+          nullable: true
+        status:
+          type: integer
+        ip:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
     AdminQueueDLQItem:
       type: object
       properties:
