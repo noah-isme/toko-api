@@ -7,6 +7,9 @@ const duration = __ENV.DURATION || '2m';
 const p95Budget = __ENV.HTTP_P95 || '250';
 const p99Budget = __ENV.HTTP_P99 || '400';
 
+// Use a product slug that exists in the seeder
+const testSlug = __ENV.TEST_SLUG || 'macbook-pro-14-m3';
+
 export const options = {
   vus,
   duration,
@@ -25,7 +28,7 @@ export default function () {
   check(list, {
     'list status ok': (r) => r.status === 200
   });
-  const detail = http.get(`${base}/api/v1/products/sample-slug`);
+  const detail = http.get(`${base}/api/v1/products/${testSlug}`);
   check(detail, {
     'detail status valid': (r) => r.status === 200 || r.status === 404
   });

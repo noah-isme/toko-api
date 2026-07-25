@@ -59,6 +59,8 @@ jobs:
         run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.0
       - name: Run migrations
         run: $(go env GOPATH)/bin/migrate -path migrations -database "$DATABASE_URL" up
+      - name: Seed database
+        run: go run ./cmd/tools/seeder
       - name: Build API
         run: go build -o bin/toko-api ./cmd/api
       - name: Start API server
