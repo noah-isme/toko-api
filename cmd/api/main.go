@@ -608,6 +608,8 @@ func main() {
 			a.Group(func(protected chi.Router) {
 				protected.Use(authMiddleware.RequireAuth)
 				protected.Get("/me", authHandler.Me)
+				protected.Get("/sessions", authHandler.ListSessions)
+				protected.Post("/logout/all", authHandler.LogoutAll)
 			})
 		})
 
@@ -640,6 +642,7 @@ func main() {
 
 		v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout", checkoutHandler.Checkout)
 
+		v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout/draft", checkoutHandler.CreateDraft)
 		v.Group(func(authR chi.Router) {
 			authR.Use(authMiddleware.RequireAuth)
 			authR.Get("/orders", orderHandler.List)

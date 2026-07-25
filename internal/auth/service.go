@@ -83,6 +83,16 @@ type RefreshResult struct {
 	RefreshExpiry time.Time `json:"refresh_expires_at"`
 }
 
+// SessionInfo represents a user session.
+type SessionInfo struct {
+	ID        string    `json:"id"`
+	Device    string    `json:"device"`
+	IPAddress string    `json:"ipAddress"`
+	Location  string    `json:"location,omitempty"`
+	LastActive time.Time `json:"lastActive"`
+	Current   bool      `json:"current"`
+}
+
 // NewService constructs a Service instance with sane defaults.
 func NewService(cfg Config) (*Service, error) {
 	if cfg.Queries == nil {
@@ -227,6 +237,38 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 		return nil
 	}
 	return s.queries.DeleteSessionByToken(ctx, hashRefreshToken(token))
+}
+
+// LogoutAll revokes all refresh tokens for a user.
+func (s *Service) LogoutAll(ctx context.Context, userID string) error {
+	id, err := pgUUIDFromString(userID)
+	if err != nil {
+		return common.NewAppError("UNAUTHORIZED", "unauthorized", httpStatusUnauthorized, nil)
+	}
+	return s.queries.DeleteSessionsByUser(ctx, id)
+}
+
+// ListSessions returns all active sessions for a user.
+func (s *Service) ListSessions(ctx context.Context, userID string) ([]SessionInfo, error) {
+	id, err := pgUUIDFromString(userID)
+	if err != nil {
+		return nil, common.NewAppError("UNAUTHORIZED", "unauthorized", httpStatusUnauthorized, nil)
+	}
+	sessions, err := s.queries.ListSessions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	result := make([]SessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		result = append(result, SessionInfo{
+			ID:         uuidString(sess.ID),
+			Device:     sess.UserAgent.String,
+			IPAddress:  sess.Ip.String,
+			LastActive: sess.CreatedAt.Time,
+			Current:    false, // We don't track current session in DB
+		})
+	}
+	return result, nil
 }
 
 // Refresh validates and rotates a refresh token, issuing a fresh access token pair.

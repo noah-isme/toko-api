@@ -23,3 +23,9 @@ WHERE refresh_token = $1;
 -- name: DeleteSessionsByUser :exec
 DELETE FROM sessions
 WHERE user_id = $1;
+
+-- name: ListSessions :many
+SELECT id, user_id, refresh_token, user_agent, ip, expires_at, created_at
+FROM sessions
+WHERE user_id = $1
+ORDER BY created_at DESC;

@@ -310,6 +310,19 @@ func (f *fakeQueries) DeleteSessionsByUser(ctx context.Context, userID pgtype.UU
 	return nil
 }
 
+func (f *fakeQueries) ListSessions(ctx context.Context, userID pgtype.UUID) ([]dbgen.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := uuidString(userID)
+	var sessions []dbgen.Session
+	for _, session := range f.sessionsByToken {
+		if uuidString(session.UserID) == key {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions, nil
+}
+
 func (f *fakeQueries) CreatePasswordReset(ctx context.Context, arg dbgen.CreatePasswordResetParams) (dbgen.PasswordReset, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

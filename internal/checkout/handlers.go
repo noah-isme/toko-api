@@ -35,6 +35,29 @@ func (h *Handler) Checkout(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusCreated, map[string]any{"data": out})
 }
 
+func (h *Handler) CreateDraft(w http.ResponseWriter, r *http.Request) {
+	if h.Svc == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "checkout service not configured", nil)
+		return
+	}
+	userID, ok := common.UserID(r.Context())
+	if !ok || userID == "" {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", nil)
+		return
+	}
+	var payload Input
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid payload", nil)
+		return
+	}
+	out, err := h.Svc.CreateDraft(r.Context(), &userID, payload)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	common.JSON(w, http.StatusCreated, map[string]any{"data": out})
+}
+
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	if err == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "unknown error", nil)

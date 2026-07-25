@@ -148,21 +148,41 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": user})
 }
 
-// Forgot handles POST /api/v1/auth/password/forgot.
-func (h *Handler) Forgot(w http.ResponseWriter, r *http.Request) {
+// ListSessions handles GET /api/v1/auth/sessions.
+func (h *Handler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	if h.Service == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
 		return
 	}
-	var req forgotRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
+	userID, ok := common.UserID(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid token", nil)
 		return
 	}
-	if err := h.Service.Forgot(r.Context(), req.Email, h.PublicBaseURL, h.Mailer); err != nil {
+	sessions, err := h.Service.ListSessions(r.Context(), userID)
+	if err != nil {
 		h.writeError(w, err)
 		return
 	}
+	common.JSON(w, http.StatusOK, map[string]any{"data": sessions})
+}
+
+// LogoutAll handles POST /api/v1/auth/logout/all.
+func (h *Handler) LogoutAll(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	userID, ok := common.UserID(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid token", nil)
+		return
+	}
+	if err := h.Service.LogoutAll(r.Context(), userID); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -182,6 +202,24 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.clearRefreshCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Forgot handles POST /api/v1/auth/password/forgot.
+func (h *Handler) Forgot(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	var req forgotRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
+		return
+	}
+	if err := h.Service.Forgot(r.Context(), req.Email, h.PublicBaseURL, h.Mailer); err != nil {
+		h.writeError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
