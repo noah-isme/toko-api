@@ -56,7 +56,7 @@ jobs:
       - name: Download dependencies
         run: go mod download
       - name: Install migrate
-        run: go install github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.0
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.0
       - name: Run migrations
         run: $(go env GOPATH)/bin/migrate -path migrations -database "$DATABASE_URL" up
       - name: Build API
