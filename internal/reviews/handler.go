@@ -29,7 +29,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	productID, err := toUUID(productIDStr)
+	productID, err := h.resolveProductRef(r, productIDStr)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
@@ -72,7 +72,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	productID, err := toUUID(productIDStr)
+	productID, err := h.resolveProductRef(r, productIDStr)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
@@ -102,7 +102,7 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	productIDStr := chi.URLParam(r, "id")
 
-	productID, err := toUUID(productIDStr)
+	productID, err := h.resolveProductRef(r, productIDStr)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
@@ -138,4 +138,18 @@ func toUUID(value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
+}
+
+// resolveProductRef accepts either a product UUID or a slug. Sibling routes
+// under /products/{slug} are slug-addressed, so the reviews endpoints accept
+// both rather than 400-ing on a perfectly valid product reference.
+func (h *Handler) resolveProductRef(r *http.Request, value string) (pgtype.UUID, error) {
+	if id, err := toUUID(value); err == nil {
+		return id, nil
+	}
+	product, err := h.Svc.Q.GetProductBySlug(r.Context(), value)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return product.ID, nil
 }
