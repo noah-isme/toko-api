@@ -49,3 +49,50 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
    ```bash
    air
    ```
+
+### Database Migrations
+Migrations are embedded into a dedicated binary (`cmd/migrate`, see `embed.go`),
+so no external CLI is required and a built image always carries exactly the
+schema its code expects.
+
+```bash
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/toko?sslmode=disable
+make migrate-up        # apply everything pending
+make migrate-version   # show the current version
+make migrate-down      # roll back one migration
+```
+
+A dirty schema (a previous run that failed partway) exits non-zero rather than
+continuing; resolve it manually, then `go run ./cmd/migrate force <version>`.
+
+### Transactional Email
+Password reset and email verification links are only delivered when SMTP is
+configured. Without `SMTP_HOST` the API still starts, but logs a warning and
+drops the messages — the tokens are created and nobody receives them.
+
+```bash
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587            # 465 with SMTP_IMPLICIT_TLS=true
+SMTP_USERNAME=...        # optional, omit for an unauthenticated relay
+SMTP_PASSWORD=...
+SMTP_FROM=no-reply@toko.example
+PUBLIC_BASE_URL=https://toko.example   # storefront origin used to build the links
+```
+
+`PUBLIC_BASE_URL` matters: without it the emailed links are relative and no mail
+client can follow them.
+
+### Deployment
+The image builds three entrypoints — `/app/api`, `/app/worker` and
+`/app/migrate`, and runs as an unprivileged user. Run migrations to completion
+before rolling out:
+
+```bash
+kubectl create -f deploy/k8s/migrate-job.yaml
+kubectl wait --for=condition=complete --timeout=300s job -l app=backend-toko-migrate
+kubectl apply -f deploy/k8s/deployment.yaml -f deploy/k8s/worker.yaml
+```
+
+The migration Job is deliberately a Job and not an initContainer: initContainers
+run once per pod, so replicas would race concurrent migrations against one
+database.
