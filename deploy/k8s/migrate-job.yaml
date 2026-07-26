@@ -1,0 +1,51 @@
+# Schema migration job.
+#
+# Run this to completion BEFORE rolling out the API and worker Deployments:
+#
+#   kubectl create -f deploy/k8s/migrate-job.yaml
+#   kubectl wait --for=condition=complete --timeout=300s job -l app=backend-toko-migrate
+#   kubectl apply -f deploy/k8s/deployment.yaml -f deploy/k8s/worker.yaml
+#
+# A Job rather than an initContainer: initContainers run once per pod, so three
+# API replicas would race three concurrent migrations against one database. A
+# Job runs exactly once.
+#
+# generateName (with `kubectl create`, not `kubectl apply`) gives each release a
+# fresh Job, since a completed Job's spec is immutable and could not be re-run
+# under a fixed name.
+#
+# The image must be the same tag being deployed: it carries the migrations
+# embedded in the binary, so image tag and schema version move together.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: backend-toko-migrate-
+  labels:
+    app: backend-toko-migrate
+spec:
+  backoffLimit: 2
+  # Keep finished jobs briefly so the logs remain inspectable after a release.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: backend-toko-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/org/backend-toko:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/app/migrate", "up"]
+          envFrom:
+            - secretRef:
+                name: backend-toko-secrets
+            - configMapRef:
+                name: backend-toko-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

@@ -16,6 +16,9 @@ spec:
         - name: api
           image: ghcr.io/org/backend-toko:latest
           imagePullPolicy: IfNotPresent
+          # Schema changes are applied by deploy/k8s/migrate-job.yaml, which must
+          # complete before this rollout starts.
+          command: ["/app/api"]
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

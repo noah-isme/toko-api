@@ -13,3 +13,21 @@ jobs:
       - run: go mod tidy
       - run: go build ./...
       - run: go test ./... -v
+
+  image:
+    # The Dockerfile is the deploy path; nothing else here exercises it, which is
+    # how it went unnoticed that it did not parse at all. Building it on every
+    # change keeps the image buildable.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t backend-toko:ci .
+      - name: Verify entrypoints are present
+        run: |
+          docker run --rm backend-toko:ci ls /app/api /app/worker /app/migrate
+      - name: Verify migrations are embedded
+        # The image ships no SQL files: the migrate binary must still know its
+        # own version command, which it can only do from the embedded FS.
+        run: |
+          docker run --rm backend-toko:ci /app/migrate 2>&1 | grep -q "DATABASE_URL is required"
