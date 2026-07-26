@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,5 +254,52 @@ func TestResendVerificationSkipsAlreadyVerifiedUsers(t *testing.T) {
 	}
 	if len(mailer.Outbox) != 0 {
 		t.Fatalf("expected no email for already-verified user, got %d", len(mailer.Outbox))
+	}
+}
+
+func TestVerificationEmailLinksToTheStorefrontRoute(t *testing.T) {
+	queries := newFakeQueries()
+	mailer := &common.InMemoryEmail{}
+	seedUser(t, queries, "linked@example.com")
+	handler := newTestHandler(t, queries, mailer)
+
+	rec := httptest.NewRecorder()
+	handler.ResendVerification(rec, httptest.NewRequest(http.MethodPost,
+		"/api/v1/auth/email/resend", bytes.NewBufferString(`{"email":"linked@example.com"}`)))
+
+	if len(mailer.Outbox) != 1 {
+		t.Fatalf("expected one email, got %d", len(mailer.Outbox))
+	}
+	body := mailer.Outbox[0].HTML
+	if !strings.Contains(body, "https://example.com/verify-email?token=") {
+		t.Fatalf("verification link is not absolute or points at the wrong route: %q", body)
+	}
+}
+
+func TestResetEmailLinksToTheStorefrontRoute(t *testing.T) {
+	queries := newFakeQueries()
+	mailer := &common.InMemoryEmail{}
+	seedUser(t, queries, "reset-link@example.com")
+	handler := newTestHandler(t, queries, mailer)
+
+	rec := httptest.NewRecorder()
+	handler.Forgot(rec, httptest.NewRequest(http.MethodPost,
+		"/api/v1/auth/password/forgot", bytes.NewBufferString(`{"email":"reset-link@example.com"}`)))
+
+	if len(mailer.Outbox) != 1 {
+		t.Fatalf("expected one email, got %d", len(mailer.Outbox))
+	}
+	body := mailer.Outbox[0].HTML
+	// The storefront route is /reset-password; /reset is a 404.
+	if !strings.Contains(body, "https://example.com/reset-password?token=") {
+		t.Fatalf("reset link points at a route the storefront does not serve: %q", body)
+	}
+}
+
+func TestBuildEmailLinkEscapesTheToken(t *testing.T) {
+	link := buildEmailLink("https://example.com/", "/verify-email", "a b&c=d")
+	const want = "https://example.com/verify-email?token=a+b%26c%3Dd"
+	if link != want {
+		t.Fatalf("link = %q, want %q", link, want)
 	}
 }

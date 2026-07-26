@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -90,12 +91,12 @@ type RefreshResult struct {
 
 // SessionInfo represents a user session.
 type SessionInfo struct {
-	ID        string    `json:"id"`
-	Device    string    `json:"device"`
-	IPAddress string    `json:"ipAddress"`
-	Location  string    `json:"location,omitempty"`
+	ID         string    `json:"id"`
+	Device     string    `json:"device"`
+	IPAddress  string    `json:"ipAddress"`
+	Location   string    `json:"location,omitempty"`
 	LastActive time.Time `json:"lastActive"`
-	Current   bool      `json:"current"`
+	Current    bool      `json:"current"`
 }
 
 // NewService constructs a Service instance with sane defaults.
@@ -399,11 +400,7 @@ func (s *Service) SendEmailVerification(ctx context.Context, email, baseURL stri
 		return nil
 	}
 
-	base := strings.TrimRight(baseURL, "/")
-	link := fmt.Sprintf("%s/verify-email?token=%s", base, token)
-	if base == "" {
-		link = fmt.Sprintf("/verify-email?token=%s", token)
-	}
+	link := buildEmailLink(baseURL, "/verify-email", token)
 	if err := sender.Send(user.Email, "Verifikasi Email", "Klik tautan untuk verifikasi: "+link); err != nil {
 		return fmt.Errorf("send verification email: %w", err)
 	}
@@ -466,11 +463,9 @@ func (s *Service) Forgot(ctx context.Context, email, baseURL string, sender comm
 		return nil
 	}
 
-	base := strings.TrimRight(baseURL, "/")
-	link := fmt.Sprintf("%s/reset?token=%s", base, token)
-	if base == "" {
-		link = fmt.Sprintf("/reset?token=%s", token)
-	}
+	// The storefront route is /reset-password; /reset does not exist and would
+	// land the recipient on a 404.
+	link := buildEmailLink(baseURL, "/reset-password", token)
 
 	if err := sender.Send(user.Email, "Reset Password", "Klik tautan untuk reset: "+link); err != nil {
 		return fmt.Errorf("send reset email: %w", err)
@@ -652,6 +647,15 @@ func generateToken(length int) (string, error) {
 func hashRefreshToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// buildEmailLink renders an absolute link into the storefront. The token is
+// query-escaped because it is emitted straight into a URL that lands in a mail
+// client. A relative link is returned only when no base URL is configured —
+// that is unusable in an email, which is why startup warns about it.
+func buildEmailLink(baseURL, path, token string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return fmt.Sprintf("%s%s?token=%s", base, path, url.QueryEscape(token))
 }
 
 // newUser builds the API user model from the columns every user-returning query
