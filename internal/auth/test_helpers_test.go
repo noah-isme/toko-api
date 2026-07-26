@@ -24,6 +24,8 @@ type fakeQueries struct {
 	sessionsByID    map[string]dbgen.Session
 	resetsByToken   map[string]dbgen.PasswordReset
 	resetsByID      map[string]dbgen.PasswordReset
+
+	verificationsByToken map[string]dbgen.EmailVerification
 }
 
 func newFakeQueries() *fakeQueries {
@@ -34,6 +36,8 @@ func newFakeQueries() *fakeQueries {
 		sessionsByID:    make(map[string]dbgen.Session),
 		resetsByToken:   make(map[string]dbgen.PasswordReset),
 		resetsByID:      make(map[string]dbgen.PasswordReset),
+
+		verificationsByToken: make(map[string]dbgen.EmailVerification),
 	}
 }
 
@@ -145,8 +149,34 @@ func (f *fakeQueries) UpdateAddress(context.Context, dbgen.UpdateAddressParams) 
 	return dbgen.Address{}, errNotImplemented
 }
 
-func (f *fakeQueries) UpdateUserProfile(context.Context, dbgen.UpdateUserProfileParams) (dbgen.UpdateUserProfileRow, error) {
-	return dbgen.UpdateUserProfileRow{}, errNotImplemented
+func (f *fakeQueries) UpdateUserProfile(ctx context.Context, arg dbgen.UpdateUserProfileParams) (dbgen.UpdateUserProfileRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := uuidString(arg.ID)
+	user, ok := f.usersByID[key]
+	if !ok {
+		return dbgen.UpdateUserProfileRow{}, fmt.Errorf("user not found")
+	}
+	// COALESCE semantics: a NULL argument leaves the existing value in place.
+	if arg.Name.Valid {
+		user.Name = arg.Name.String
+	}
+	if arg.Phone.Valid {
+		user.Phone = arg.Phone
+	}
+	user.UpdatedAt = pgTimestamp(time.Now())
+	f.usersByID[key] = user
+	f.usersByEmail[strings.ToLower(user.Email)] = user
+	return dbgen.UpdateUserProfileRow{
+		ID:              user.ID,
+		Name:            user.Name,
+		Email:           user.Email,
+		Phone:           user.Phone,
+		Roles:           user.Roles,
+		EmailVerifiedAt: user.EmailVerifiedAt,
+		CreatedAt:       user.CreatedAt,
+		UpdatedAt:       user.UpdatedAt,
+	}, nil
 }
 
 func (f *fakeQueries) CreateUser(ctx context.Context, arg dbgen.CreateUserParams) (dbgen.CreateUserRow, error) {
@@ -177,14 +207,24 @@ func (f *fakeQueries) CreateUser(ctx context.Context, arg dbgen.CreateUserParams
 		UpdatedAt: pgTimestamp(now),
 	}, nil
 }
-func (f *fakeQueries) GetUserByEmail(ctx context.Context, email string) (dbgen.User, error) {
+func (f *fakeQueries) GetUserByEmail(ctx context.Context, email string) (dbgen.GetUserByEmailRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	user, ok := f.usersByEmail[strings.ToLower(email)]
 	if !ok {
-		return dbgen.User{}, fmt.Errorf("user not found")
+		return dbgen.GetUserByEmailRow{}, fmt.Errorf("user not found")
 	}
-	return user, nil
+	return dbgen.GetUserByEmailRow{
+		ID:              user.ID,
+		Name:            user.Name,
+		Email:           user.Email,
+		Phone:           user.Phone,
+		PasswordHash:    user.PasswordHash,
+		Roles:           user.Roles,
+		EmailVerifiedAt: user.EmailVerifiedAt,
+		CreatedAt:       user.CreatedAt,
+		UpdatedAt:       user.UpdatedAt,
+	}, nil
 }
 
 func (f *fakeQueries) GetUserByID(ctx context.Context, id pgtype.UUID) (dbgen.GetUserByIDRow, error) {
@@ -196,13 +236,91 @@ func (f *fakeQueries) GetUserByID(ctx context.Context, id pgtype.UUID) (dbgen.Ge
 		return dbgen.GetUserByIDRow{}, fmt.Errorf("user not found")
 	}
 	return dbgen.GetUserByIDRow{
-		ID:        user.ID,
-		Name:      user.Name,
-		Email:     user.Email,
-		Roles:     user.Roles,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
+		ID:              user.ID,
+		Name:            user.Name,
+		Email:           user.Email,
+		Phone:           user.Phone,
+		Roles:           user.Roles,
+		EmailVerifiedAt: user.EmailVerifiedAt,
+		CreatedAt:       user.CreatedAt,
+		UpdatedAt:       user.UpdatedAt,
 	}, nil
+}
+
+func (f *fakeQueries) MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (dbgen.MarkUserEmailVerifiedRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := uuidString(id)
+	user, ok := f.usersByID[key]
+	if !ok {
+		return dbgen.MarkUserEmailVerifiedRow{}, fmt.Errorf("user not found")
+	}
+	if !user.EmailVerifiedAt.Valid {
+		user.EmailVerifiedAt = pgTimestamp(time.Now())
+	}
+	f.usersByID[key] = user
+	f.usersByEmail[strings.ToLower(user.Email)] = user
+	return dbgen.MarkUserEmailVerifiedRow{
+		ID:              user.ID,
+		Name:            user.Name,
+		Email:           user.Email,
+		Phone:           user.Phone,
+		Roles:           user.Roles,
+		EmailVerifiedAt: user.EmailVerifiedAt,
+		CreatedAt:       user.CreatedAt,
+		UpdatedAt:       user.UpdatedAt,
+	}, nil
+}
+
+func (f *fakeQueries) CreateEmailVerification(ctx context.Context, arg dbgen.CreateEmailVerificationParams) (dbgen.EmailVerification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := uuid.New()
+	pgID, _ := pgUUIDFromString(id.String())
+	rec := dbgen.EmailVerification{
+		ID:        pgID,
+		UserID:    arg.UserID,
+		Token:     arg.Token,
+		ExpiresAt: arg.ExpiresAt,
+		CreatedAt: pgTimestamp(time.Now()),
+	}
+	f.verificationsByToken[arg.Token] = rec
+	return rec, nil
+}
+
+func (f *fakeQueries) GetEmailVerificationByToken(ctx context.Context, token string) (dbgen.EmailVerification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.verificationsByToken[token]
+	if !ok {
+		return dbgen.EmailVerification{}, fmt.Errorf("verification not found")
+	}
+	return rec, nil
+}
+
+func (f *fakeQueries) UseEmailVerification(ctx context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.verificationsByToken[token]
+	if !ok {
+		return nil
+	}
+	if !rec.UsedAt.Valid {
+		rec.UsedAt = pgTimestamp(time.Now())
+		f.verificationsByToken[token] = rec
+	}
+	return nil
+}
+
+func (f *fakeQueries) DeleteEmailVerificationsByUser(ctx context.Context, userID pgtype.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for token, rec := range f.verificationsByToken {
+		if uuidString(rec.UserID) == uuidString(userID) {
+			delete(f.verificationsByToken, token)
+		}
+	}
+	return nil
 }
 
 func (f *fakeQueries) GetOrderByID(context.Context, pgtype.UUID) (dbgen.Order, error) {

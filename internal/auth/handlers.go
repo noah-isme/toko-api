@@ -223,6 +223,84 @@ func (h *Handler) Forgot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// UpdateProfile handles PATCH /api/v1/users/me.
+func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	userID, ok := common.UserID(r.Context())
+	if !ok || userID == "" {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid token", nil)
+		return
+	}
+	// Pointers distinguish "field omitted" from "field set to empty".
+	var req struct {
+		Name  *string `json:"name"`
+		Phone *string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
+		return
+	}
+	if req.Name == nil && req.Phone == nil {
+		common.JSONError(w, http.StatusBadRequest, "VALIDATION_ERROR", "no fields to update", nil)
+		return
+	}
+	user, err := h.Service.UpdateProfile(r.Context(), userID, req.Name, req.Phone)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	common.JSON(w, http.StatusOK, map[string]any{"data": user})
+}
+
+// VerifyEmail handles POST /api/v1/auth/email/verify.
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
+		return
+	}
+	user, err := h.Service.VerifyEmail(r.Context(), req.Token)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	common.JSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{"message": "email verified", "user": user},
+	})
+}
+
+// ResendVerification handles POST /api/v1/auth/email/resend. It always reports
+// success so the endpoint cannot be used to probe which emails are registered.
+func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "auth service not configured", nil)
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload", nil)
+		return
+	}
+	if err := h.Service.SendEmailVerification(r.Context(), req.Email, h.PublicBaseURL, h.Mailer); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	common.JSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{"message": "verification email sent"},
+	})
+}
+
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {

@@ -177,3 +177,67 @@ Content-Type: application/json
   }
 }
 ```
+
+---
+
+## 1.8 Verify Email
+
+```http
+POST /api/v1/auth/email/verify
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "token": "verification-token-from-email"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "message": "email verified",
+    "user": {
+      "id": "uuid-here",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "emailVerified": true,
+      "createdAt": "2025-12-07T10:00:00Z",
+      "updatedAt": "2025-12-08T09:00:00Z"
+    }
+  }
+}
+```
+
+**Errors:** `400 INVALID_TOKEN` — token unknown, already used, or expired. Tokens
+are single-use and valid for 72 hours.
+
+---
+
+## 1.9 Resend Verification Email
+
+```http
+POST /api/v1/auth/email/resend
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "email": "john@example.com"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "message": "verification email sent"
+  }
+}
+```
+
+Always returns `200` — unknown and already-verified addresses are indistinguishable
+from successful sends so the endpoint cannot be used to enumerate accounts.

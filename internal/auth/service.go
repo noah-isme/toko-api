@@ -27,6 +27,9 @@ const (
 	defaultAccessTTL  = 15 * time.Minute
 	defaultRefreshTTL = 24 * time.Hour
 	defaultResetTTL   = 24 * time.Hour
+	// Verification links are longer-lived than reset links: users often confirm
+	// their address days after signing up.
+	emailVerificationTTL = 72 * time.Hour
 )
 
 // Service coordinates authentication, password management, and session persistence.
@@ -58,12 +61,14 @@ type Config struct {
 
 // User represents a safe subset of the user model returned to clients.
 type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	Roles     []string  `json:"roles"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Email         string    `json:"email"`
+	Phone         string    `json:"phone,omitempty"`
+	Roles         []string  `json:"roles"`
+	EmailVerified bool      `json:"emailVerified"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // LoginResult bundles token material returned after a successful login.
@@ -329,6 +334,107 @@ func (s *Service) Me(ctx context.Context, userID string) (User, error) {
 	return convertUserFromGet(dbUser), nil
 }
 
+// UpdateProfile applies partial edits to the caller's own profile. Nil fields
+// are left untouched so a client can send just the field it changed.
+func (s *Service) UpdateProfile(ctx context.Context, userID string, name, phone *string) (User, error) {
+	if strings.TrimSpace(userID) == "" {
+		return User{}, common.NewAppError("UNAUTHORIZED", "unauthorized", httpStatusUnauthorized, nil)
+	}
+	id, err := pgUUIDFromString(userID)
+	if err != nil {
+		return User{}, common.NewAppError("UNAUTHORIZED", "unauthorized", httpStatusUnauthorized, nil)
+	}
+
+	params := db.UpdateUserProfileParams{ID: id}
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return User{}, common.NewAppError("VALIDATION_ERROR", "name cannot be empty", httpStatusBadRequest, nil)
+		}
+		params.Name = pgtype.Text{String: trimmed, Valid: true}
+	}
+	if phone != nil {
+		// An empty string is a deliberate "clear my phone number".
+		params.Phone = pgtype.Text{String: strings.TrimSpace(*phone), Valid: true}
+	}
+
+	updated, err := s.queries.UpdateUserProfile(ctx, params)
+	if err != nil {
+		return User{}, fmt.Errorf("update profile: %w", err)
+	}
+	return convertUpdateProfileRow(updated), nil
+}
+
+// SendEmailVerification issues a single-use verification token and mails it.
+// It never reveals whether the address belongs to a registered account.
+func (s *Service) SendEmailVerification(ctx context.Context, email, baseURL string, sender common.EmailSender) error {
+	normalizedEmail := strings.TrimSpace(strings.ToLower(email))
+	if normalizedEmail == "" {
+		return nil
+	}
+
+	user, err := s.queries.GetUserByEmail(ctx, normalizedEmail)
+	if err != nil {
+		return nil
+	}
+	if user.EmailVerifiedAt.Valid {
+		// Already verified — nothing to send, and saying so would leak state.
+		return nil
+	}
+
+	token, err := generateToken(32)
+	if err != nil {
+		return fmt.Errorf("generate verification token: %w", err)
+	}
+
+	if _, err := s.queries.CreateEmailVerification(ctx, db.CreateEmailVerificationParams{
+		UserID:    user.ID,
+		Token:     token,
+		ExpiresAt: pgTimestamp(s.now().Add(emailVerificationTTL)),
+	}); err != nil {
+		return fmt.Errorf("create email verification: %w", err)
+	}
+
+	if sender == nil {
+		return nil
+	}
+
+	base := strings.TrimRight(baseURL, "/")
+	link := fmt.Sprintf("%s/verify-email?token=%s", base, token)
+	if base == "" {
+		link = fmt.Sprintf("/verify-email?token=%s", token)
+	}
+	if err := sender.Send(user.Email, "Verifikasi Email", "Klik tautan untuk verifikasi: "+link); err != nil {
+		return fmt.Errorf("send verification email: %w", err)
+	}
+	return nil
+}
+
+// VerifyEmail consumes a verification token and marks the address verified.
+func (s *Service) VerifyEmail(ctx context.Context, token string) (User, error) {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return User{}, common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
+	}
+
+	record, err := s.queries.GetEmailVerificationByToken(ctx, trimmed)
+	if err != nil {
+		return User{}, common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
+	}
+	if record.UsedAt.Valid || !record.ExpiresAt.Valid || s.now().After(record.ExpiresAt.Time) {
+		return User{}, common.NewAppError("INVALID_TOKEN", "invalid or expired token", httpStatusBadRequest, nil)
+	}
+
+	updated, err := s.queries.MarkUserEmailVerified(ctx, record.UserID)
+	if err != nil {
+		return User{}, fmt.Errorf("mark email verified: %w", err)
+	}
+	if err := s.queries.UseEmailVerification(ctx, trimmed); err != nil {
+		return User{}, fmt.Errorf("mark verification used: %w", err)
+	}
+	return convertMarkVerifiedRow(updated), nil
+}
+
 // Forgot creates a password reset token and dispatches it via the provided sender.
 func (s *Service) Forgot(ctx context.Context, email, baseURL string, sender common.EmailSender) error {
 	normalizedEmail := strings.TrimSpace(strings.ToLower(email))
@@ -548,37 +654,46 @@ func hashRefreshToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func convertCreateUserRow(u db.CreateUserRow) User {
+// newUser builds the API user model from the columns every user-returning query
+// selects. sqlc emits a distinct row struct per query, so the shared assembly
+// lives here rather than being repeated per converter.
+func newUser(
+	id pgtype.UUID,
+	name, email string,
+	phone pgtype.Text,
+	roles []string,
+	emailVerifiedAt, createdAt, updatedAt pgtype.Timestamptz,
+) User {
 	return User{
-		ID:        uuidString(u.ID),
-		Name:      u.Name,
-		Email:     u.Email,
-		Roles:     u.Roles,
-		CreatedAt: toTime(u.CreatedAt),
-		UpdatedAt: toTime(u.UpdatedAt),
+		ID:            uuidString(id),
+		Name:          name,
+		Email:         email,
+		Phone:         phone.String,
+		Roles:         roles,
+		EmailVerified: emailVerifiedAt.Valid,
+		CreatedAt:     toTime(createdAt),
+		UpdatedAt:     toTime(updatedAt),
 	}
 }
 
-func convertUserModel(u db.User) User {
-	return User{
-		ID:        uuidString(u.ID),
-		Name:      u.Name,
-		Email:     u.Email,
-		Roles:     u.Roles,
-		CreatedAt: toTime(u.CreatedAt),
-		UpdatedAt: toTime(u.UpdatedAt),
-	}
+func convertCreateUserRow(u db.CreateUserRow) User {
+	return newUser(u.ID, u.Name, u.Email, u.Phone, u.Roles, u.EmailVerifiedAt, u.CreatedAt, u.UpdatedAt)
+}
+
+func convertUserModel(u db.GetUserByEmailRow) User {
+	return newUser(u.ID, u.Name, u.Email, u.Phone, u.Roles, u.EmailVerifiedAt, u.CreatedAt, u.UpdatedAt)
 }
 
 func convertUserFromGet(u db.GetUserByIDRow) User {
-	return User{
-		ID:        uuidString(u.ID),
-		Name:      u.Name,
-		Email:     u.Email,
-		Roles:     u.Roles,
-		CreatedAt: toTime(u.CreatedAt),
-		UpdatedAt: toTime(u.UpdatedAt),
-	}
+	return newUser(u.ID, u.Name, u.Email, u.Phone, u.Roles, u.EmailVerifiedAt, u.CreatedAt, u.UpdatedAt)
+}
+
+func convertUpdateProfileRow(u db.UpdateUserProfileRow) User {
+	return newUser(u.ID, u.Name, u.Email, u.Phone, u.Roles, u.EmailVerifiedAt, u.CreatedAt, u.UpdatedAt)
+}
+
+func convertMarkVerifiedRow(u db.MarkUserEmailVerifiedRow) User {
+	return newUser(u.ID, u.Name, u.Email, u.Phone, u.Roles, u.EmailVerifiedAt, u.CreatedAt, u.UpdatedAt)
 }
 
 func pgUUIDFromString(value string) (pgtype.UUID, error) {

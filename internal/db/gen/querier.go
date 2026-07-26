@@ -26,6 +26,7 @@ type Querier interface {
 	CreateAddress(ctx context.Context, arg CreateAddressParams) (Address, error)
 	CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error)
 	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
+	CreateEmailVerification(ctx context.Context, arg CreateEmailVerificationParams) (EmailVerification, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) error
@@ -41,6 +42,7 @@ type Querier interface {
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
+	DeleteEmailVerificationsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteReview(ctx context.Context, arg DeleteReviewParams) error
@@ -61,6 +63,7 @@ type Querier interface {
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
+	GetEmailVerificationByToken(ctx context.Context, token string) (EmailVerification, error)
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
@@ -77,7 +80,7 @@ type Querier interface {
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
-	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
@@ -122,6 +125,7 @@ type Querier interface {
 	MarkFailedWithBackoff(ctx context.Context, arg MarkFailedWithBackoffParams) error
 	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) (pgtype.UUID, error)
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
+	MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (MarkUserEmailVerifiedRow, error)
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
@@ -142,6 +146,7 @@ type Querier interface {
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
+	UseEmailVerification(ctx context.Context, token string) error
 	UsePasswordReset(ctx context.Context, token string) error
 }
 

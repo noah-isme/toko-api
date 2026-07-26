@@ -327,6 +327,15 @@ type DomainEvent struct {
 	TenantID    pgtype.UUID        `json:"tenant_id"`
 }
 
+type EmailVerification struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Token     string             `json:"token"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	UsedAt    pgtype.Timestamptz `json:"used_at"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Favorite struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	ProductID pgtype.UUID        `json:"product_id"`
@@ -582,13 +591,15 @@ type TenantSetting struct {
 }
 
 type User struct {
-	ID           pgtype.UUID        `json:"id"`
-	Name         string             `json:"name"`
-	Email        string             `json:"email"`
-	PasswordHash string             `json:"password_hash"`
-	Roles        []string           `json:"roles"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	ID              pgtype.UUID        `json:"id"`
+	Name            string             `json:"name"`
+	Email           string             `json:"email"`
+	PasswordHash    string             `json:"password_hash"`
+	Roles           []string           `json:"roles"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	Phone           pgtype.Text        `json:"phone"`
+	EmailVerifiedAt pgtype.Timestamptz `json:"email_verified_at"`
 }
 
 type Voucher struct {
