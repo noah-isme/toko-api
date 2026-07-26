@@ -8,8 +8,8 @@ import (
 // Pagination holds pagination metadata for list responses.
 type Pagination struct {
 	Page       int `json:"page"`
-	PerPage    int `json:"per_page"`
-	TotalItems int `json:"total_items"`
+	PerPage    int `json:"perPage"`
+	TotalItems int `json:"totalItems"`
 }
 
 // ParsePagination extracts page and per-page parameters from query values.

@@ -16,16 +16,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/noah-isme/backend-toko/internal/catalog"
+	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
 
 type productsResponse struct {
-	Data       []catalog.ProductListItem `json:"data"`
-	Pagination struct {
-		Page       int `json:"page"`
-		PerPage    int `json:"per_page"`
-		TotalItems int `json:"total_items"`
-	} `json:"pagination"`
+	Data []catalog.ProductListItem `json:"data"`
+	// Reuse the shared type so the wire format cannot drift from what handlers emit.
+	Pagination common.Pagination `json:"pagination"`
 }
 
 type productDetailResponse struct {
