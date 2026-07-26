@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"net/url"
@@ -242,7 +243,14 @@ func main() {
 
 	idem := common.Idem{R: redisClient, TTL: cfg.IdempotencyTTL}
 
-	defaultTenantIDStr := envOrDefault("TENANT_DEFAULT_ID", "17c19dca-9a70-4e30-bd34-9af2b1e7b01b")
+	// The schema's source of truth for the default tenant is the row with
+	// slug='default' (seeded by migration 000018 with a generated UUID), so
+	// resolve it from the database instead of assuming a fixed UUID. An
+	// explicit TENANT_DEFAULT_ID still wins for multi-tenant deployments.
+	defaultTenantIDStr, err := resolveDefaultTenantID(ctx, pool)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("resolve default tenant id")
+	}
 	defaultTenantID, err := cart.ToUUID(defaultTenantIDStr)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("parse default tenant id")
@@ -604,6 +612,8 @@ func main() {
 			a.Post("/logout", authHandler.Logout)
 			a.With(loginLimiter).Post("/password/forgot", authHandler.Forgot)
 			a.With(loginLimiter).Post("/password/reset", authHandler.Reset)
+			a.Post("/email/verify", authHandler.VerifyEmail)
+			a.With(loginLimiter).Post("/email/resend", authHandler.ResendVerification)
 
 			a.Group(func(protected chi.Router) {
 				protected.Use(authMiddleware.RequireAuth)
@@ -612,6 +622,10 @@ func main() {
 				protected.Post("/logout/all", authHandler.LogoutAll)
 			})
 		})
+
+		// Registered directly rather than via Route("/users/me") so it does not
+		// mount a subrouter that would collide with /users/me/addresses below.
+		v.With(authMiddleware.RequireAuth).Patch("/users/me", authHandler.UpdateProfile)
 
 		v.Route("/users/me/addresses", func(a chi.Router) {
 			a.Use(authMiddleware.RequireAuth)
@@ -788,6 +802,21 @@ func envOrDefault(key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// resolveDefaultTenantID returns the tenant every unscoped request falls back to.
+// An explicit TENANT_DEFAULT_ID wins; otherwise it reads the seeded 'default'
+// tenant so the value always references a row that actually exists.
+func resolveDefaultTenantID(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	if configured := envOrDefault("TENANT_DEFAULT_ID", ""); configured != "" {
+		return configured, nil
+	}
+	var id string
+	err := pool.QueryRow(ctx, `SELECT id::text FROM tenants WHERE slug = 'default'`).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("look up default tenant (slug='default'): %w", err)
+	}
+	return id, nil
 }
 
 func envBool(key string, fallback bool) bool {
