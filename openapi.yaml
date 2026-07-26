@@ -51,50 +51,344 @@ paths:
                 type: string
   /api/v1/auth/register:
     post:
-      summary: Register
+      summary: Register a new account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/login:
     post:
-      summary: Login
+      summary: Exchange credentials for an access token
+      description: Also sets the refresh token as an HttpOnly cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/refresh:
     post:
-      summary: Refresh access token via cookie
+      summary: Exchange the refresh cookie for a new access token
+      responses:
+        '200':
+          description: New access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          description: Missing or invalid refresh cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/logout:
     post:
-      summary: Logout and revoke refresh session
+      summary: Revoke the current refresh token
+      responses:
+        '204':
+          description: Logged out; refresh cookie cleared
   /api/v1/auth/me:
     get:
-      summary: Me
+      summary: Get the current authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/password/forgot:
     post:
-      summary: Send password reset email
+      summary: Send a password reset email
+      description: >-
+        Always returns 204 so the endpoint cannot be used to discover which
+        addresses are registered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '204':
+          description: Accepted
   /api/v1/auth/password/reset:
     post:
-      summary: Reset password with token
+      summary: Reset a password using an emailed token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '204':
+          description: Password updated; all sessions revoked
+        '400':
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/email/verify:
     post:
-      summary: Verify email address with a single-use token
+      summary: Verify an email address with a single-use token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '200':
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      user:
+                        $ref: '#/components/schemas/User'
+        '400':
+          description: Token unknown, already used, or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/email/resend:
     post:
       summary: Resend the email verification link
+      description: >-
+        Always returns 200. Unknown and already-verified addresses are
+        indistinguishable from a successful send.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/MessageResponse'
   /api/v1/users/me:
     patch:
-      summary: Update the current user's profile (name, phone)
+      summary: Update the current user's profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: No fields supplied, or name blank
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/users/me/addresses:
     get:
-      summary: List addresses
+      summary: List saved addresses
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Saved addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Address'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
     post:
-      summary: Create address
+      summary: Create an address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressRequest'
+      responses:
+        '201':
+          description: Created address
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Address'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/users/me/addresses/{addressID}:
+    parameters:
+      - in: path
+        name: addressID
+        required: true
+        schema:
+          type: string
+          format: uuid
     patch:
-      summary: Update address
+      summary: Update an address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressRequest'
+      responses:
+        '200':
+          description: Updated address
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Address'
+        '404':
+          description: Address not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
     delete:
-      summary: Delete address
+      summary: Delete an address
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Address not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/categories:
     get:
       summary: List categories
+      responses:
+        '200':
+          description: All categories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Category'
   /api/v1/brands:
     get:
       summary: List brands
+      responses:
+        '200':
+          description: All brands
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Brand'
   /api/v1/products:
     get:
       summary: List products
@@ -140,12 +434,68 @@ paths:
           name: limit
           schema:
             type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated list of products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductListItem'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
   /api/v1/products/{slug}:
     get:
-      summary: Product detail
+      summary: Get product detail by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ProductDetail'
+        '404':
+          description: Product not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/products/{slug}/related:
     get:
-      summary: Related products
+      summary: List products related to a product
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Related products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductListItem'
   /api/v1/products/{id}/reviews:
     get:
       summary: List product reviews
@@ -314,19 +664,143 @@ paths:
         '500':
           description: Server error
   /api/v1/carts:
-    post:
-      summary: Create cart (guest)
-  /api/v1/carts/{id}:
     get:
-      summary: Get cart by id
-  /api/v1/carts/{id}/items:
+      summary: Get the active cart
+      parameters:
+        - in: query
+          name: anonId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The active cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
     post:
-      summary: Add item
+      summary: Create a cart
+      responses:
+        '201':
+          description: Created cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CreateCartResponse'
+  /api/v1/carts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get a cart by id
+      responses:
+        '200':
+          description: The cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/carts/{id}/items:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Add an item to the cart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddCartItemRequest'
+      responses:
+        '200':
+          description: The updated cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/carts/{id}/items/{itemId}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: path
+        name: itemId
+        required: true
+        schema:
+          type: string
+          format: uuid
     patch:
-      summary: Update qty
+      summary: Change an item's quantity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCartItemRequest'
+      responses:
+        '200':
+          description: The updated cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
     delete:
-      summary: Remove item
+      summary: Remove an item from the cart
+      responses:
+        '200':
+          description: The updated cart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '404':
+          description: Item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/carts/{id}/apply-voucher:
     post:
       summary: Apply voucher
@@ -1568,8 +2042,463 @@ components:
       properties:
         favorited:
           type: boolean
+    User:
+      type: object
+      required: [id, name, email, roles, emailVerified, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          description: Omitted when the user has not set a phone number.
+        roles:
+          type: array
+          items:
+            type: string
+        emailVerified:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    LoginResponse:
+      type: object
+      required: [accessToken, accessTokenExpiresAt, refreshTokenExpiresAt, user]
+      properties:
+        accessToken:
+          type: string
+        accessTokenExpiresAt:
+          type: string
+          format: date-time
+        refreshTokenExpiresAt:
+          type: string
+          format: date-time
+        user:
+          $ref: '#/components/schemas/User'
+    RefreshResponse:
+      type: object
+      required: [accessToken]
+      properties:
+        accessToken:
+          type: string
+    UpdateProfileRequest:
+      type: object
+      description: Partial update. Omitting a field leaves it unchanged.
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+          description: An empty string clears the stored number.
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+    ResendVerificationRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    ResetPasswordRequest:
+      type: object
+      required: [token, newPassword]
+      properties:
+        token:
+          type: string
+        newPassword:
+          type: string
+          minLength: 8
+    SessionInfo:
+      type: object
+      required: [id, device, ipAddress, lastActive, current]
+      properties:
+        id:
+          type: string
+          format: uuid
+        device:
+          type: string
+        ipAddress:
+          type: string
+        location:
+          type: string
+        lastActive:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+    CategoryRef:
+      type: object
+      description: Compact brand/category reference embedded in product detail.
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+    Category:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        parentId:
+          type: string
+          format: uuid
+    Brand:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+    ProductListItem:
+      type: object
+      description: >-
+        Summary shape returned by list endpoints. description, images, variants
+        and specs are only present on GET /products/{slug}.
+      required: [id, title, slug, price, inStock, stock, badges, rating, reviewCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        slug:
+          type: string
+        price:
+          type: integer
+          format: int64
+        compareAt:
+          type: integer
+          format: int64
+        inStock:
+          type: boolean
+        stock:
+          type: integer
+        thumbnail:
+          type: string
+        badges:
+          type: array
+          items:
+            type: string
+        categoryId:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+        brandId:
+          type: string
+          format: uuid
+        brandName:
+          type: string
+        rating:
+          type: number
+          format: double
+        reviewCount:
+          type: integer
+    ProductVariant:
+      type: object
+      required: [id, price, stock, attributes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        price:
+          type: integer
+          format: int64
+        stock:
+          type: integer
+        attributes:
+          type: object
+          additionalProperties: true
+    ProductSpec:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+    ProductDetail:
+      type: object
+      required: [id, title, slug, description, price, inStock, stock, badges, variants, images, specs]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        price:
+          type: integer
+          format: int64
+        compareAt:
+          type: integer
+          format: int64
+        inStock:
+          type: boolean
+        stock:
+          type: integer
+        thumbnail:
+          type: string
+        badges:
+          type: array
+          items:
+            type: string
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariant'
+        images:
+          type: array
+          items:
+            type: string
+        specs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductSpec'
+        brand:
+          $ref: '#/components/schemas/CategoryRef'
+        categoryPath:
+          type: array
+          items:
+            type: string
+    CartItem:
+      type: object
+      required: [id, productId, title, slug, qty, unitPrice, subtotal]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        slug:
+          type: string
+        qty:
+          type: integer
+        unitPrice:
+          type: integer
+          format: int64
+        subtotal:
+          type: integer
+          format: int64
+    CartPricing:
+      type: object
+      required: [subtotal, discount, tax, shipping, total]
+      properties:
+        subtotal:
+          type: integer
+          format: int64
+        discount:
+          type: integer
+          format: int64
+        tax:
+          type: integer
+          format: int64
+        shipping:
+          type: integer
+          format: int64
+          description: Always 0 from the cart endpoints; checkout adds the courier cost.
+        total:
+          type: integer
+          format: int64
+    Cart:
+      type: object
+      required: [id, items, pricing, currency]
+      properties:
+        id:
+          type: string
+          format: uuid
+        anonId:
+          type: string
+          nullable: true
+        voucher:
+          type: string
+          nullable: true
+          description: Applied voucher code.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartItem'
+        pricing:
+          $ref: '#/components/schemas/CartPricing'
+        currency:
+          type: string
+    CreateCartResponse:
+      type: object
+      required: [cartId]
+      properties:
+        cartId:
+          type: string
+          format: uuid
+        anonId:
+          type: string
+          nullable: true
+        voucher:
+          type: string
+          nullable: true
+    AddCartItemRequest:
+      type: object
+      required: [productId, qty]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          nullable: true
+        qty:
+          type: integer
+          minimum: 1
+    UpdateCartItemRequest:
+      type: object
+      required: [qty]
+      properties:
+        qty:
+          type: integer
+          minimum: 1
+    Address:
+      type: object
+      description: >-
+        Address payloads use snake_case on both request and response, unlike the
+        rest of the API. The storefront maps explicitly.
+      required: [id, receiver_name, phone, country, province, city, postal_code, address_line1, is_default]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        receiver_name:
+          type: string
+        phone:
+          type: string
+        country:
+          type: string
+        province:
+          type: string
+        city:
+          type: string
+        postal_code:
+          type: string
+        address_line1:
+          type: string
+        address_line2:
+          type: string
+        is_default:
+          type: boolean
+    AddressRequest:
+      type: object
+      required: [receiver_name, phone, country, province, city, postal_code, address_line1]
+      properties:
+        label:
+          type: string
+        receiver_name:
+          type: string
+        phone:
+          type: string
+        country:
+          type: string
+        province:
+          type: string
+        city:
+          type: string
+        postal_code:
+          type: string
+        address_line1:
+          type: string
+        address_line2:
+          type: string
+        is_default:
+          type: boolean
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              description: Free-form additional context.
     Pagination:
       type: object
+      required: [page, perPage, totalItems]
       properties:
         page:
           type: integer
