@@ -75,26 +75,18 @@ GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=
       "id": "uuid",
       "title": "Samsung Galaxy S24",
       "slug": "samsung-galaxy-s24",
-      "description": "Latest flagship smartphone",
       "price": 12000000,
-      "originalPrice": 15000000,
-      "discountPercent": 20,
-      "currency": "IDR",
+      "compareAt": 15000000,
       "categoryId": "uuid",
       "categoryName": "Smartphones",
       "brandId": "uuid",
       "brandName": "Samsung",
-      "imageUrl": "https://cdn.toko.com/products/s24.jpg",
-      "images": [
-        "https://cdn.toko.com/products/s24-1.jpg",
-        "https://cdn.toko.com/products/s24-2.jpg"
-      ],
+      "thumbnail": "https://cdn.toko.com/products/s24.jpg",
+      "badges": ["new"],
       "stock": 50,
       "inStock": true,
       "rating": 4.8,
-      "reviewCount": 125,
-      "tags": ["flagship", "5g", "android"],
-      "createdAt": "2025-01-01T00:00:00Z"
+      "reviewCount": 125
     }
   ],
   "pagination": {
@@ -104,6 +96,11 @@ GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=
   }
 }
 ```
+
+> **List vs detail.** The list item is a summary. `description`, `images`,
+> `variants`, and `specs` are only returned by `GET /products/{slug}`.
+> `compareAt`, `thumbnail`, `categoryId`, `categoryName`, `brandId`, and
+> `brandName` are omitted when unset.
 
 **Headers:**
 ```

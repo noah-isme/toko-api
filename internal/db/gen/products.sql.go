@@ -212,6 +212,12 @@ SELECT p.id,
        p.thumbnail,
        p.badges,
        p.created_at,
+       c.id   AS category_id,
+       c.name AS category_name,
+       b.id   AS brand_id,
+       b.name AS brand_name,
+       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id), 0)::float8 AS rating,
+       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id), 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
@@ -244,16 +250,22 @@ type ListProductsPublicParams struct {
 }
 
 type ListProductsPublicRow struct {
-	ID         pgtype.UUID        `json:"id"`
-	Title      string             `json:"title"`
-	Slug       string             `json:"slug"`
-	Price      int64              `json:"price"`
-	CompareAt  pgtype.Int8        `json:"compare_at"`
-	InStock    bool               `json:"in_stock"`
-	Thumbnail  pgtype.Text        `json:"thumbnail"`
-	Badges     []string           `json:"badges"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	TotalStock int32              `json:"total_stock"`
+	ID           pgtype.UUID        `json:"id"`
+	Title        string             `json:"title"`
+	Slug         string             `json:"slug"`
+	Price        int64              `json:"price"`
+	CompareAt    pgtype.Int8        `json:"compare_at"`
+	InStock      bool               `json:"in_stock"`
+	Thumbnail    pgtype.Text        `json:"thumbnail"`
+	Badges       []string           `json:"badges"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	CategoryID   pgtype.UUID        `json:"category_id"`
+	CategoryName pgtype.Text        `json:"category_name"`
+	BrandID      pgtype.UUID        `json:"brand_id"`
+	BrandName    pgtype.Text        `json:"brand_name"`
+	Rating       float64            `json:"rating"`
+	ReviewCount  int32              `json:"review_count"`
+	TotalStock   int32              `json:"total_stock"`
 }
 
 func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error) {
@@ -285,6 +297,12 @@ func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublic
 			&i.Thumbnail,
 			&i.Badges,
 			&i.CreatedAt,
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.BrandID,
+			&i.BrandName,
+			&i.Rating,
+			&i.ReviewCount,
 			&i.TotalStock,
 		); err != nil {
 			return nil, err

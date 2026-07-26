@@ -65,15 +65,21 @@ type ListParams struct {
 
 // ProductListItem represents an entry in list/related responses.
 type ProductListItem struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Slug      string   `json:"slug"`
-	Price     int64    `json:"price"`
-	CompareAt *int64   `json:"compareAt,omitempty"`
-	InStock   bool     `json:"inStock"`
-	Stock     int      `json:"stock"`
-	Thumbnail *string  `json:"thumbnail,omitempty"`
-	Badges    []string `json:"badges"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Slug         string   `json:"slug"`
+	Price        int64    `json:"price"`
+	CompareAt    *int64   `json:"compareAt,omitempty"`
+	InStock      bool     `json:"inStock"`
+	Stock        int      `json:"stock"`
+	Thumbnail    *string  `json:"thumbnail,omitempty"`
+	Badges       []string `json:"badges"`
+	CategoryID   *string  `json:"categoryId,omitempty"`
+	CategoryName *string  `json:"categoryName,omitempty"`
+	BrandID      *string  `json:"brandId,omitempty"`
+	BrandName    *string  `json:"brandName,omitempty"`
+	Rating       float64  `json:"rating"`
+	ReviewCount  int      `json:"reviewCount"`
 }
 
 // ProductDetail aggregates the full detail payload.
@@ -314,13 +320,15 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 	items := make([]ProductListItem, 0, len(rows))
 	for _, row := range rows {
 		item := ProductListItem{
-			ID:      uuidString(row.ID),
-			Title:   row.Title,
-			Slug:    row.Slug,
-			Price:   row.Price,
-			InStock: row.InStock,
-			Stock:   int(row.TotalStock),
-			Badges:  row.Badges,
+			ID:          uuidString(row.ID),
+			Title:       row.Title,
+			Slug:        row.Slug,
+			Price:       row.Price,
+			InStock:     row.InStock,
+			Stock:       int(row.TotalStock),
+			Badges:      row.Badges,
+			Rating:      row.Rating,
+			ReviewCount: int(row.ReviewCount),
 		}
 		if row.CompareAt.Valid {
 			compareAt := row.CompareAt.Int64
@@ -329,6 +337,23 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		if row.Thumbnail.Valid {
 			thumb := row.Thumbnail.String
 			item.Thumbnail = &thumb
+		}
+		// Category and brand come from LEFT JOINs, so both may be absent.
+		if row.CategoryID.Valid {
+			categoryID := uuidString(row.CategoryID)
+			item.CategoryID = &categoryID
+		}
+		if row.CategoryName.Valid {
+			categoryName := row.CategoryName.String
+			item.CategoryName = &categoryName
+		}
+		if row.BrandID.Valid {
+			brandID := uuidString(row.BrandID)
+			item.BrandID = &brandID
+		}
+		if row.BrandName.Valid {
+			brandName := row.BrandName.String
+			item.BrandName = &brandName
 		}
 		items = append(items, item)
 	}

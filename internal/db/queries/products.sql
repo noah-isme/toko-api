@@ -20,6 +20,12 @@ SELECT p.id,
        p.thumbnail,
        p.badges,
        p.created_at,
+       c.id   AS category_id,
+       c.name AS category_name,
+       b.id   AS brand_id,
+       b.name AS brand_name,
+       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id), 0)::float8 AS rating,
+       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id), 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id
