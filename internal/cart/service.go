@@ -411,17 +411,20 @@ func (s *Service) Merge(ctx context.Context, guestCartID string, userID string) 
 	return uuidString(userCart.ID), nil
 }
 
-func (s *Service) itemEligible(ctx context.Context, item dbgen.CartItem, voucher dbgen.Voucher) (bool, error) {
+// itemEligible reports whether a cart line falls within a voucher's product,
+// category or brand restrictions. It takes the product id rather than a row
+// struct so it does not bind to whichever query produced the line.
+func (s *Service) itemEligible(ctx context.Context, productID pgtype.UUID, voucher dbgen.Voucher) (bool, error) {
 	if len(voucher.ProductIds) == 0 && len(voucher.CategoryIds) == 0 && len(voucher.BrandIds) == 0 {
 		return true, nil
 	}
-	product, err := s.Q.GetProductForCart(ctx, item.ProductID)
+	product, err := s.Q.GetProductForCart(ctx, productID)
 	if err != nil {
 		return false, err
 	}
 	if len(voucher.ProductIds) > 0 {
 		for _, el := range voucher.ProductIds {
-			if uuidEqual(el, item.ProductID) {
+			if uuidEqual(el, productID) {
 				return true, nil
 			}
 		}
@@ -488,7 +491,7 @@ func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code str
 	if hasScope || hasBrandScope {
 		eligible = 0
 		for _, it := range items {
-			allowed, err := s.itemEligible(ctx, it, voucher)
+			allowed, err := s.itemEligible(ctx, it.ProductID, voucher)
 			if err != nil {
 				return 0, dbgen.Voucher{}, err
 			}
@@ -520,7 +523,7 @@ func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code str
 	return discount, voucher, nil
 }
 
-func (s *Service) loadCartItems(ctx context.Context, cartID pgtype.UUID) ([]dbgen.CartItem, int64, error) {
+func (s *Service) loadCartItems(ctx context.Context, cartID pgtype.UUID) ([]dbgen.ListCartItemsRow, int64, error) {
 	items, err := s.Q.ListCartItems(ctx, cartID)
 	if err != nil {
 		return nil, 0, err

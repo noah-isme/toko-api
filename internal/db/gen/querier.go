@@ -100,7 +100,11 @@ type Querier interface {
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
-	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error)
+	// The image is joined live rather than snapshotted into cart_items alongside
+	// title and unit_price: those are frozen because a cart's price must not shift
+	// underneath the shopper, whereas the image is presentational and should track
+	// the product.
+	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]ListCartItemsRow, error)
 	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
 	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)

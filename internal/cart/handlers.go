@@ -102,6 +102,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 			"qty":       it.Qty,
 			"unitPrice": it.UnitPrice,
 			"subtotal":  it.Subtotal,
+			"imageUrl":  nullableText(it.ImageUrl),
 		})
 		pricingItems = append(pricingItems, pricing.Item{Qty: int(it.Qty), UnitPrice: pricing.Money(it.UnitPrice)})
 	}
@@ -147,7 +148,7 @@ func (h *Handler) GetActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	
+
 	// Try to resolve user ID first
 	var userID *string
 	if uID, ok := common.UserID(ctx); ok && strings.TrimSpace(uID) != "" {

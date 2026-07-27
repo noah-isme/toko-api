@@ -127,21 +127,41 @@ func (q *Queries) GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem
 }
 
 const listCartItems = `-- name: ListCartItems :many
-SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
-FROM cart_items
-WHERE cart_id = $1
-ORDER BY title ASC, id
+SELECT ci.id, ci.cart_id, ci.product_id, ci.variant_id, ci.title, ci.slug,
+       ci.qty, ci.unit_price, ci.subtotal,
+       p.thumbnail AS image_url
+FROM cart_items ci
+LEFT JOIN products p ON p.id = ci.product_id
+WHERE ci.cart_id = $1
+ORDER BY ci.title ASC, ci.id
 `
 
-func (q *Queries) ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]CartItem, error) {
+type ListCartItemsRow struct {
+	ID        pgtype.UUID `json:"id"`
+	CartID    pgtype.UUID `json:"cart_id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	VariantID pgtype.UUID `json:"variant_id"`
+	Title     string      `json:"title"`
+	Slug      string      `json:"slug"`
+	Qty       int32       `json:"qty"`
+	UnitPrice int64       `json:"unit_price"`
+	Subtotal  int64       `json:"subtotal"`
+	ImageUrl  pgtype.Text `json:"image_url"`
+}
+
+// The image is joined live rather than snapshotted into cart_items alongside
+// title and unit_price: those are frozen because a cart's price must not shift
+// underneath the shopper, whereas the image is presentational and should track
+// the product.
+func (q *Queries) ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]ListCartItemsRow, error) {
 	rows, err := q.db.Query(ctx, listCartItems, cartID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CartItem
+	var items []ListCartItemsRow
 	for rows.Next() {
-		var i CartItem
+		var i ListCartItemsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CartID,
@@ -152,6 +172,7 @@ func (q *Queries) ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]Cart
 			&i.Qty,
 			&i.UnitPrice,
 			&i.Subtotal,
+			&i.ImageUrl,
 		); err != nil {
 			return nil, err
 		}

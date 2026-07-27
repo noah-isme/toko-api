@@ -637,7 +637,7 @@ func (f *fakeQueries) IncreaseVoucherUsedCount(context.Context, pgtype.UUID) err
 	return nil
 }
 
-func (f *fakeQueries) ListCartItems(context.Context, pgtype.UUID) ([]dbgen.CartItem, error) {
+func (f *fakeQueries) ListCartItems(context.Context, pgtype.UUID) ([]dbgen.ListCartItemsRow, error) {
 	return nil, errNotImplemented
 }
 

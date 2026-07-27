@@ -1,8 +1,15 @@
 -- name: ListCartItems :many
-SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
-FROM cart_items
-WHERE cart_id = $1
-ORDER BY title ASC, id;
+-- The image is joined live rather than snapshotted into cart_items alongside
+-- title and unit_price: those are frozen because a cart's price must not shift
+-- underneath the shopper, whereas the image is presentational and should track
+-- the product.
+SELECT ci.id, ci.cart_id, ci.product_id, ci.variant_id, ci.title, ci.slug,
+       ci.qty, ci.unit_price, ci.subtotal,
+       p.thumbnail AS image_url
+FROM cart_items ci
+LEFT JOIN products p ON p.id = ci.product_id
+WHERE ci.cart_id = $1
+ORDER BY ci.title ASC, ci.id;
 
 -- name: CreateCartItem :one
 INSERT INTO cart_items (cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal)

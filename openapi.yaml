@@ -2352,6 +2352,12 @@ components:
         subtotal:
           type: integer
           format: int64
+        imageUrl:
+          type: string
+          nullable: true
+          description: >-
+            Product thumbnail, joined live rather than snapshotted with the
+            line, so it follows the product. Null when the product has none.
     CartPricing:
       type: object
       required: [subtotal, discount, tax, shipping, total]
