@@ -92,6 +92,13 @@ def sku(product_slug, suffix):
 
 
 def image_ids(product, harvested):
+    """Pick three distinct photo ids for a product, best match first.
+
+    Harvested ids win, then the curated per-query ids, then the category pool.
+    Padding to three keeps the storefront gallery non-degenerate for every
+    product; running out is a data bug worth failing on rather than shipping a
+    product with a single image.
+    """
     ids = list(harvested.get(product["image_query"], []))
     for curated in QUERY_FALLBACK.get(product["image_query"], []):
         if curated not in ids:
@@ -101,6 +108,12 @@ def image_ids(product, harvested):
             break
         if fallback not in ids:
             ids.append(fallback)
+    if len(ids) < 3:
+        raise SystemExit(
+            f"{product['slug']}: only {len(ids)} images for query "
+            f"{product['image_query']!r}; harvest more ids or widen "
+            f"CATEGORY_FALLBACK[{product['category']!r}]"
+        )
     return ids[:3]
 
 

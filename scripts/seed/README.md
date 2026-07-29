@@ -25,10 +25,11 @@ python3 verify_images.py
 cd ../.. && go test .
 ```
 
-`fetch_unsplash_ids.py` needs a local SearXNG at `http://localhost:8080`. It is
-rate limited by the upstream engines and takes several minutes; the cached
-`unsplash_ids.json` plus the curated fallbacks in `gen_seed_sql.py` mean the
-step is skippable for ordinary data changes.
+`fetch_unsplash_ids.py` needs a local SearXNG at `http://localhost:8080` (override
+with `SEARX_URL`). It queries image search, keeps results already hosted on
+`images.unsplash.com`, and HTTP-checks each candidate before accepting it, so
+retired photos never reach the migration. A full pass takes a few minutes and
+individual engines get suspended under load, hence the retry loop.
 
 ## Invariants
 
@@ -38,8 +39,8 @@ step is skippable for ordinary data changes.
   re-applying the migration refreshes rows instead of failing.
 - Variants, images and specs are deleted for the seeded product slugs before
   reinsertion, which keeps child rows idempotent rather than duplicated.
-- Every product gets at least three images, padded from the query and category
-  fallback pools when the harvest came up short.
+- Every product gets three images. If the harvest plus fallbacks cannot reach
+  three, generation fails loudly instead of emitting a thin gallery.
 - The down migration deletes only seeded slugs, and drops brands and categories
   only when no product still references them, so migration `000007`'s rows and
   any operator-created rows survive a rollback.
