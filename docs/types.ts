@@ -83,30 +83,30 @@ export interface ResetPasswordRequest {
 export interface Address {
   id: string;
   label: string;
-  receiver_name: string;
+  receiverName: string;
   phone: string;
   country: string;
   province: string;
   city: string;
-  postal_code: string;
-  address_line1: string;
-  address_line2: string;
-  is_default: boolean;
-  created_at: string;
-  updated_at: string;
+  postalCode: string;
+  addressLine1: string;
+  addressLine2: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateAddressRequest {
   label: string;
-  receiver_name: string;
+  receiverName: string;
   phone: string;
   country: string;
   province: string;
   city: string;
-  postal_code: string;
-  address_line1: string;
-  address_line2?: string;
-  is_default?: boolean;
+  postalCode: string;
+  addressLine1: string;
+  addressLine2?: string;
+  isDefault?: boolean;
 }
 
 export interface UpdateAddressRequest extends Partial<CreateAddressRequest> {}

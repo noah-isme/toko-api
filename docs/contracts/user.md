@@ -52,17 +52,17 @@ Authorization: Bearer <token>
     {
       "id": "address-uuid",
       "label": "Home",
-      "receiver_name": "John Doe",
+      "receiverName": "John Doe",
       "phone": "+6281234567890",
       "country": "Indonesia",
       "province": "DKI Jakarta",
       "city": "Jakarta Selatan",
-      "postal_code": "12190",
-      "address_line1": "Jl. Sudirman No. 123",
-      "address_line2": "Apt 45B",
-      "is_default": true,
-      "created_at": "2025-11-01T00:00:00Z",
-      "updated_at": "2025-11-01T00:00:00Z"
+      "postalCode": "12190",
+      "addressLine1": "Jl. Sudirman No. 123",
+      "addressLine2": "Apt 45B",
+      "isDefault": true,
+      "createdAt": "2025-11-01T00:00:00Z",
+      "updatedAt": "2025-11-01T00:00:00Z"
     }
   ],
   "pagination": {
@@ -88,15 +88,15 @@ Authorization: Bearer <token>
 ```json
 {
   "label": "Office",
-  "receiver_name": "John Doe",
+  "receiverName": "John Doe",
   "phone": "+6281234567890",
   "country": "Indonesia",
   "province": "DKI Jakarta",
   "city": "Jakarta Pusat",
-  "postal_code": "10110",
-  "address_line1": "Jl. Thamrin No. 1",
-  "address_line2": "Tower A, Floor 5",
-  "is_default": false
+  "postalCode": "10110",
+  "addressLine1": "Jl. Thamrin No. 1",
+  "addressLine2": "Tower A, Floor 5",
+  "isDefault": false
 }
 ```
 
@@ -107,27 +107,27 @@ Authorization: Bearer <token>
   "data": {
     "id": "new-address-uuid",
     "label": "Office",
-    "receiver_name": "John Doe",
+    "receiverName": "John Doe",
     "phone": "+6281234567890",
     "country": "Indonesia",
     "province": "DKI Jakarta",
     "city": "Jakarta Pusat",
-    "postal_code": "10110",
-    "address_line1": "Jl. Thamrin No. 1",
-    "address_line2": "Tower A, Floor 5",
-    "is_default": false,
-    "created_at": "2025-12-07T10:00:00Z",
-    "updated_at": "2025-12-07T10:00:00Z"
+    "postalCode": "10110",
+    "addressLine1": "Jl. Thamrin No. 1",
+    "addressLine2": "Tower A, Floor 5",
+    "isDefault": false,
+    "createdAt": "2025-12-07T10:00:00Z",
+    "updatedAt": "2025-12-07T10:00:00Z"
   }
 }
 ```
 
 **Validation Rules:**
 
-- `receiver_name`: required, max 100 characters
+- `receiverName`: required, max 100 characters
 - `phone`: required, format Indonesian phone number
-- `address_line1`: required, max 255 characters
-- `postal_code`: required, numeric, 5 digits
+- `addressLine1`: required, max 255 characters
+- `postalCode`: required, numeric, 5 digits
 
 ---
 
@@ -144,7 +144,7 @@ Authorization: Bearer <token>
 ```json
 {
   "label": "Home (Updated)",
-  "is_default": true
+  "isDefault": true
 }
 ```
 

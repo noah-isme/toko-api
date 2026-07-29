@@ -52,14 +52,14 @@ export function setup() {
 
   const addrRes = http.post(`${base}/api/v1/users/me/addresses`, JSON.stringify({
     label: 'Home',
-    receiver_name: 'K6 User',
+    receiverName: 'K6 User',
     phone: '08123456789',
-    address_line1: 'Jl. Test No. 1',
+    addressLine1: 'Jl. Test No. 1',
     city: 'Jakarta',
-    postal_code: '12345',
+    postalCode: '12345',
     country: 'Indonesia',
     province: 'DKI Jakarta',
-    is_default: true
+    isDefault: true
   }), authHeaders);
   const addressId = json(addrRes).data?.id;
   if (!addressId) {

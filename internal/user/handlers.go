@@ -18,15 +18,15 @@ type Handler struct {
 
 type addressRequest struct {
 	Label        string `json:"label"`
-	ReceiverName string `json:"receiver_name"`
+	ReceiverName string `json:"receiverName"`
 	Phone        string `json:"phone"`
 	Country      string `json:"country"`
 	Province     string `json:"province"`
 	City         string `json:"city"`
-	PostalCode   string `json:"postal_code"`
-	AddressLine1 string `json:"address_line1"`
-	AddressLine2 string `json:"address_line2"`
-	IsDefault    bool   `json:"is_default"`
+	PostalCode   string `json:"postalCode"`
+	AddressLine1 string `json:"addressLine1"`
+	AddressLine2 string `json:"addressLine2"`
+	IsDefault    bool   `json:"isDefault"`
 }
 
 // List handles GET /api/v1/users/me/addresses.

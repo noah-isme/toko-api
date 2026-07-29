@@ -326,15 +326,15 @@ const addresses = data.data;
 // Or create new address
 const newAddress = await api.post('/api/v1/users/me/addresses', {
   label: 'Home',
-  receiver_name: 'John Doe',
+  receiverName: 'John Doe',
   phone: '+6281234567890',
   country: 'Indonesia',
   province: 'DKI Jakarta',
   city: 'Jakarta Selatan',
-  postal_code: '12190',
-  address_line1: 'Jl. Sudirman No. 123',
-  address_line2: '',
-  is_default: true,
+  postalCode: '12190',
+  addressLine1: 'Jl. Sudirman No. 123',
+  addressLine2: '',
+  isDefault: true,
 });
 ```
 

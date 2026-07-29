@@ -25,17 +25,17 @@ const (
 type Address struct {
 	ID           string    `json:"id"`
 	Label        string    `json:"label,omitempty"`
-	ReceiverName string    `json:"receiver_name,omitempty"`
+	ReceiverName string    `json:"receiverName,omitempty"`
 	Phone        string    `json:"phone,omitempty"`
 	Country      string    `json:"country,omitempty"`
 	Province     string    `json:"province,omitempty"`
 	City         string    `json:"city,omitempty"`
-	PostalCode   string    `json:"postal_code,omitempty"`
-	AddressLine1 string    `json:"address_line1,omitempty"`
-	AddressLine2 string    `json:"address_line2,omitempty"`
-	IsDefault    bool      `json:"is_default"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	PostalCode   string    `json:"postalCode,omitempty"`
+	AddressLine1 string    `json:"addressLine1,omitempty"`
+	AddressLine2 string    `json:"addressLine2,omitempty"`
+	IsDefault    bool      `json:"isDefault"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // AddressInput captures payload for creating or updating an address.
@@ -100,10 +100,10 @@ func (s *Service) Create(ctx context.Context, userID string, input AddressInput)
 		return Address{}, common.NewAppError("UNAUTHORIZED", "unauthorized", httpStatusUnauthorized, nil)
 	}
 	if strings.TrimSpace(input.AddressLine1) == "" {
-		return Address{}, common.NewAppError("VALIDATION_ERROR", "address_line1 is required", httpStatusBadRequest, nil)
+		return Address{}, common.NewAppError("VALIDATION_ERROR", "addressLine1 is required", httpStatusBadRequest, nil)
 	}
 	if strings.TrimSpace(input.ReceiverName) == "" {
-		return Address{}, common.NewAppError("VALIDATION_ERROR", "receiver_name is required", httpStatusBadRequest, nil)
+		return Address{}, common.NewAppError("VALIDATION_ERROR", "receiverName is required", httpStatusBadRequest, nil)
 	}
 	if strings.TrimSpace(input.Phone) == "" {
 		return Address{}, common.NewAppError("VALIDATION_ERROR", "phone is required", httpStatusBadRequest, nil)

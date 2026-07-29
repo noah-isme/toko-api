@@ -94,7 +94,7 @@ check "Related Products" 200 $RELATED_CODE
 echo ""
 echo ">>> 3. ADDRESSES"
 echo -n "  Create Address... "
-ADDR_PAYLOAD='{"label":"Home","receiver_name":"Test User","phone":"08123456789","address_line1":"Jl. Test No. 1","city":"Jakarta","postal_code":"12345","country":"Indonesia","is_default":true}'
+ADDR_PAYLOAD='{"label":"Home","receiverName":"Test User","phone":"08123456789","addressLine1":"Jl. Test No. 1","city":"Jakarta","postalCode":"12345","country":"Indonesia","isDefault":true}'
 CREATE_ADDR_RES=$(curl -s -w "\n%{http_code}" -X POST $BASE_URL/users/me/addresses \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$ADDR_PAYLOAD")
 CREATE_ADDR_BODY=$(echo "$CREATE_ADDR_RES" | head -n1)

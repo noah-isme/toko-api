@@ -1937,8 +1937,8 @@ components:
         - product_id
         - user_id
         - rating
-        - created_at
-        - updated_at
+        - createdAt
+        - updatedAt
         - tenant_id
       properties:
         id:
@@ -1957,10 +1957,10 @@ components:
         comment:
           type: string
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
-        updated_at:
+        updatedAt:
           type: string
           format: date-time
         tenant_id:
@@ -2010,7 +2010,7 @@ components:
         - product_name
         - product_slug
         - price
-        - created_at
+        - createdAt
       properties:
         product_id:
           type: string
@@ -2024,7 +2024,7 @@ components:
         image_url:
           type: string
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
     FavoriteToggleRequest:
@@ -2436,17 +2436,15 @@ components:
           minimum: 1
     Address:
       type: object
-      description: >-
-        Address payloads use snake_case on both request and response, unlike the
-        rest of the API. The storefront maps explicitly.
-      required: [id, receiver_name, phone, country, province, city, postal_code, address_line1, is_default]
+      description: Address payloads use camelCase on both request and response.
+      required: [id, receiverName, phone, country, province, city, postalCode, addressLine1, isDefault]
       properties:
         id:
           type: string
           format: uuid
         label:
           type: string
-        receiver_name:
+        receiverName:
           type: string
         phone:
           type: string
@@ -2456,21 +2454,21 @@ components:
           type: string
         city:
           type: string
-        postal_code:
+        postalCode:
           type: string
-        address_line1:
+        addressLine1:
           type: string
-        address_line2:
+        addressLine2:
           type: string
-        is_default:
+        isDefault:
           type: boolean
     AddressRequest:
       type: object
-      required: [receiver_name, phone, country, province, city, postal_code, address_line1]
+      required: [receiverName, phone, country, province, city, postalCode, addressLine1]
       properties:
         label:
           type: string
-        receiver_name:
+        receiverName:
           type: string
         phone:
           type: string
@@ -2480,13 +2478,13 @@ components:
           type: string
         city:
           type: string
-        postal_code:
+        postalCode:
           type: string
-        address_line1:
+        addressLine1:
           type: string
-        address_line2:
+        addressLine2:
           type: string
-        is_default:
+        isDefault:
           type: boolean
     ApiError:
       type: object
@@ -2769,8 +2767,8 @@ components:
         - used_count
         - combinable
         - priority
-        - created_at
-        - updated_at
+        - createdAt
+        - updatedAt
         - tenant_id
       properties:
         id:
@@ -2825,10 +2823,10 @@ components:
         percent_bps:
           type: integer
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
-        updated_at:
+        updatedAt:
           type: string
           format: date-time
         tenant_id:
@@ -2989,8 +2987,8 @@ components:
         - secret
         - active
         - topics
-        - created_at
-        - updated_at
+        - createdAt
+        - updatedAt
         - tenant_id
       properties:
         id:
@@ -3008,10 +3006,10 @@ components:
           type: array
           items:
             type: string
-        created_at:
+        createdAt:
           type: string
           format: date-time
-        updated_at:
+        updatedAt:
           type: string
           format: date-time
         tenant_id:
@@ -3026,8 +3024,8 @@ components:
         - status
         - attempt
         - max_attempt
-        - created_at
-        - updated_at
+        - createdAt
+        - updatedAt
         - tenant_id
       properties:
         id:
@@ -3064,10 +3062,10 @@ components:
         response_body:
           type: string
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
-        updated_at:
+        updatedAt:
           type: string
           format: date-time
         tenant_id:
@@ -3083,7 +3081,7 @@ components:
         - method
         - path
         - status
-        - created_at
+        - createdAt
       properties:
         id:
           type: string
@@ -3122,7 +3120,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
     AdminQueueDLQItem:

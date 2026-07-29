@@ -174,15 +174,15 @@ Content-Type: application/json
 
 {
   "label": "Home",
-  "receiver_name": "John Doe",
+  "receiverName": "John Doe",
   "phone": "+6281234567890",
   "country": "Indonesia",
   "province": "DKI Jakarta",
   "city": "Jakarta Selatan",
-  "postal_code": "12190",
-  "address_line1": "Jl. Sudirman No. 123",
-  "address_line2": "Apt 45B",
-  "is_default": true
+  "postalCode": "12190",
+  "addressLine1": "Jl. Sudirman No. 123",
+  "addressLine2": "Apt 45B",
+  "isDefault": true
 }
 
 ### Update Address
@@ -192,7 +192,7 @@ Content-Type: application/json
 
 {
   "label": "Home (Updated)",
-  "is_default": true
+  "isDefault": true
 }
 
 ### Delete Address
