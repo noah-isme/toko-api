@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Generate migration 000025_full_seed_catalog from catalog_data.py.
+
+Writes both the up and down migration so the seed data and the SQL never drift.
+Image ids come from scripts/seed/unsplash_ids.json (see fetch_unsplash_ids.py);
+any product without harvested ids falls back to its category placeholder.
+
+Usage: python3 scripts/seed/gen_seed_sql.py
+"""
+import json
+import os
+
+import catalog_data as data
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MIGRATIONS = os.path.normpath(os.path.join(HERE, "..", "..", "migrations"))
+IDS_PATH = os.path.join(HERE, "unsplash_ids.json")
+NAME = "000025_full_seed_catalog"
+
+THUMB_PARAMS = "?auto=format&fit=crop&w=800&q=80"
+GALLERY_PARAMS = "?auto=format&fit=crop&w=1200&q=80"
+
+# Curated ids for queries the harvester could not resolve (upstream search
+# engines rate-limit hard). These reuse the photos the frontend mock catalog
+# already ships in toko/src/mocks/data.ts, so seeded rows and mock rows show the
+# same product imagery.
+QUERY_FALLBACK = {
+    "macbook pro laptop on desk": ["photo-1517336714731-489689fd1ca8"],
+    "iphone 15 pro smartphone": ["photo-1695048133142-1a20484d2569"],
+    "sony wireless headphones black": ["photo-1618366712010-f4ae9c647dcb"],
+    "ipad tablet on table": ["photo-1544244015-0df4b3ffc6b0"],
+    "lego bricks spaceship model": ["photo-1585366119957-e9730b6d0f60"],
+    "lego city toy set": ["photo-1558060370-d644479cb6f7"],
+    "grey fabric sofa living room": ["photo-1555041469-a586c61ea9bc"],
+    "cordless vacuum cleaner": ["photo-1758523670634-df4e12ed7a26"],
+    "folded blue denim jeans": ["photo-1541099649105-f69ad21f3246"],
+    "grey hoodie sweatshirt": ["photo-1556821840-3a63f95609a7"],
+    "books stack reading": ["photo-1512820790803-83ca734da794"],
+    "indonesian novel book": ["photo-1544947950-fa07a98d237f"],
+    "notebook journal stationery": ["photo-1531346878377-a5be20888e57"],
+    "serum dropper skincare": ["photo-1620916566398-39f1143ab7be"],
+    "ceramic dinnerware plates set": ["photo-1578985545062-69928b1d9587"],
+    "mattress bedroom bed": ["photo-1505693416388-ac5ce068fe85"],
+    "car battery automotive part": ["photo-1489824904134-891ab64532f1"],
+    "handheld car vacuum": ["photo-1758523670634-df4e12ed7a26"],
+}
+
+# Used to pad products whose query returned fewer than three photos, so every
+# product still has a multi-image gallery. Ids verified reachable by
+# verify_images.py.
+CATEGORY_FALLBACK = {
+    "electronics": ["photo-1498049794561-7780e7231661",
+                    "photo-1593642532400-2682810df593",
+                    "photo-1606813907291-d86efa9b94db"],
+    "fashion": ["photo-1441986300917-64674bd600d8",
+                "photo-1542291026-7eec264c27ff",
+                "photo-1587563871167-1ee7c735c5c3"],
+    "home-living": ["photo-1484101403633-562f891dc89a",
+                    "photo-1555041469-a586c61ea9bc",
+                    "photo-1599141928577-ec13201882be"],
+    "beauty": ["photo-1596462502278-27bfdc403348",
+               "photo-1556911220-e15b29be8c8f",
+               "photo-1583743814966-8936f5b7be1a"],
+    "sports": ["photo-1461896836934-ffe607ba8211",
+               "photo-1608231387042-66d1773070a5",
+               "photo-1542291026-7eec264c27ff"],
+    "toys": ["photo-1558060370-d644479cb6f7",
+             "photo-1585366119957-e9730b6d0f60",
+             "photo-1606813907291-d86efa9b94db"],
+    "books": ["photo-1512820790803-83ca734da794",
+              "photo-1516035069371-29a1b244cc32",
+              "photo-1498049794561-7780e7231661"],
+    "automotive": ["photo-1489824904134-891ab64532f1",
+                   "photo-1583743814966-8936f5b7be1a",
+                   "photo-1599141928577-ec13201882be"],
+    "health": ["photo-1505576399279-565b52d4ac71",
+               "photo-1556911220-e15b29be8c8f",
+               "photo-1608231387042-66d1773070a5"],
+    "garden": ["photo-1416879595882-3373a0480b5b",
+               "photo-1484101403633-562f891dc89a",
+               "photo-1555041469-a586c61ea9bc"],
+}
+
+
+def q(value):
+    """Quote a SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def sku(product_slug, suffix):
+    return "TK-" + product_slug.upper().replace("-", "")[:18] + "-" + suffix
+
+
+def image_ids(product, harvested):
+    ids = list(harvested.get(product["image_query"], []))
+    for curated in QUERY_FALLBACK.get(product["image_query"], []):
+        if curated not in ids:
+            ids.append(curated)
+    for fallback in CATEGORY_FALLBACK[product["category"]]:
+        if len(ids) >= 3:
+            break
+        if fallback not in ids:
+            ids.append(fallback)
+    return ids[:3]
+
+
+def build_up():
+    harvested = {}
+    if os.path.exists(IDS_PATH):
+        harvested = json.load(open(IDS_PATH))
+
+    out = [
+        "-- Full catalog seed: brands, categories, products, variants, images, specs.",
+        "-- Generated by scripts/seed/gen_seed_sql.py; edit scripts/seed/catalog_data.py",
+        "-- and regenerate rather than hand-editing this file.",
+        "--",
+        "-- Idempotent: every insert upserts on its natural key, so re-running the",
+        "-- migration on an existing database refreshes the seed instead of failing.",
+        "",
+        "BEGIN;",
+        "",
+        "-- Tenancy (000018) requires tenant_id on catalog tables; the seed belongs to",
+        "-- the same default tenant the backfill created.",
+        "INSERT INTO tenants (name, slug) VALUES ('Default Tenant', 'default')",
+        "ON CONFLICT (slug) DO NOTHING;",
+        "",
+        "INSERT INTO categories (name, slug, tenant_id)",
+        "VALUES",
+    ]
+
+    rows = [
+        f"  ({q(name)}, {q(slug)}, (SELECT id FROM tenants WHERE slug = 'default'))"
+        for name, slug in data.CATEGORIES
+    ]
+    out.append(",\n".join(rows))
+    out += [
+        "ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = now();",
+        "",
+        "INSERT INTO brands (name, slug, tenant_id)",
+        "VALUES",
+    ]
+    rows = [
+        f"  ({q(name)}, {q(slug)}, (SELECT id FROM tenants WHERE slug = 'default'))"
+        for name, slug in data.BRANDS
+    ]
+    out.append(",\n".join(rows))
+    out += [
+        "ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = now();",
+        "",
+        "-- Products. created_at is staggered so \"newest first\" listings have a stable,",
+        "-- deterministic order instead of every row sharing one timestamp.",
+        "INSERT INTO products (title, slug, brand_id, category_id, price, compare_at,",
+        "                      in_stock, thumbnail, badges, description, tenant_id, created_at)",
+        "VALUES",
+    ]
+
+    rows = []
+    for offset, p in enumerate(data.PRODUCTS):
+        ids = image_ids(p, harvested)
+        thumb = f"https://images.unsplash.com/{ids[0]}{THUMB_PARAMS}"
+        badges = "ARRAY[" + ", ".join(q(b) for b in p["badges"]) + "]::text[]" if p["badges"] else "'{}'::text[]"
+        compare = str(p["compare_at"]) if p["compare_at"] is not None else "NULL"
+        in_stock = "true" if any(v[2] > 0 for v in p["variants"]) else "false"
+        age = len(data.PRODUCTS) - offset
+        rows.append(
+            f"  ({q(p['title'])}, {q(p['slug'])},\n"
+            f"   (SELECT id FROM brands WHERE slug = {q(p['brand'])}),\n"
+            f"   (SELECT id FROM categories WHERE slug = {q(p['category'])}),\n"
+            f"   {p['price']}, {compare}, {in_stock}, {q(thumb)}, {badges},\n"
+            f"   {q(p['description'])},\n"
+            f"   (SELECT id FROM tenants WHERE slug = 'default'), now() - INTERVAL '{age} hours')"
+        )
+    out.append(",\n".join(rows))
+    out += [
+        "ON CONFLICT (slug) DO UPDATE SET",
+        "  title = EXCLUDED.title,",
+        "  brand_id = EXCLUDED.brand_id,",
+        "  category_id = EXCLUDED.category_id,",
+        "  price = EXCLUDED.price,",
+        "  compare_at = EXCLUDED.compare_at,",
+        "  in_stock = EXCLUDED.in_stock,",
+        "  thumbnail = EXCLUDED.thumbnail,",
+        "  badges = EXCLUDED.badges,",
+        "  description = EXCLUDED.description,",
+        "  updated_at = now();",
+        "",
+        "-- Variants, images and specs are child rows without natural unique keys, so",
+        "-- they are replaced wholesale for the seeded products to stay idempotent.",
+        "DELETE FROM product_variants WHERE product_id IN (",
+        "  SELECT id FROM products WHERE slug IN (" + ", ".join(q(p["slug"]) for p in data.PRODUCTS) + ")",
+        ");",
+        "DELETE FROM product_images WHERE product_id IN (",
+        "  SELECT id FROM products WHERE slug IN (" + ", ".join(q(p["slug"]) for p in data.PRODUCTS) + ")",
+        ");",
+        "DELETE FROM product_specs WHERE product_id IN (",
+        "  SELECT id FROM products WHERE slug IN (" + ", ".join(q(p["slug"]) for p in data.PRODUCTS) + ")",
+        ");",
+        "",
+        "INSERT INTO product_variants (product_id, sku, price, stock, attributes)",
+        "VALUES",
+    ]
+
+    rows = []
+    seen_sku = set()
+    for p in data.PRODUCTS:
+        for suffix, delta, stock, attrs in p["variants"]:
+            code = sku(p["slug"], suffix)
+            if code in seen_sku:
+                raise SystemExit(f"duplicate sku generated: {code}")
+            seen_sku.add(code)
+            rows.append(
+                f"  ((SELECT id FROM products WHERE slug = {q(p['slug'])}), {q(code)}, "
+                f"{p['price'] + delta}, {stock}, {q(json.dumps(attrs, ensure_ascii=False))}::jsonb)"
+            )
+    out.append(",\n".join(rows) + ";")
+
+    out += [
+        "",
+        "INSERT INTO product_images (product_id, url, sort_order)",
+        "VALUES",
+    ]
+    rows = []
+    for p in data.PRODUCTS:
+        for order, pid in enumerate(image_ids(p, harvested)):
+            url = f"https://images.unsplash.com/{pid}{GALLERY_PARAMS}"
+            rows.append(
+                f"  ((SELECT id FROM products WHERE slug = {q(p['slug'])}), {q(url)}, {order})"
+            )
+    out.append(",\n".join(rows) + ";")
+
+    out += [
+        "",
+        "INSERT INTO product_specs (product_id, key, value)",
+        "VALUES",
+    ]
+    rows = []
+    for p in data.PRODUCTS:
+        for key, value in p["specs"]:
+            rows.append(
+                f"  ((SELECT id FROM products WHERE slug = {q(p['slug'])}), {q(key)}, {q(value)})"
+            )
+    out.append(",\n".join(rows) + ";")
+
+    out += ["", "COMMIT;", ""]
+    return "\n".join(out)
+
+
+def build_down():
+    slugs = ", ".join(q(p["slug"]) for p in data.PRODUCTS)
+    cat_slugs = ", ".join(q(s) for _, s in data.CATEGORIES)
+    brand_slugs = ", ".join(q(s) for _, s in data.BRANDS)
+    return "\n".join([
+        "-- Rollback for the full catalog seed.",
+        "-- Generated by scripts/seed/gen_seed_sql.py.",
+        "--",
+        "-- Only rows this migration seeded are removed. Categories and brands are kept",
+        "-- when other products (or the 000007 seed) still reference them, since dropping",
+        "-- them would either fail or silently null out unrelated products.",
+        "",
+        "BEGIN;",
+        "",
+        f"DELETE FROM products WHERE slug IN ({slugs});",
+        "",
+        f"DELETE FROM categories c WHERE c.slug IN ({cat_slugs})",
+        "  AND NOT EXISTS (SELECT 1 FROM products p WHERE p.category_id = c.id)",
+        "  AND NOT EXISTS (SELECT 1 FROM categories child WHERE child.parent_id = c.id);",
+        "",
+        f"DELETE FROM brands b WHERE b.slug IN ({brand_slugs})",
+        "  AND NOT EXISTS (SELECT 1 FROM products p WHERE p.brand_id = b.id);",
+        "",
+        "COMMIT;",
+        "",
+    ])
+
+
+def main():
+    up = os.path.join(MIGRATIONS, NAME + ".up.sql")
+    down = os.path.join(MIGRATIONS, NAME + ".down.sql")
+    open(up, "w").write(build_up())
+    open(down, "w").write(build_down())
+    print(f"wrote {up} ({os.path.getsize(up)} bytes)")
+    print(f"wrote {down} ({os.path.getsize(down)} bytes)")
+
+
+if __name__ == "__main__":
+    main()

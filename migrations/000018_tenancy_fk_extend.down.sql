@@ -17,5 +17,4 @@ ALTER TABLE categories       DROP COLUMN IF EXISTS tenant_id;
 ALTER TABLE products         DROP COLUMN IF EXISTS tenant_id;
 ALTER TABLE webhook_deliveries DROP COLUMN IF EXISTS tenant_id;
 ALTER TABLE domain_events    DROP COLUMN IF EXISTS tenant_id;
-ALTER TABLE analytics_materialized DROP COLUMN IF EXISTS tenant_id;
 COMMIT;

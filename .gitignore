@@ -4,3 +4,5 @@ vendor/
 coverage.out
 node_modules/
 tmp/
+*.log
+__pycache__/
