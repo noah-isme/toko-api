@@ -36,6 +36,7 @@ BRANDS = [
     ("Shimano", "shimano"),
     ("Bosch", "bosch"),
     ("Xiaomi", "xiaomi"),
+    ("Acme", "acme"),
 ]
 
 # Each product: slug, title, brand, category, price (IDR), compare_at or None,
@@ -48,8 +49,8 @@ PRODUCTS = [
         category="electronics", price=25_000_000, compare_at=27_500_000,
         badges=["new", "bestseller"],
         description=(
-            "MacBook Pro 14 inci dengan chip Apple M3, layar Liquid Retina XDR, "
-            "dan daya tahan baterai hingga 18 jam. Cocok untuk editing video, "
+            "Laptop MacBook Pro 14 inci dengan chip Apple M3, layar Liquid Retina "
+            "XDR, dan daya tahan baterai hingga 18 jam. Cocok untuk editing video, "
             "kompilasi kode, dan pekerjaan kreatif berat."
         ),
         specs=[("Prosesor", "Apple M3 8-core"), ("Layar", "14.2\" Liquid Retina XDR 120Hz"),
@@ -65,8 +66,8 @@ PRODUCTS = [
         category="electronics", price=20_000_000, compare_at=21_999_000,
         badges=["bestseller"],
         description=(
-            "iPhone 15 Pro dengan bodi titanium, chip A17 Pro, dan sistem kamera "
-            "48MP. Action Button baru dan port USB-C dengan transfer cepat."
+            "Handphone iPhone 15 Pro dengan bodi titanium, chip A17 Pro, dan sistem "
+            "kamera 48MP. Action Button baru dan port USB-C dengan transfer cepat."
         ),
         specs=[("Chip", "A17 Pro"), ("Layar", "6.1\" Super Retina XDR ProMotion"),
                ("Kamera", "48MP utama + 12MP ultrawide + 12MP telephoto"),
@@ -81,8 +82,8 @@ PRODUCTS = [
         category="electronics", price=19_000_000, compare_at=22_000_000,
         badges=["promo"],
         description=(
-            "Galaxy S24 Ultra dengan S Pen terintegrasi, kamera 200MP, dan layar "
-            "Dynamic AMOLED 2X 6.8 inci anti-refleksi."
+            "Handphone Galaxy S24 Ultra dengan S Pen terintegrasi, kamera 200MP, "
+            "dan layar Dynamic AMOLED 2X 6.8 inci anti-refleksi."
         ),
         specs=[("Chip", "Snapdragon 8 Gen 3 for Galaxy"), ("Layar", "6.8\" Dynamic AMOLED 2X 120Hz"),
                ("Kamera", "200MP + 50MP + 12MP + 10MP"), ("Baterai", "5000mAh 45W"),
@@ -112,8 +113,8 @@ PRODUCTS = [
         category="electronics", price=18_000_000, compare_at=None,
         badges=[],
         description=(
-            "Ultrabook 13 inci dengan Intel Core Ultra 7, keyboard edge-to-edge, "
-            "dan bodi aluminium CNC. Ringan untuk mobilitas harian."
+            "Laptop ultrabook 13 inci dengan Intel Core Ultra 7, keyboard "
+            "edge-to-edge, dan bodi aluminium CNC. Ringan untuk mobilitas harian."
         ),
         specs=[("Prosesor", "Intel Core Ultra 7 155H"), ("RAM", "16GB LPDDR5"),
                ("Layar", "13.4\" FHD+ InfinityEdge"), ("Penyimpanan", "512GB NVMe SSD"),
@@ -157,8 +158,8 @@ PRODUCTS = [
         category="electronics", price=3_499_000, compare_at=3_999_000,
         badges=["promo"],
         description=(
-            "Smartphone mid-range dengan kamera 200MP OIS, layar AMOLED 120Hz, "
-            "dan pengisian cepat 67W."
+            "Handphone smartphone mid-range dengan kamera 200MP OIS, layar "
+            "AMOLED 120Hz, dan pengisian cepat 67W."
         ),
         specs=[("Chip", "MediaTek Helio G99 Ultra"), ("Layar", "6.67\" AMOLED 120Hz"),
                ("Kamera", "200MP OIS + 8MP + 2MP"), ("Baterai", "5100mAh 67W"),
@@ -187,8 +188,8 @@ PRODUCTS = [
         category="electronics", price=10_999_000, compare_at=None,
         badges=["new"],
         description=(
-            "iPad Air 11 inci dengan chip M2, dukungan Apple Pencil Pro, dan "
-            "layar Liquid Retina laminated."
+            "Tablet iPad Air 11 inci dengan chip M2, dukungan Apple Pencil Pro, "
+            "dan layar Liquid Retina laminated."
         ),
         specs=[("Chip", "Apple M2"), ("Layar", "11\" Liquid Retina"),
                ("Kamera", "12MP wide, 12MP ultrawide front"),
@@ -216,12 +217,31 @@ PRODUCTS = [
 
     # --- Fashion -----------------------------------------------------------
     dict(
+        slug="kaos-hitam", title="Kaos Hitam", brand="acme",
+        category="fashion", price=249_000, compare_at=299_000,
+        badges=["promo", "new"],
+        description=(
+            "Kaos hitam polos lengan pendek, bahan katun 100% combed 30s. "
+            "Nyaman dipakai sehari-hari, jahitan rapi, dan tidak mudah melar. "
+            "Tersedia berbagai ukuran dari S hingga XXL."
+        ),
+        specs=[("Bahan", "Katun Combed 30s"), ("Ukuran", "S, M, L, XL, XXL"),
+               ("Warna", "Hitam Polos"), ("Jahitan", "Double stitch"),
+               ("Perawatan", "Cuci dengan air dingin"), ("Garansi", "7 hari retur")],
+        variants=[("S", 0, 50, {"size": "S"}),
+                  ("M", 0, 100, {"size": "M"}),
+                  ("L", 0, 120, {"size": "L"}),
+                  ("XL", 0, 80, {"size": "XL"}),
+                  ("XXL", 10_000, 40, {"size": "XXL"})],
+        image_query="black t shirt folded",
+    ),
+    dict(
         slug="nike-air-force-1-low", title="Nike Air Force 1 Low", brand="nike",
         category="fashion", price=1_499_000, compare_at=1_799_000,
         badges=["bestseller"],
         description=(
-            "Sneaker ikonik dengan upper kulit, unit Nike Air di midsole, dan "
-            "outsole karet non-marking. Siluet klasik yang cocok untuk harian."
+            "Sepatu sneaker ikonik dengan upper kulit, unit Nike Air di midsole, "
+            "dan outsole karet non-marking. Siluet klasik yang cocok untuk harian."
         ),
         specs=[("Upper", "Kulit asli"), ("Midsole", "Nike Air cushioning"),
                ("Outsole", "Karet non-marking"), ("Tutup", "Lace-up"),
@@ -255,7 +275,7 @@ PRODUCTS = [
         category="fashion", price=199_000, compare_at=249_000,
         badges=["promo"],
         description=(
-            "Kaus lengan pendek dengan teknologi AIRism di sisi dalam sehingga "
+            "Kaos lengan pendek dengan teknologi AIRism di sisi dalam sehingga "
             "menyerap keringat dan cepat kering, tetapi tetap terasa katun."
         ),
         specs=[("Material", "60% Katun, 40% Polyester AIRism"),
@@ -275,8 +295,8 @@ PRODUCTS = [
         category="fashion", price=599_000, compare_at=799_000,
         badges=["promo"],
         description=(
-            "Jeans selvedge denim 13.5 oz dengan potongan slim fit dan sedikit "
-            "stretch untuk kenyamanan bergerak sepanjang hari."
+            "Celana jeans selvedge denim 13.5 oz dengan potongan slim fit dan "
+            "sedikit stretch untuk kenyamanan bergerak sepanjang hari."
         ),
         specs=[("Material", "98% Katun, 2% Elastane"), ("Berat Denim", "13.5 oz"),
                ("Potongan", "Slim fit"), ("Rise", "Mid rise"),
@@ -308,7 +328,7 @@ PRODUCTS = [
         brand="adidas", category="fashion", price=899_000, compare_at=1_100_000,
         badges=["promo"],
         description=(
-            "Hoodie fleece dengan logo Trefoil bordir, kantung kanguru, dan "
+            "Jaket hoodie fleece dengan logo Trefoil bordir, kantung kanguru, dan "
             "kupluk berlapis dua untuk kehangatan ekstra."
         ),
         specs=[("Material", "70% Katun, 30% Polyester fleece"),
@@ -466,8 +486,8 @@ PRODUCTS = [
         brand="the-body-shop", category="beauty", price=189_000, compare_at=229_000,
         badges=["bestseller"],
         description=(
-            "Minyak tea tree murni dari Community Fair Trade Kenya untuk merawat "
-            "kulit berjerawat. Oleskan tipis pada area bermasalah."
+            "Skincare minyak tea tree murni dari Community Fair Trade Kenya untuk "
+            "merawat kulit berjerawat. Oleskan tipis pada area bermasalah."
         ),
         specs=[("Volume", "20 ml"), ("Kandungan", "Tea tree oil Kenya"),
                ("Tipe Kulit", "Berminyak dan berjerawat"), ("Vegan", "Ya"),
@@ -481,8 +501,8 @@ PRODUCTS = [
         brand="wardah", category="beauty", price=59_000, compare_at=75_000,
         badges=["promo"],
         description=(
-            "Pelembap siang dengan SPF 30 PA+++ dan niacinamide untuk meratakan "
-            "warna kulit. Formula halal dan ringan tanpa rasa lengket."
+            "Skincare pelembap siang dengan SPF 30 PA+++ dan niacinamide untuk "
+            "meratakan warna kulit. Formula halal dan ringan tanpa rasa lengket."
         ),
         specs=[("Volume", "30 g"), ("SPF", "SPF 30 PA+++"),
                ("Bahan Aktif", "Niacinamide, vitamin B3"), ("Sertifikasi", "Halal MUI"),
@@ -495,7 +515,7 @@ PRODUCTS = [
         brand="wardah", category="beauty", price=129_000, compare_at=159_000,
         badges=["promo", "bestseller"],
         description=(
-            "Serum untuk mengontrol sebum dan memudarkan bekas jerawat. "
+            "Skincare serum untuk mengontrol sebum dan memudarkan bekas jerawat. "
             "Tekstur ringan berbasis air, cocok dipakai pagi dan malam."
         ),
         specs=[("Volume", "30 ml"), ("Bahan Aktif", "Niacinamide 10%, Zinc PCA 1%"),
@@ -510,8 +530,8 @@ PRODUCTS = [
         brand="wardah", category="beauty", price=199_000, compare_at=279_000,
         badges=["promo"],
         description=(
-            "Empat lipstik cair matte tahan hingga 8 jam dengan pigmentasi penuh "
-            "dan formula yang tidak membuat bibir kering."
+            "Makeup empat lipstik cair matte tahan hingga 8 jam dengan pigmentasi "
+            "penuh dan formula yang tidak membuat bibir kering."
         ),
         specs=[("Isi", "4 x 4 ml"), ("Finish", "Matte"),
                ("Ketahanan", "Hingga 8 jam"), ("Transfer Proof", "Ya"),
@@ -591,8 +611,8 @@ PRODUCTS = [
         brand="lego", category="toys", price=13_000_000, compare_at=14_500_000,
         badges=["premium", "bestseller"],
         description=(
-            "Set koleksi Ultimate Collector Series dengan 7541 bagian, kokpit "
-            "detail, dan minifigure klasik maupun sekuel."
+            "Mainan set koleksi Ultimate Collector Series dengan 7541 bagian, "
+            "kokpit detail, dan minifigure klasik maupun sekuel."
         ),
         specs=[("Jumlah Bagian", "7541 pcs"), ("Usia", "16+"),
                ("Dimensi Rakit", "84 x 56 x 21 cm"), ("Minifigure", "10 buah"),
@@ -605,7 +625,7 @@ PRODUCTS = [
         category="toys", price=1_899_000, compare_at=2_199_000,
         badges=["promo"],
         description=(
-            "Set LEGO City berisi kantor polisi, mobil patroli, drone, dan enam "
+            "Mainan set LEGO City berisi kantor polisi, mobil patroli, drone, dan enam "
             "minifigure untuk permainan cerita anak."
         ),
         specs=[("Jumlah Bagian", "668 pcs"), ("Usia", "6+"),
@@ -619,8 +639,8 @@ PRODUCTS = [
         brand="lego", category="toys", price=299_000, compare_at=399_000,
         badges=["promo"],
         description=(
-            "Empat papan puzzle kayu dengan tema angka, huruf, bentuk, dan hewan. "
-            "Finishing cat non toksik berbasis air."
+            "Mainan empat papan puzzle kayu dengan tema angka, huruf, bentuk, dan "
+            "hewan. Finishing cat non toksik berbasis air."
         ),
         specs=[("Isi", "4 papan puzzle"), ("Usia", "2-5 tahun"),
                ("Material", "Kayu pinus solid"), ("Cat", "Non toksik water based"),
@@ -633,7 +653,7 @@ PRODUCTS = [
         category="toys", price=849_000, compare_at=999_000,
         badges=["promo"],
         description=(
-            "Mobil remote control 4WD skala 1:16 dengan ban drift, baterai "
+            "Mainan mobil remote control 4WD skala 1:16 dengan ban drift, baterai "
             "isi ulang 1200mAh, dan remote 2.4GHz jarak 50 meter."
         ),
         specs=[("Skala", "1:16"), ("Penggerak", "4WD"),
@@ -650,8 +670,8 @@ PRODUCTS = [
         brand="gramedia", category="books", price=109_000, compare_at=135_000,
         badges=["bestseller"],
         description=(
-            "Panduan James Clear untuk membangun kebiasaan baik dan menghentikan "
-            "kebiasaan buruk melalui perubahan kecil yang konsisten."
+            "Buku panduan James Clear untuk membangun kebiasaan baik dan "
+            "menghentikan kebiasaan buruk melalui perubahan kecil yang konsisten."
         ),
         specs=[("Penulis", "James Clear"), ("Penerbit", "Gramedia Pustaka Utama"),
                ("Halaman", "352"), ("Bahasa", "Indonesia"),
@@ -679,8 +699,8 @@ PRODUCTS = [
         category="books", price=99_000, compare_at=120_000,
         badges=["promo"],
         description=(
-            "Novel Leila S. Chudori tentang aktivis mahasiswa 1998 dan keluarga "
-            "yang ditinggalkan, ditulis dari dua sudut pandang."
+            "Buku novel Leila S. Chudori tentang aktivis mahasiswa 1998 dan "
+            "keluarga yang ditinggalkan, ditulis dari dua sudut pandang."
         ),
         specs=[("Penulis", "Leila S. Chudori"), ("Penerbit", "Kepustakaan Populer Gramedia"),
                ("Halaman", "394"), ("Bahasa", "Indonesia"),
@@ -834,8 +854,9 @@ PRODUCTS = [
         brand="bosch", category="garden", price=1_749_000, compare_at=2_100_000,
         badges=["promo"],
         description=(
-            "Pemangkas rumput baterai 18V dengan lebar potong 26 cm, kepala yang "
-            "bisa diputar 90 derajat, dan sistem ganti benang semi otomatis."
+            "Alat kebun pemangkas rumput baterai 18V dengan lebar potong 26 cm, "
+            "kepala yang bisa diputar 90 derajat, dan sistem ganti benang semi "
+            "otomatis."
         ),
         specs=[("Tegangan", "18 V"), ("Lebar Potong", "26 cm"),
                ("Baterai", "2.5Ah termasuk"), ("Berat", "2.4 kg"),

@@ -13,7 +13,7 @@ DELETE FROM categories c WHERE c.slug IN ('electronics', 'fashion', 'home-living
   AND NOT EXISTS (SELECT 1 FROM products p WHERE p.category_id = c.id)
   AND NOT EXISTS (SELECT 1 FROM categories child WHERE child.parent_id = c.id);
 
-DELETE FROM brands b WHERE b.slug IN ('apple', 'samsung', 'sony', 'dell', 'canon', 'nike', 'adidas', 'uniqlo', 'ikea', 'dyson', 'philips', 'lego', 'the-body-shop', 'wardah', 'gramedia', 'shimano', 'bosch', 'xiaomi')
+DELETE FROM brands b WHERE b.slug IN ('apple', 'samsung', 'sony', 'dell', 'canon', 'nike', 'adidas', 'uniqlo', 'ikea', 'dyson', 'philips', 'lego', 'the-body-shop', 'wardah', 'gramedia', 'shimano', 'bosch', 'xiaomi', 'acme')
   AND NOT EXISTS (SELECT 1 FROM products p WHERE p.brand_id = b.id);
 
 COMMIT;

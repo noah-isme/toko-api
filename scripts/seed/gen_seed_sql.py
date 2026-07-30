@@ -12,6 +12,8 @@ import os
 
 import catalog_data as data
 
+PRIOR_SEED_SLUGS = {"kaos-hitam"}  # owned by migration 000007
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 MIGRATIONS = os.path.normpath(os.path.join(HERE, "..", "..", "migrations"))
 IDS_PATH = os.path.join(HERE, "unsplash_ids.json")
@@ -259,7 +261,9 @@ def build_up():
 
 
 def build_down():
-    slugs = ", ".join(q(p["slug"]) for p in data.PRODUCTS)
+    # Products owned by earlier migrations stay put — only remove products this seed created.
+    my_slugs = [p["slug"] for p in data.PRODUCTS if p["slug"] not in PRIOR_SEED_SLUGS]
+    slugs = ", ".join(q(s) for s in my_slugs)
     cat_slugs = ", ".join(q(s) for _, s in data.CATEGORIES)
     brand_slugs = ", ".join(q(s) for _, s in data.BRANDS)
     return "\n".join([
