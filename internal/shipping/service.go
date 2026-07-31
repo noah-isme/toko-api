@@ -156,6 +156,12 @@ func (s *Service) syncOrderStatus(ctx context.Context, orderID pgtype.UUID, stat
 	if err != nil {
 		return err
 	}
+	// A cancelled order must never be advanced by a late carrier webhook. The
+	// rank of CANCELLED sits outside the fulfilment sequence, so compare it
+	// explicitly rather than through the monotonic rank.
+	if current == dbgen.OrderStatusCANCELLED {
+		return nil
+	}
 	if orderStatusRank(current) >= orderStatusRank(target) {
 		return nil
 	}
@@ -281,6 +287,8 @@ func orderStatusRank(status dbgen.OrderStatus) int {
 	case dbgen.OrderStatusDELIVERED:
 		return 5
 	case dbgen.OrderStatusCANCELLED:
+		// Cancellation is terminal and off the fulfilment sequence. Callers must
+		// special-case it instead of relying on this rank.
 		return -1
 	default:
 		return -2

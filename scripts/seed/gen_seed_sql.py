@@ -96,15 +96,19 @@ def sku(product_slug, suffix):
 def image_ids(product, harvested):
     """Pick three distinct photo ids for a product, best match first.
 
-    Harvested ids win, then the curated per-query ids, then the category pool.
-    Padding to three keeps the storefront gallery non-degenerate for every
-    product; running out is a data bug worth failing on rather than shipping a
-    product with a single image.
+    Curated fallbacks from QUERY_FALLBACK win — these are the photos the
+    frontend mock catalog ships in toko/src/mocks/data.ts, hand-picked to
+    match the product.  Harvested ids from SearXNG image search fill any
+    remaining slots; they are generic and may not depict the product well.
+    The category pool pads to three.
     """
-    ids = list(harvested.get(product["image_query"], []))
+    ids = []
     for curated in QUERY_FALLBACK.get(product["image_query"], []):
         if curated not in ids:
             ids.append(curated)
+    for harvested_id in harvested.get(product["image_query"], []):
+        if harvested_id not in ids:
+            ids.append(harvested_id)
     for fallback in CATEGORY_FALLBACK[product["category"]]:
         if len(ids) >= 3:
             break

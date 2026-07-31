@@ -26,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/noah-isme/backend-toko/internal/admin"
 	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/audit"
 	"github.com/noah-isme/backend-toko/internal/auth"
@@ -407,6 +408,10 @@ func main() {
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
+	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache}
+	adminOrders := &admin.OrdersHandler{Q: queries}
+	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
+
 	reviewsSvc := &reviews.Service{Q: queries}
 	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
 
@@ -690,6 +695,36 @@ func main() {
 			admin.Post("/queue/dlq/replay", queueAdmin.ReplayDLQ)
 			admin.Get("/queue/stats", queueAdmin.Stats)
 			admin.Get("/audit-logs", auditHandler.List)
+
+			// Catalog management.
+			admin.Get("/products", adminCatalog.ListProducts)
+			admin.Post("/products", adminCatalog.CreateProduct)
+			admin.Get("/products/{id}", adminCatalog.GetProduct)
+			admin.Patch("/products/{id}", adminCatalog.UpdateProduct)
+			admin.Delete("/products/{id}", adminCatalog.DeleteProduct)
+			admin.Patch("/products/{id}/stock", adminCatalog.UpdateProductStock)
+
+			admin.Get("/categories", adminCatalog.ListCategories)
+			admin.Post("/categories", adminCatalog.CreateCategory)
+			admin.Patch("/categories/{id}", adminCatalog.UpdateCategory)
+			admin.Delete("/categories/{id}", adminCatalog.DeleteCategory)
+
+			admin.Get("/brands", adminCatalog.ListBrands)
+			admin.Post("/brands", adminCatalog.CreateBrand)
+			admin.Patch("/brands/{id}", adminCatalog.UpdateBrand)
+			admin.Delete("/brands/{id}", adminCatalog.DeleteBrand)
+
+			// Order and voucher management reads. "/orders/stats" is registered
+			// before "/orders/{id}" so chi does not treat "stats" as an id.
+			admin.Get("/orders", adminOrders.ListOrders)
+			admin.Get("/orders/stats", adminOrders.OrderStats)
+			admin.Get("/orders/{id}", adminOrders.GetOrder)
+
+			admin.Get("/vouchers", adminOrders.ListVouchers)
+			admin.Get("/vouchers/stats", adminOrders.VoucherStats)
+			admin.Delete("/vouchers/{code}", adminOrders.DeleteVoucher)
+
+			admin.Get("/analytics/overview", adminAnalytics.Overview)
 		})
 
 		v.Route("/analytics", func(an chi.Router) {

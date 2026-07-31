@@ -58,7 +58,7 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load order", nil)
 		return
 	}
-	if orderStatusRank(current) >= orderStatusRank(target) {
+	if !isAllowedTransition(current, target) {
 		common.JSONError(w, http.StatusConflict, "INVALID_STATE", "cannot transition to equal or previous state", nil)
 		return
 	}
@@ -81,25 +81,30 @@ func isAllowedAdminTarget(status dbgen.OrderStatus) bool {
 	return false
 }
 
-func orderStatusRank(status dbgen.OrderStatus) int {
-	switch status {
-	case dbgen.OrderStatusPENDINGPAYMENT:
-		return 0
-	case dbgen.OrderStatusPAID:
-		return 1
-	case dbgen.OrderStatusPACKED:
-		return 2
-	case dbgen.OrderStatusSHIPPED:
-		return 3
-	case dbgen.OrderStatusOUTFORDELIVERY:
-		return 4
-	case dbgen.OrderStatusDELIVERED:
-		return 5
-	case dbgen.OrderStatusCANCELLED:
-		return -1
-	default:
-		return -2
+// isAllowedTransition mirrors the guard in the UpdateOrderStatusIfAllowed query.
+// The SQL remains the race-safe source of truth; this pre-check exists only so a
+// rejected transition returns 409 with a clear reason instead of pgx.ErrNoRows.
+// Cancellation moves backwards in the fulfilment order, so a monotonic rank
+// comparison cannot express it.
+func isAllowedTransition(current, target dbgen.OrderStatus) bool {
+	allowed, ok := allowedOrderTransitions[current]
+	if !ok {
+		return false
 	}
+	for _, candidate := range allowed {
+		if candidate == target {
+			return true
+		}
+	}
+	return false
+}
+
+var allowedOrderTransitions = map[dbgen.OrderStatus][]dbgen.OrderStatus{
+	dbgen.OrderStatusPENDINGPAYMENT: {dbgen.OrderStatusPAID, dbgen.OrderStatusCANCELLED},
+	dbgen.OrderStatusPAID:           {dbgen.OrderStatusPACKED, dbgen.OrderStatusCANCELLED},
+	dbgen.OrderStatusPACKED:         {dbgen.OrderStatusSHIPPED},
+	dbgen.OrderStatusSHIPPED:        {dbgen.OrderStatusOUTFORDELIVERY},
+	dbgen.OrderStatusOUTFORDELIVERY: {dbgen.OrderStatusDELIVERED},
 }
 
 func parseUUID(value string) (pgtype.UUID, error) {
