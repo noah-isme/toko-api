@@ -860,3 +860,11 @@ func (f *fakeQueries) CountOrderItems(ctx context.Context, orderID pgtype.UUID) 
 func (f *fakeQueries) GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error) {
 	return "", errNotImplemented
 }
+
+func (f *fakeQueries) ListAuditLogsFiltered(ctx context.Context, arg dbgen.ListAuditLogsFilteredParams) ([]dbgen.AuditLog, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) CountAuditLogsFiltered(ctx context.Context, arg dbgen.CountAuditLogsFilteredParams) (int64, error) {
+	return 0, errNotImplemented
+}

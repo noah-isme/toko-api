@@ -56,6 +56,7 @@ type Querier interface {
 	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
 	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountAuditLogsFiltered(ctx context.Context, arg CountAuditLogsFilteredParams) (int64, error)
 	CountNotifications(ctx context.Context, arg CountNotificationsParams) (int64, error)
 	CountOrderItems(ctx context.Context, orderID pgtype.UUID) (int64, error)
 	CountOrdersForDay(ctx context.Context, arg CountOrdersForDayParams) (int64, error)
@@ -140,6 +141,9 @@ type Querier interface {
 	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// Filtered variants back the admin audit-log screen. Each filter is skipped when
+	// its parameter is NULL so one query serves every combination.
+	ListAuditLogsFiltered(ctx context.Context, arg ListAuditLogsFilteredParams) ([]AuditLog, error)
 	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
 	// The image is joined live rather than snapshotted into cart_items alongside
 	// title and unit_price: those are frozen because a cart's price must not shift

@@ -29,6 +29,14 @@ func (s *stubStore) ListAuditLogs(ctx context.Context, arg dbgen.ListAuditLogsPa
 	return nil, nil
 }
 
+func (s *stubStore) ListAuditLogsFiltered(ctx context.Context, arg dbgen.ListAuditLogsFilteredParams) ([]dbgen.AuditLog, error) {
+	return nil, nil
+}
+
+func (s *stubStore) CountAuditLogsFiltered(ctx context.Context, arg dbgen.CountAuditLogsFilteredParams) (int64, error) {
+	return 0, nil
+}
+
 func TestServiceRecord(t *testing.T) {
 	store := &stubStore{}
 	svc := Service{Store: store, Enabled: true, SamplingRate: 1}
@@ -48,7 +56,7 @@ func TestServiceRecord(t *testing.T) {
 	if !store.called {
 		t.Fatal("expected store to be called")
 	}
-	if store.lastInsert.ActorKind != string(ActorKindUser) {
+	if store.lastInsert.ActorKind != dbgen.ActorKind(ActorKindUser) {
 		t.Fatalf("unexpected actor kind: %s", store.lastInsert.ActorKind)
 	}
 	if !store.lastInsert.ActorUserID.Valid {

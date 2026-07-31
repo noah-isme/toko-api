@@ -38,6 +38,8 @@ type Actor struct {
 type Store interface {
 	InsertAuditLog(ctx context.Context, arg dbgen.InsertAuditLogParams) (dbgen.InsertAuditLogRow, error)
 	ListAuditLogs(ctx context.Context, arg dbgen.ListAuditLogsParams) ([]dbgen.AuditLog, error)
+	ListAuditLogsFiltered(ctx context.Context, arg dbgen.ListAuditLogsFilteredParams) ([]dbgen.AuditLog, error)
+	CountAuditLogsFiltered(ctx context.Context, arg dbgen.CountAuditLogsFilteredParams) (int64, error)
 }
 
 // Service persists audit logs for critical application flows.
@@ -87,7 +89,7 @@ func (s Service) Record(ctx context.Context, actor Actor, action, resourceType, 
 	}
 
 	_, err := s.Store.InsertAuditLog(ctx, dbgen.InsertAuditLogParams{
-		ActorKind:    string(actorKind),
+		ActorKind:    dbgen.ActorKind(actorKind),
 		ActorUserID:  toNullUUID(userID),
 		Action:       normalizedAction,
 		ResourceType: normalizedResource,

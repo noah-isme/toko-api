@@ -11,6 +11,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ActorKind string
+
+const (
+	ActorKindUser      ActorKind = "user"
+	ActorKindSystem    ActorKind = "system"
+	ActorKindAnonymous ActorKind = "anonymous"
+)
+
+func (e *ActorKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ActorKind(s)
+	case string:
+		*e = ActorKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ActorKind: %T", src)
+	}
+	return nil
+}
+
+type NullActorKind struct {
+	ActorKind ActorKind `json:"actor_kind"`
+	Valid     bool      `json:"valid"` // Valid is true if ActorKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullActorKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.ActorKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ActorKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullActorKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ActorKind), nil
+}
+
 type DeliveryStatus string
 
 const (
@@ -260,7 +303,7 @@ type AnalyticsMaterialized struct {
 
 type AuditLog struct {
 	ID           pgtype.UUID        `json:"id"`
-	ActorKind    interface{}        `json:"actor_kind"`
+	ActorKind    ActorKind          `json:"actor_kind"`
 	ActorUserID  pgtype.UUID        `json:"actor_user_id"`
 	Action       string             `json:"action"`
 	ResourceType string             `json:"resource_type"`

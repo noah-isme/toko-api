@@ -11,6 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAuditLogsFiltered = `-- name: CountAuditLogsFiltered :one
+SELECT count(*)
+FROM audit_logs
+WHERE ($1::uuid IS NULL OR actor_user_id = $1::uuid)
+  AND ($2::text IS NULL OR action ILIKE '%' || $2::text || '%')
+  AND ($3::text IS NULL OR resource_type = $3::text)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+`
+
+type CountAuditLogsFilteredParams struct {
+	ActorUserID  pgtype.UUID        `json:"actor_user_id"`
+	Action       pgtype.Text        `json:"action"`
+	ResourceType pgtype.Text        `json:"resource_type"`
+	StartDate    pgtype.Timestamptz `json:"start_date"`
+	EndDate      pgtype.Timestamptz `json:"end_date"`
+}
+
+func (q *Queries) CountAuditLogsFiltered(ctx context.Context, arg CountAuditLogsFilteredParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditLogsFiltered,
+		arg.ActorUserID,
+		arg.Action,
+		arg.ResourceType,
+		arg.StartDate,
+		arg.EndDate,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertAuditLog = `-- name: InsertAuditLog :one
 INSERT INTO audit_logs (
     actor_kind,
@@ -32,7 +63,7 @@ INSERT INTO audit_logs (
 `
 
 type InsertAuditLogParams struct {
-	ActorKind    interface{} `json:"actor_kind"`
+	ActorKind    ActorKind   `json:"actor_kind"`
 	ActorUserID  pgtype.UUID `json:"actor_user_id"`
 	Action       string      `json:"action"`
 	ResourceType string      `json:"resource_type"`
@@ -102,6 +133,89 @@ type ListAuditLogsParams struct {
 
 func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error) {
 	rows, err := q.db.Query(ctx, listAuditLogs, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorKind,
+			&i.ActorUserID,
+			&i.Action,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.Method,
+			&i.Path,
+			&i.Route,
+			&i.Status,
+			&i.Ip,
+			&i.UserAgent,
+			&i.RequestID,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditLogsFiltered = `-- name: ListAuditLogsFiltered :many
+SELECT
+    id,
+    actor_kind,
+    actor_user_id,
+    action,
+    resource_type,
+    resource_id,
+    method,
+    path,
+    route,
+    status,
+    ip,
+    user_agent,
+    request_id,
+    metadata,
+    created_at
+FROM audit_logs
+WHERE ($1::uuid IS NULL OR actor_user_id = $1::uuid)
+  AND ($2::text IS NULL OR action ILIKE '%' || $2::text || '%')
+  AND ($3::text IS NULL OR resource_type = $3::text)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+ORDER BY created_at DESC
+LIMIT $7 OFFSET $6
+`
+
+type ListAuditLogsFilteredParams struct {
+	ActorUserID  pgtype.UUID        `json:"actor_user_id"`
+	Action       pgtype.Text        `json:"action"`
+	ResourceType pgtype.Text        `json:"resource_type"`
+	StartDate    pgtype.Timestamptz `json:"start_date"`
+	EndDate      pgtype.Timestamptz `json:"end_date"`
+	Offset       int32              `json:"offset"`
+	Limit        int32              `json:"limit"`
+}
+
+// Filtered variants back the admin audit-log screen. Each filter is skipped when
+// its parameter is NULL so one query serves every combination.
+func (q *Queries) ListAuditLogsFiltered(ctx context.Context, arg ListAuditLogsFilteredParams) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditLogsFiltered,
+		arg.ActorUserID,
+		arg.Action,
+		arg.ResourceType,
+		arg.StartDate,
+		arg.EndDate,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}
