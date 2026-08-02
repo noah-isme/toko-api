@@ -108,15 +108,19 @@ GET /api/v1/analytics/overview
 Authorization: Bearer <admin_token>
 ```
 
-Returns a high-level dashboard summary. This endpoint is currently **not implemented** and returns `501 Not Implemented`.
+Returns a high-level dashboard summary for the requested range. Use `days` (default 30) or explicit `from` and `to` RFC3339 query parameters.
 
-**Response:** `501 Not Implemented`
+**Response:** `200 OK`
 
 ```json
 {
-  "error": {
-    "code": "NOT_IMPLEMENTED",
-    "message": "overview will be available soon"
+  "data": {
+    "from": "2026-07-03T00:00:00Z",
+    "to": "2026-08-02T00:00:00Z",
+    "totalRevenue": 12500000,
+    "totalOrders": 42,
+    "paidOrders": 38,
+    "averageOrderValue": 328947
   }
 }
 ```

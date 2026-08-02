@@ -15,8 +15,14 @@ const getBrandByID = `-- name: GetBrandByID :one
 SELECT id, name, slug
 FROM brands
 WHERE id = $1
+  AND tenant_id = $2
 LIMIT 1
 `
+
+type GetBrandByIDParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type GetBrandByIDRow struct {
 	ID   pgtype.UUID `json:"id"`
@@ -24,8 +30,8 @@ type GetBrandByIDRow struct {
 	Slug string      `json:"slug"`
 }
 
-func (q *Queries) GetBrandByID(ctx context.Context, id pgtype.UUID) (GetBrandByIDRow, error) {
-	row := q.db.QueryRow(ctx, getBrandByID, id)
+func (q *Queries) GetBrandByID(ctx context.Context, arg GetBrandByIDParams) (GetBrandByIDRow, error) {
+	row := q.db.QueryRow(ctx, getBrandByID, arg.ID, arg.TenantID)
 	var i GetBrandByIDRow
 	err := row.Scan(&i.ID, &i.Name, &i.Slug)
 	return i, err
@@ -54,6 +60,7 @@ func (q *Queries) GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySl
 const listBrands = `-- name: ListBrands :many
 SELECT id, name, slug
 FROM brands
+WHERE tenant_id = $1
 ORDER BY name ASC
 `
 
@@ -63,8 +70,8 @@ type ListBrandsRow struct {
 	Slug string      `json:"slug"`
 }
 
-func (q *Queries) ListBrands(ctx context.Context) ([]ListBrandsRow, error) {
-	rows, err := q.db.Query(ctx, listBrands)
+func (q *Queries) ListBrands(ctx context.Context, tenantID pgtype.UUID) ([]ListBrandsRow, error) {
+	rows, err := q.db.Query(ctx, listBrands, tenantID)
 	if err != nil {
 		return nil, err
 	}

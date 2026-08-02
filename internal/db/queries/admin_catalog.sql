@@ -5,9 +5,10 @@
 -- name: AdminCountProducts :one
 SELECT COUNT(*)
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(search)::text IS NULL
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(search)::text IS NULL
        OR p.title ILIKE '%' || sqlc.arg(search)::text || '%'
        OR p.slug ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug)::text)
@@ -34,9 +35,10 @@ SELECT p.id,
        COALESCE((SELECT COUNT(*) FROM product_variants WHERE product_id = p.id), 0)::int AS variant_count,
        (SELECT sku FROM product_variants WHERE product_id = p.id ORDER BY sku NULLS LAST LIMIT 1) AS primary_sku
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(search)::text IS NULL
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(search)::text IS NULL
        OR p.title ILIKE '%' || sqlc.arg(search)::text || '%'
        OR p.slug ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug)::text)
@@ -63,9 +65,10 @@ SELECT p.id,
        b.name AS brand_name,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE p.id = sqlc.arg(id)
+  AND p.tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: AdminCreateProduct :one
@@ -81,7 +84,7 @@ VALUES (
     sqlc.narg(thumbnail),
     sqlc.arg(badges),
     sqlc.narg(description),
-    COALESCE(sqlc.narg(tenant_id)::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    sqlc.arg(tenant_id)
 )
 RETURNING id;
 
@@ -99,31 +102,37 @@ SET title       = COALESCE(sqlc.narg(title), title),
     description = CASE WHEN sqlc.arg(set_description)::boolean THEN sqlc.narg(description) ELSE description END,
     updated_at  = now()
 WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 RETURNING id;
 
 -- name: AdminDeleteProduct :execrows
-DELETE FROM products WHERE id = sqlc.arg(id);
+DELETE FROM products WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminGetProductIDBySlug :one
-SELECT id FROM products WHERE slug = sqlc.arg(slug) LIMIT 1;
+SELECT id FROM products WHERE slug = sqlc.arg(slug) AND tenant_id = sqlc.arg(tenant_id) LIMIT 1;
 
 -- name: AdminReplaceProductImages :exec
-DELETE FROM product_images WHERE product_id = sqlc.arg(product_id);
+DELETE FROM product_images WHERE product_id = sqlc.arg(product_id)
+  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductImage :exec
 INSERT INTO product_images (product_id, url, sort_order)
-VALUES (sqlc.arg(product_id), sqlc.arg(url), sqlc.arg(sort_order));
+SELECT sqlc.arg(product_id), sqlc.arg(url), sqlc.arg(sort_order)
+WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminDeleteProductSpecs :exec
-DELETE FROM product_specs WHERE product_id = sqlc.arg(product_id);
+DELETE FROM product_specs WHERE product_id = sqlc.arg(product_id)
+  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductSpec :exec
 INSERT INTO product_specs (product_id, key, value)
-VALUES (sqlc.arg(product_id), sqlc.arg(key), sqlc.arg(value));
+SELECT sqlc.arg(product_id), sqlc.arg(key), sqlc.arg(value)
+WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductVariant :one
 INSERT INTO product_variants (product_id, sku, price, stock, attributes)
-VALUES (sqlc.arg(product_id), sqlc.narg(sku), sqlc.arg(price), sqlc.arg(stock), sqlc.arg(attributes))
+SELECT sqlc.arg(product_id), sqlc.narg(sku), sqlc.arg(price), sqlc.arg(stock), sqlc.arg(attributes)
+WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
 RETURNING id;
 
 -- name: AdminUpdateProductVariant :one
@@ -132,16 +141,20 @@ SET sku        = COALESCE(sqlc.narg(sku), sku),
     price      = COALESCE(sqlc.narg(price), price),
     stock      = COALESCE(sqlc.narg(stock), stock),
     attributes = COALESCE(sqlc.narg(attributes), attributes)
-WHERE id = sqlc.arg(id) AND product_id = sqlc.arg(product_id)
+WHERE product_variants.id = sqlc.arg(id) AND product_id = sqlc.arg(product_id)
+  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
 RETURNING id, product_id, sku, price, stock, attributes;
 
 -- name: AdminDeleteProductVariant :execrows
-DELETE FROM product_variants WHERE id = sqlc.arg(id) AND product_id = sqlc.arg(product_id);
+DELETE FROM product_variants
+WHERE product_variants.id = sqlc.arg(id) AND product_id = sqlc.arg(product_id)
+  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminGetPrimaryVariant :one
 SELECT id, product_id, sku, price, stock, attributes
 FROM product_variants
 WHERE product_id = sqlc.arg(product_id)
+  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
 ORDER BY sku NULLS LAST, id
 LIMIT 1;
 
@@ -149,7 +162,7 @@ LIMIT 1;
 UPDATE products
 SET in_stock   = sqlc.arg(in_stock),
     updated_at = now()
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminListCategories :many
 SELECT c.id,
@@ -158,8 +171,9 @@ SELECT c.id,
        c.parent_id,
        c.created_at,
        c.updated_at,
-       COALESCE((SELECT COUNT(*) FROM products WHERE category_id = c.id), 0)::int AS product_count
+       COALESCE((SELECT COUNT(*) FROM products WHERE category_id = c.id AND tenant_id = c.tenant_id), 0)::int AS product_count
 FROM categories c
+WHERE c.tenant_id = sqlc.arg(tenant_id)
 ORDER BY c.name ASC;
 
 -- name: AdminCreateCategory :one
@@ -168,7 +182,7 @@ VALUES (
     sqlc.arg(name),
     sqlc.arg(slug),
     sqlc.narg(parent_id),
-    COALESCE(sqlc.narg(tenant_id)::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    sqlc.arg(tenant_id)
 )
 RETURNING id, name, slug, parent_id, created_at, updated_at;
 
@@ -179,10 +193,11 @@ SET name       = COALESCE(sqlc.narg(name), name),
     parent_id  = CASE WHEN sqlc.arg(set_parent)::boolean THEN sqlc.narg(parent_id) ELSE parent_id END,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 RETURNING id, name, slug, parent_id, created_at, updated_at;
 
 -- name: AdminDeleteCategory :execrows
-DELETE FROM categories WHERE id = sqlc.arg(id);
+DELETE FROM categories WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminListBrands :many
 SELECT b.id,
@@ -190,8 +205,9 @@ SELECT b.id,
        b.slug,
        b.created_at,
        b.updated_at,
-       COALESCE((SELECT COUNT(*) FROM products WHERE brand_id = b.id), 0)::int AS product_count
+       COALESCE((SELECT COUNT(*) FROM products WHERE brand_id = b.id AND tenant_id = b.tenant_id), 0)::int AS product_count
 FROM brands b
+WHERE b.tenant_id = sqlc.arg(tenant_id)
 ORDER BY b.name ASC;
 
 -- name: AdminCreateBrand :one
@@ -199,7 +215,7 @@ INSERT INTO brands (name, slug, tenant_id)
 VALUES (
     sqlc.arg(name),
     sqlc.arg(slug),
-    COALESCE(sqlc.narg(tenant_id)::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    sqlc.arg(tenant_id)
 )
 RETURNING id, name, slug, created_at, updated_at;
 
@@ -209,7 +225,8 @@ SET name       = COALESCE(sqlc.narg(name), name),
     slug       = COALESCE(sqlc.narg(slug), slug),
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 RETURNING id, name, slug, created_at, updated_at;
 
 -- name: AdminDeleteBrand :execrows
-DELETE FROM brands WHERE id = sqlc.arg(id);
+DELETE FROM brands WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);

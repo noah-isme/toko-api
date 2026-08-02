@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noah-isme/backend-toko/internal/tenant"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -44,9 +45,19 @@ func (c *Cache) ProductListKey() string {
 	return c.key("catalog", "products", "list", "popular")
 }
 
+// ProductListKeyForTenant returns a tenant-isolated product-list cache key.
+func (c *Cache) ProductListKeyForTenant(tenantID string) string {
+	return c.key("tenant", tenantID, "catalog", "products", "list", "popular")
+}
+
 // ProductDetailKey returns the cache key for a product detail payload.
 func (c *Cache) ProductDetailKey(slug string) string {
 	return c.key("catalog", "products", "detail", slug)
+}
+
+// ProductDetailKeyForTenant returns a tenant-isolated product-detail cache key.
+func (c *Cache) ProductDetailKeyForTenant(tenantID, slug string) string {
+	return c.key("tenant", tenantID, "catalog", "products", "detail", slug)
 }
 
 // GetJSON unmarshals a cached JSON payload into dst. It reports whether the key existed.
@@ -101,7 +112,11 @@ func (c *Cache) InvalidateProduct(ctx context.Context, slug string) {
 	if c == nil {
 		return
 	}
-	c.Delete(ctx, c.ProductDetailKey(slug))
+	tenantID := "unscoped"
+	if value, ok := tenant.FromContext(ctx); ok {
+		tenantID = value
+	}
+	c.Delete(ctx, c.ProductDetailKeyForTenant(tenantID, slug))
 	c.InvalidateList(ctx)
 }
 
@@ -110,5 +125,9 @@ func (c *Cache) InvalidateList(ctx context.Context) {
 	if c == nil {
 		return
 	}
-	c.Delete(ctx, c.ProductListKey())
+	tenantID := "unscoped"
+	if value, ok := tenant.FromContext(ctx); ok {
+		tenantID = value
+	}
+	c.Delete(ctx, c.ProductListKeyForTenant(tenantID))
 }

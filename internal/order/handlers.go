@@ -287,6 +287,15 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to cancel order", nil)
 		return
 	}
+	if reservations, reservationErr := h.Q.ListInventoryReservationsByOrder(r.Context(), ord.ID); reservationErr == nil {
+		for _, reservation := range reservations {
+			if _, transitionErr := h.Q.TransitionInventoryReservation(r.Context(), dbgen.TransitionInventoryReservationParams{
+				ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusRELEASED,
+			}); transitionErr == nil {
+				_ = h.Q.ReleaseVariantStock(r.Context(), dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty})
+			}
+		}
+	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "cancelled"}})
 }
 

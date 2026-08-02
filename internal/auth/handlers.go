@@ -7,7 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/noah-isme/backend-toko/internal/common"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 const defaultRefreshCookiePath = "/api/v1/auth"
@@ -16,6 +20,9 @@ const defaultRefreshCookiePath = "/api/v1/auth"
 type Handler struct {
 	Service *Service
 	Mailer  common.EmailSender
+	// MembershipPool provisions the registering user in the tenant selected by
+	// the request. It is optional for isolated auth unit tests.
+	MembershipPool *pgxpool.Pool
 
 	RefreshCookieName     string
 	RefreshCookieDomain   string
@@ -65,6 +72,22 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeError(w, err)
 		return
+	}
+	if h.MembershipPool != nil {
+		tenantID, ok := tenant.FromContext(r.Context())
+		if !ok {
+			common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+			return
+		}
+		var tenantUUID, userUUID pgtype.UUID
+		if err := tenantUUID.Scan(tenantID); err != nil || userUUID.Scan(user.ID) != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INVALID_ID", "invalid tenant or user identifier", nil)
+			return
+		}
+		if _, err := h.MembershipPool.Exec(r.Context(), `INSERT INTO tenant_memberships(tenant_id,user_id,role,status) VALUES($1,$2,'CUSTOMER','ACTIVE') ON CONFLICT(tenant_id,user_id) DO NOTHING`, tenantUUID, userUUID); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "MEMBERSHIP_FAILED", "failed to provision tenant membership", nil)
+			return
+		}
 	}
 	common.JSON(w, http.StatusCreated, map[string]any{"data": user})
 }

@@ -14,17 +14,19 @@ import (
 const countProductsPublic = `-- name: CountProductsPublic :one
 SELECT COUNT(*)
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $1))
-  AND ($2::text IS NULL OR c.slug = $2)
-  AND ($3::text IS NULL OR b.slug = $3)
-  AND ($4::bigint IS NULL OR p.price >= $4)
-  AND ($5::bigint IS NULL OR p.price <= $5)
-  AND ($6::boolean IS NULL OR p.in_stock = $6)
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $2))
+  AND ($3::text IS NULL OR c.slug = $3)
+  AND ($4::text IS NULL OR b.slug = $4)
+  AND ($5::bigint IS NULL OR p.price >= $5)
+  AND ($6::bigint IS NULL OR p.price <= $6)
+  AND ($7::boolean IS NULL OR p.in_stock = $7)
 `
 
 type CountProductsPublicParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
 	Q            pgtype.Text `json:"q"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
@@ -35,6 +37,7 @@ type CountProductsPublicParams struct {
 
 func (q *Queries) CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countProductsPublic,
+		arg.TenantID,
 		arg.Q,
 		arg.CategorySlug,
 		arg.BrandSlug,
@@ -63,8 +66,14 @@ SELECT id,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
 WHERE slug = $1
+  AND tenant_id = $2
 LIMIT 1
 `
+
+type GetProductBySlugParams struct {
+	Slug     string      `json:"slug"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type GetProductBySlugRow struct {
 	ID          pgtype.UUID        `json:"id"`
@@ -82,8 +91,8 @@ type GetProductBySlugRow struct {
 	TotalStock  int32              `json:"total_stock"`
 }
 
-func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error) {
-	row := q.db.QueryRow(ctx, getProductBySlug, slug)
+func (q *Queries) GetProductBySlug(ctx context.Context, arg GetProductBySlugParams) (GetProductBySlugRow, error) {
+	row := q.db.QueryRow(ctx, getProductBySlug, arg.Slug, arg.TenantID)
 	var i GetProductBySlugRow
 	err := row.Scan(
 		&i.ID,
@@ -109,11 +118,18 @@ SELECT id,
        slug,
        price,
        category_id,
-       brand_id
+       brand_id,
+       in_stock
 FROM products
 WHERE id = $1
+  AND tenant_id = $2
 LIMIT 1
 `
+
+type GetProductForCartParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type GetProductForCartRow struct {
 	ID         pgtype.UUID `json:"id"`
@@ -122,10 +138,11 @@ type GetProductForCartRow struct {
 	Price      int64       `json:"price"`
 	CategoryID pgtype.UUID `json:"category_id"`
 	BrandID    pgtype.UUID `json:"brand_id"`
+	InStock    bool        `json:"in_stock"`
 }
 
-func (q *Queries) GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error) {
-	row := q.db.QueryRow(ctx, getProductForCart, id)
+func (q *Queries) GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error) {
+	row := q.db.QueryRow(ctx, getProductForCart, arg.ID, arg.TenantID)
 	var i GetProductForCartRow
 	err := row.Scan(
 		&i.ID,
@@ -134,19 +151,27 @@ func (q *Queries) GetProductForCart(ctx context.Context, id pgtype.UUID) (GetPro
 		&i.Price,
 		&i.CategoryID,
 		&i.BrandID,
+		&i.InStock,
 	)
 	return i, err
 }
 
 const getVariantForCart = `-- name: GetVariantForCart :one
-SELECT id,
-       product_id,
-       price,
-       stock
-FROM product_variants
-WHERE id = $1
+SELECT v.id,
+       v.product_id,
+       v.price,
+       v.stock
+FROM product_variants v
+JOIN products p ON p.id = v.product_id
+WHERE v.id = $1
+  AND p.tenant_id = $2
 LIMIT 1
 `
+
+type GetVariantForCartParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type GetVariantForCartRow struct {
 	ID        pgtype.UUID `json:"id"`
@@ -155,8 +180,8 @@ type GetVariantForCartRow struct {
 	Stock     int32       `json:"stock"`
 }
 
-func (q *Queries) GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error) {
-	row := q.db.QueryRow(ctx, getVariantForCart, id)
+func (q *Queries) GetVariantForCart(ctx context.Context, arg GetVariantForCartParams) (GetVariantForCartRow, error) {
+	row := q.db.QueryRow(ctx, getVariantForCart, arg.ID, arg.TenantID)
 	var i GetVariantForCartRow
 	err := row.Scan(
 		&i.ID,
@@ -216,28 +241,30 @@ SELECT p.id,
        c.name AS category_name,
        b.id   AS brand_id,
        b.name AS brand_name,
-       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id), 0)::float8 AS rating,
-       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id), 0)::int AS review_count,
+       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::float8 AS rating,
+       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $1))
-  AND ($2::text IS NULL OR c.slug = $2)
-  AND ($3::text IS NULL OR b.slug = $3)
-  AND ($4::bigint IS NULL OR p.price >= $4)
-  AND ($5::bigint IS NULL OR p.price <= $5)
-  AND ($6::boolean IS NULL OR p.in_stock = $6)
-ORDER BY CASE WHEN $7::text = 'price:asc' THEN p.price END ASC,
-         CASE WHEN $7::text = 'price:desc' THEN p.price END DESC,
-         CASE WHEN $7::text = 'title:asc' THEN p.title END ASC,
-         CASE WHEN $7::text = 'title:desc' THEN p.title END DESC,
-         CASE WHEN $1::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', $1)) END DESC,
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $2))
+  AND ($3::text IS NULL OR c.slug = $3)
+  AND ($4::text IS NULL OR b.slug = $4)
+  AND ($5::bigint IS NULL OR p.price >= $5)
+  AND ($6::bigint IS NULL OR p.price <= $6)
+  AND ($7::boolean IS NULL OR p.in_stock = $7)
+ORDER BY CASE WHEN $8::text = 'price:asc' THEN p.price END ASC,
+         CASE WHEN $8::text = 'price:desc' THEN p.price END DESC,
+         CASE WHEN $8::text = 'title:asc' THEN p.title END ASC,
+         CASE WHEN $8::text = 'title:desc' THEN p.title END DESC,
+         CASE WHEN $2::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', $2)) END DESC,
          p.created_at DESC
-LIMIT $9 OFFSET $8
+LIMIT $10 OFFSET $9
 `
 
 type ListProductsPublicParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
 	Q            pgtype.Text `json:"q"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
@@ -270,6 +297,7 @@ type ListProductsPublicRow struct {
 
 func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error) {
 	rows, err := q.db.Query(ctx, listProductsPublic,
+		arg.TenantID,
 		arg.Q,
 		arg.CategorySlug,
 		arg.BrandSlug,
@@ -328,6 +356,7 @@ SELECT p.id,
 FROM products p
 WHERE p.category_id = $1
   AND p.slug <> $2
+  AND p.tenant_id = $3
 ORDER BY p.created_at DESC
 LIMIT 8
 `
@@ -335,6 +364,7 @@ LIMIT 8
 type ListRelatedByCategoryParams struct {
 	CategoryID pgtype.UUID `json:"category_id"`
 	Slug       string      `json:"slug"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
 }
 
 type ListRelatedByCategoryRow struct {
@@ -350,7 +380,7 @@ type ListRelatedByCategoryRow struct {
 }
 
 func (q *Queries) ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error) {
-	rows, err := q.db.Query(ctx, listRelatedByCategory, arg.CategoryID, arg.Slug)
+	rows, err := q.db.Query(ctx, listRelatedByCategory, arg.CategoryID, arg.Slug, arg.TenantID)
 	if err != nil {
 		return nil, err
 	}

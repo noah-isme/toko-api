@@ -7,10 +7,26 @@ Panduan cepat integrasi API Toko untuk tim frontend.
 ### Base URL
 ```javascript
 // .env.local
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1
+NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
 # atau production
-NEXT_PUBLIC_API_BASE_URL=https://api.toko.com/api/v1
+NEXT_PUBLIC_API_URL=https://api.toko.com/api/v1
 ```
+
+The storefront uses this value directly as the API base URL. Do not append
+another `/api/v1` in individual requests. In local mock mode, the storefront
+uses `NEXT_PUBLIC_API_URL=mock` and MSW instead of this backend.
+
+### Current commerce workflows
+
+The API-backed storefront currently consumes:
+
+- `GET /api/v1/vouchers` and `GET /api/v1/flash-sales` for public promotion discovery.
+- `GET/PUT /api/v1/users/me/privacy`, `GET /api/v1/users/me/data-export`, and `DELETE /api/v1/users/me` for account privacy controls.
+- `POST /api/v1/orders/{orderId}/returns`, `/api/v1/returns`, and `/api/v1/support/tickets` for customer operations.
+- `GET /api/v1/payments/{orderId}/instructions` and `POST /api/v1/payments/{orderId}/proof` for payment guidance and proof upload.
+
+Admin workflows for returns, support, customers, inventory, settings, and
+flash-sale campaigns are listed in the [modular contract index](contracts/README.md).
 
 ### API Client Setup (Axios)
 
@@ -19,7 +35,7 @@ NEXT_PUBLIC_API_BASE_URL=https://api.toko.com/api/v1
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL,
+  baseURL: process.env.NEXT_PUBLIC_API_URL,
   timeout: 30000,
   withCredentials: true, // Important! Untuk cookie refresh_token
 });
@@ -46,7 +62,7 @@ api.interceptors.response.use(
       try {
         // Refresh token (cookie otomatis dikirim)
         const { data } = await axios.post(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/v1/auth/refresh`,
+          `${process.env.NEXT_PUBLIC_API_URL}/auth/refresh`,
           {},
           { withCredentials: true }
         );

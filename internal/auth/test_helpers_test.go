@@ -49,11 +49,11 @@ func (f *fakeQueries) CountWebhookDeliveries(context.Context, dbgen.CountWebhook
 	return 0, errNotImplemented
 }
 
-func (f *fakeQueries) ListBrands(context.Context) ([]dbgen.ListBrandsRow, error) {
+func (f *fakeQueries) ListBrands(context.Context, pgtype.UUID) ([]dbgen.ListBrandsRow, error) {
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) GetBrandByID(context.Context, pgtype.UUID) (dbgen.GetBrandByIDRow, error) {
+func (f *fakeQueries) GetBrandByID(context.Context, dbgen.GetBrandByIDParams) (dbgen.GetBrandByIDRow, error) {
 	return dbgen.GetBrandByIDRow{}, errNotImplemented
 }
 
@@ -61,11 +61,11 @@ func (f *fakeQueries) GetBrandBySlug(context.Context, string) (dbgen.GetBrandByS
 	return dbgen.GetBrandBySlugRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) ListCategories(context.Context) ([]dbgen.ListCategoriesRow, error) {
+func (f *fakeQueries) ListCategories(context.Context, pgtype.UUID) ([]dbgen.ListCategoriesRow, error) {
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) GetCategoryByID(context.Context, pgtype.UUID) (dbgen.GetCategoryByIDRow, error) {
+func (f *fakeQueries) GetCategoryByID(context.Context, dbgen.GetCategoryByIDParams) (dbgen.GetCategoryByIDRow, error) {
 	return dbgen.GetCategoryByIDRow{}, errNotImplemented
 }
 
@@ -81,7 +81,7 @@ func (f *fakeQueries) ListProductsPublic(context.Context, dbgen.ListProductsPubl
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) GetProductBySlug(context.Context, string) (dbgen.GetProductBySlugRow, error) {
+func (f *fakeQueries) GetProductBySlug(context.Context, dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error) {
 	return dbgen.GetProductBySlugRow{}, errNotImplemented
 }
 
@@ -569,6 +569,30 @@ func (f *fakeQueries) DecrementVariantStock(context.Context, dbgen.DecrementVari
 	return errNotImplemented
 }
 
+func (f *fakeQueries) CreateInventoryReservation(context.Context, dbgen.CreateInventoryReservationParams) (dbgen.InventoryReservation, error) {
+	return dbgen.InventoryReservation{}, errNotImplemented
+}
+
+func (f *fakeQueries) ListExpiredInventoryReservationsForTenant(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ListInventoryReservationsByOrder(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
+	return nil, errNotImplemented
+}
+
+func (f *fakeQueries) ReleaseVariantStock(context.Context, dbgen.ReleaseVariantStockParams) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ReserveVariantStock(context.Context, dbgen.ReserveVariantStockParams) (pgtype.UUID, error) {
+	return pgtype.UUID{}, errNotImplemented
+}
+
+func (f *fakeQueries) TransitionInventoryReservation(context.Context, dbgen.TransitionInventoryReservationParams) (dbgen.InventoryReservation, error) {
+	return dbgen.InventoryReservation{}, errNotImplemented
+}
+
 func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, string) error {
 	return errNotImplemented
 }
@@ -581,15 +605,15 @@ func (f *fakeQueries) FindCartItemByProductVariant(context.Context, dbgen.FindCa
 	return dbgen.CartItem{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetActiveCartByAnon(context.Context, pgtype.Text) (dbgen.Cart, error) {
+func (f *fakeQueries) GetActiveCartByAnon(context.Context, dbgen.GetActiveCartByAnonParams) (dbgen.Cart, error) {
 	return dbgen.Cart{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetActiveCartByUser(context.Context, pgtype.UUID) (dbgen.Cart, error) {
+func (f *fakeQueries) GetActiveCartByUser(context.Context, dbgen.GetActiveCartByUserParams) (dbgen.Cart, error) {
 	return dbgen.Cart{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetCartByID(context.Context, pgtype.UUID) (dbgen.Cart, error) {
+func (f *fakeQueries) GetCartByID(context.Context, dbgen.GetCartByIDParams) (dbgen.Cart, error) {
 	return dbgen.Cart{}, errNotImplemented
 }
 
@@ -601,11 +625,11 @@ func (f *fakeQueries) GetOrderByIDForUser(context.Context, dbgen.GetOrderByIDFor
 	return dbgen.Order{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetProductForCart(context.Context, pgtype.UUID) (dbgen.GetProductForCartRow, error) {
+func (f *fakeQueries) GetProductForCart(context.Context, dbgen.GetProductForCartParams) (dbgen.GetProductForCartRow, error) {
 	return dbgen.GetProductForCartRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetVariantForCart(context.Context, pgtype.UUID) (dbgen.GetVariantForCartRow, error) {
+func (f *fakeQueries) GetVariantForCart(context.Context, dbgen.GetVariantForCartParams) (dbgen.GetVariantForCartRow, error) {
 	return dbgen.GetVariantForCartRow{}, errNotImplemented
 }
 

@@ -38,12 +38,18 @@ type Config struct {
 	MidtransClientKey          string
 	MidtransBaseURL            string
 	XenditSecretKey            string
+	XenditCallbackToken        string
 	XenditBaseURL              string
+	PaymentBankName            string
+	PaymentBankAccountName     string
+	PaymentBankAccountNumber   string
+	PaymentQRURL               string
 	PaymentProvider            string
 	PaymentSandbox             bool
 	PaymentIntentTTL           time.Duration
 	PaymentCallbackBaseURL     string
 	RajaOngkirAPIKey           string
+	RajaOngkirBaseURL          string
 	ShippingOriginCode         string
 	ShippingTrackReplayTTL     time.Duration
 	ShippingProvider           string
@@ -171,15 +177,21 @@ func Load() (*Config, error) {
 		MidtransClientKey:        k.String("MIDTRANS_CLIENT_KEY"),
 		MidtransBaseURL:          strings.TrimSpace(k.String("MIDTRANS_BASE_URL")),
 		XenditSecretKey:          k.String("XENDIT_SECRET_KEY"),
+		XenditCallbackToken:      k.String("XENDIT_CALLBACK_TOKEN"),
 		XenditBaseURL:            strings.TrimSpace(k.String("XENDIT_BASE_URL")),
+		PaymentBankName:          strings.TrimSpace(k.String("PAYMENT_BANK_NAME")),
+		PaymentBankAccountName:   strings.TrimSpace(k.String("PAYMENT_BANK_ACCOUNT_NAME")),
+		PaymentBankAccountNumber: strings.TrimSpace(k.String("PAYMENT_BANK_ACCOUNT_NUMBER")),
+		PaymentQRURL:             strings.TrimSpace(k.String("PAYMENT_QR_URL")),
 		PaymentProvider:          strings.ToLower(valueOrDefault(k.String("PAYMENT_PROVIDER"), "midtrans")),
 		PaymentSandbox:           parseBool(k.String("PAYMENT_SANDBOX")),
 		PaymentIntentTTL:         time.Duration(parsePositiveInt(k.String("PAYMENT_INTENT_EXPIRES_MIN"), 15)) * time.Minute,
 		PaymentCallbackBaseURL:   strings.TrimSpace(k.String("PAYMENT_CALLBACK_BASE_URL")),
 		RajaOngkirAPIKey:         k.String("RAJAONGKIR_API_KEY"),
+		RajaOngkirBaseURL:        strings.TrimSpace(k.String("RAJAONGKIR_BASE_URL")),
 		ShippingOriginCode:       valueOrDefault(k.String("SHIPPING_ORIGIN_CODE"), ""),
 		ShippingTrackReplayTTL:   time.Duration(parsePositiveInt(k.String("SHIPPING_TRACK_REPLAY_TTL_SEC"), 600)) * time.Second,
-		ShippingProvider:         strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir-mock")),
+		ShippingProvider:         strings.ToLower(valueOrDefault(k.String("SHIPPING_PROVIDER"), "rajaongkir")),
 		ShippingCallbackBaseURL:  strings.TrimSpace(k.String("SHIPPING_CALLBACK_BASE_URL")),
 		NotifyOnShipped:          parseBoolWithDefault(k.String("NOTIFY_ON_SHIPPED"), true),
 		NotifyOnOutForDelivery:   parseBoolWithDefault(k.String("NOTIFY_ON_OUT_FOR_DELIVERY"), true),

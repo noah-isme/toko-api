@@ -89,5 +89,52 @@ func (h *Handler) TopProducts(w http.ResponseWriter, r *http.Request) {
 
 // Overview aggregates key analytics metrics for dashboards.
 func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
-	common.JSONError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "overview will be available soon", nil)
+	if h == nil || h.Svc == nil {
+		common.JSONError(w, http.StatusInternalServerError, "ANALYTICS_NOT_CONFIGURED", "analytics service not configured", nil)
+		return
+	}
+	query := r.URL.Query()
+	now := h.Svc.now()
+	days := common.AtoiDefault(query.Get("days"), h.Svc.DefaultRange)
+	if days <= 0 {
+		days = 30
+	}
+	to := now
+	from := to.AddDate(0, 0, -days)
+	if raw := query.Get("from"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			common.JSONError(w, 400, "BAD_REQUEST", "invalid from date", nil)
+			return
+		}
+		from = parsed
+	}
+	if raw := query.Get("to"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			common.JSONError(w, 400, "BAD_REQUEST", "invalid to date", nil)
+			return
+		}
+		to = parsed
+	}
+	if !from.Before(to) {
+		common.JSONError(w, 400, "BAD_REQUEST", "from must be before to", nil)
+		return
+	}
+	rows, err := h.Svc.SalesRange(r.Context(), from, to)
+	if err != nil {
+		common.JSONError(w, 500, "ANALYTICS_ERROR", err.Error(), nil)
+		return
+	}
+	var revenue, paidOrders, allOrders int64
+	for _, row := range rows {
+		revenue += row.Revenue
+		paidOrders += row.PaidOrders
+		allOrders += row.AllOrders
+	}
+	average := int64(0)
+	if paidOrders > 0 {
+		average = revenue / paidOrders
+	}
+	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"from": from, "to": to, "totalRevenue": revenue, "totalOrders": allOrders, "paidOrders": paidOrders, "averageOrderValue": average}})
 }

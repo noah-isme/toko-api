@@ -21,7 +21,7 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
 - Admin DLQ endpoints tersedia di `/api/v1/admin/queue/*` untuk list, replay, dan stats antrean.
 
 ## Operations
-- Database tuning indexes shipped in `migrations/0013_perf_indexes.up.sql`.
+- Database tuning indexes shipped in `migrations/000015_perf_indexes.up.sql`.
 - Connection pool, statement cache, and concurrency guard configurable via environment variables (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME_MIN`, `DB_STATEMENT_CACHE_CAPACITY`, `HTTP_MAX_INFLIGHT`).
 - Redis cache prefix & TTLs adjustable (`REDIS_CACHE_PREFIX`, `CATALOG_CACHE_TTL_SEC`, `ANALYTICS_CACHE_TTL_SEC`).
 
@@ -64,6 +64,21 @@ make migrate-down      # roll back one migration
 
 A dirty schema (a previous run that failed partway) exits non-zero rather than
 continuing; resolve it manually, then `go run ./cmd/migrate force <version>`.
+
+The current commerce feature migrations are applied in order after the base
+schema:
+
+- `000027_inventory_reservations` — inventory reservation support.
+- `000028_customer_operations` — returns, refunds, and support tickets.
+- `000029_tenant_memberships` — tenant membership and role enforcement.
+- `000030_campaigns` — voucher/flash-sale campaign data.
+- `000031_privacy_preferences` — persisted account privacy controls.
+- `000032_payment_proofs` — private payment-proof storage.
+- `000033_flash_sale_cart_items` — campaign-aware cart reservations.
+
+Payment instructions use the merchant values in `.env`/`.env.example`:
+`PAYMENT_BANK_NAME`, `PAYMENT_BANK_ACCOUNT_NAME`,
+`PAYMENT_BANK_ACCOUNT_NUMBER`, and optional `PAYMENT_QR_URL`.
 
 ### Transactional Email
 Password reset and email verification links are only delivered when SMTP is

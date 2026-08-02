@@ -2,13 +2,16 @@ package reviews
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/noah-isme/backend-toko/internal/common"
+	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
@@ -19,7 +22,7 @@ type Handler struct {
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	productIDStr := chi.URLParam(r, "id")
-	
+
 	var req struct {
 		Rating  int    `json:"rating"`
 		Comment string `json:"comment"`
@@ -34,7 +37,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
-	
+
 	userIDStr, ok := common.UserID(ctx)
 	if !ok {
 		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "UNAUTHORIZED", nil)
@@ -129,7 +132,49 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+	if h == nil || h.Svc == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "review service not configured", nil)
+		return
+	}
+	productID, err := h.resolveProductRef(r, chi.URLParam(r, "id"))
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
+		return
+	}
+	userIDStr, ok := common.UserID(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "login required", nil)
+		return
+	}
+	userID, err := toUUID(userIDStr)
+	if err != nil {
+		common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
+		return
+	}
+	tenantIDStr, ok := tenant.FromContext(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "missing tenant context", nil)
+		return
+	}
+	tenantID, err := toUUID(tenantIDStr)
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "INVALID_TENANT_ID", "invalid tenant id", nil)
+		return
+	}
+	reviewID, err := h.Svc.CheckUserReview(r.Context(), userID, productID, tenantID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "review not found", nil)
+			return
+		}
+		common.JSONError(w, http.StatusInternalServerError, "DELETE_FAILED", "failed to find review", err.Error())
+		return
+	}
+	if err := h.Svc.Delete(r.Context(), reviewID, userID, tenantID); err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "DELETE_FAILED", "failed to delete review", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func toUUID(value string) (pgtype.UUID, error) {
@@ -147,7 +192,15 @@ func (h *Handler) resolveProductRef(r *http.Request, value string) (pgtype.UUID,
 	if id, err := toUUID(value); err == nil {
 		return id, nil
 	}
-	product, err := h.Svc.Q.GetProductBySlug(r.Context(), value)
+	tenantID, ok := tenant.FromContext(r.Context())
+	if !ok {
+		return pgtype.UUID{}, errors.New("tenant is required")
+	}
+	tenantUUID, err := toUUID(tenantID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	product, err := h.Svc.Q.GetProductBySlug(r.Context(), dbgen.GetProductBySlugParams{Slug: value, TenantID: tenantUUID})
 	if err != nil {
 		return pgtype.UUID{}, err
 	}

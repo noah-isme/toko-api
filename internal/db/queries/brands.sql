@@ -1,12 +1,14 @@
 -- name: ListBrands :many
 SELECT id, name, slug
 FROM brands
+WHERE tenant_id = sqlc.arg(tenant_id)
 ORDER BY name ASC;
 
 -- name: GetBrandByID :one
 SELECT id, name, slug
 FROM brands
-WHERE id = $1
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: GetBrandBySlug :one

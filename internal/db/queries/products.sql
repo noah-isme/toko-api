@@ -1,9 +1,10 @@
 -- name: CountProductsPublic :one
 SELECT COUNT(*)
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -24,13 +25,14 @@ SELECT p.id,
        c.name AS category_name,
        b.id   AS brand_id,
        b.name AS brand_name,
-       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id), 0)::float8 AS rating,
-       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id), 0)::int AS review_count,
+       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::float8 AS rating,
+       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -59,7 +61,8 @@ SELECT id,
        created_at,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
-WHERE slug = $1
+WHERE slug = sqlc.arg(slug)
+  AND tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: ListVariantsByProduct :many
@@ -104,6 +107,7 @@ SELECT p.id,
 FROM products p
 WHERE p.category_id = $1
   AND p.slug <> $2
+  AND p.tenant_id = sqlc.arg(tenant_id)
 ORDER BY p.created_at DESC
 LIMIT 8;
 
@@ -113,16 +117,20 @@ SELECT id,
        slug,
        price,
        category_id,
-       brand_id
+       brand_id,
+       in_stock
 FROM products
-WHERE id = $1
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: GetVariantForCart :one
-SELECT id,
-       product_id,
-       price,
-       stock
-FROM product_variants
-WHERE id = $1
+SELECT v.id,
+       v.product_id,
+       v.price,
+       v.stock
+FROM product_variants v
+JOIN products p ON p.id = v.product_id
+WHERE v.id = sqlc.arg(id)
+  AND p.tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;

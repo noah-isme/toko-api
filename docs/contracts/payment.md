@@ -88,3 +88,8 @@ Authorization: Bearer <token>
 ```
 
 Common error codes: `UNAUTHORIZED`, `BAD_REQUEST`, `NOT_FOUND`, `STATUS_ERROR`.
+
+## 6.3 Payment instructions and proof
+
+- `GET /api/v1/payments/{orderId}/instructions` returns the configured method-specific steps, bank details, and QR URL.
+- `POST /api/v1/payments/{orderId}/proof` accepts a multipart `proof` file up to 5 MB and stores it privately against the order.

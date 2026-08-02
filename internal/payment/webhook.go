@@ -184,17 +184,27 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 				common.JSONError(w, http.StatusInternalServerError, "ORDER_ITEMS_ERROR", err.Error(), nil)
 				return
 			}
+			reservations, err := q.ListInventoryReservationsByOrder(ctx, order.ID)
+			if err != nil {
+				span.RecordError(err)
+				common.JSONError(w, http.StatusInternalServerError, "RESERVATIONS_ERROR", err.Error(), nil)
+				return
+			}
 			productSlugs := make(map[string]struct{})
 			for _, it := range items {
-				if it.VariantID.Valid {
-					if err := q.DecrementVariantStock(ctx, dbgen.DecrementVariantStockParams{Qty: int32(it.Qty), ID: it.VariantID}); err != nil {
-						span.RecordError(err)
-						common.JSONError(w, http.StatusInternalServerError, "STOCK_UPDATE_ERROR", err.Error(), nil)
-						return
-					}
-				}
 				if slug := strings.TrimSpace(it.Slug); slug != "" {
 					productSlugs[slug] = struct{}{}
+				}
+			}
+			for _, reservation := range reservations {
+				if _, err := q.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
+					ID:         reservation.ID,
+					FromStatus: dbgen.InventoryReservationStatusRESERVED,
+					ToStatus:   dbgen.InventoryReservationStatusCOMMITTED,
+				}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					span.RecordError(err)
+					common.JSONError(w, http.StatusInternalServerError, "RESERVATION_COMMIT_FAILED", err.Error(), nil)
+					return
 				}
 			}
 			if h.Voucher != nil && order.AppliedVoucherCode.Valid {
@@ -219,6 +229,24 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 			h.clearAnalyticsCache(ctx)
 		}
 	case dbgen.PaymentStatusFAILED, dbgen.PaymentStatusEXPIRED:
+		reservations, reservationErr := q.ListInventoryReservationsByOrder(ctx, order.ID)
+		if reservationErr != nil {
+			common.JSONError(w, http.StatusInternalServerError, "RESERVATIONS_ERROR", reservationErr.Error(), nil)
+			return
+		}
+		for _, reservation := range reservations {
+			if _, transitionErr := q.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
+				ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusRELEASED,
+			}); transitionErr == nil {
+				if releaseErr := q.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty}); releaseErr != nil {
+					common.JSONError(w, http.StatusInternalServerError, "STOCK_RELEASE_FAILED", releaseErr.Error(), nil)
+					return
+				}
+			} else if !errors.Is(transitionErr, pgx.ErrNoRows) {
+				common.JSONError(w, http.StatusInternalServerError, "RESERVATION_RELEASE_FAILED", transitionErr.Error(), nil)
+				return
+			}
+		}
 		if order.Status == dbgen.OrderStatusPENDINGPAYMENT {
 			if err := q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED}); err == nil {
 				orderCanceled = true

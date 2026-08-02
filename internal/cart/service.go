@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/tenant"
@@ -27,6 +28,7 @@ type Service struct {
 	Now                        func() time.Time
 	VoucherPerUserLimitDefault int
 	DefaultTenantID            pgtype.UUID
+	Pool                       *pgxpool.Pool
 }
 
 func (s *Service) resolveTenant(ctx context.Context) pgtype.UUID {
@@ -66,7 +68,7 @@ func (s *Service) EnsureCart(ctx context.Context, userID *string, anonID *string
 		if err != nil {
 			return dbgen.Cart{}, fmt.Errorf("parse user id: %w", err)
 		}
-		row, err := s.Q.GetActiveCartByUser(ctx, uid)
+		row, err := s.Q.GetActiveCartByUser(ctx, dbgen.GetActiveCartByUserParams{UserID: uid, TenantID: s.resolveTenant(ctx)})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				tID := s.resolveTenant(ctx)
@@ -108,7 +110,7 @@ func (s *Service) EnsureCart(ctx context.Context, userID *string, anonID *string
 	}
 
 	if anonID != nil && *anonID != "" {
-		row, err := s.Q.GetActiveCartByAnon(ctx, pgtype.Text{String: *anonID, Valid: true})
+		row, err := s.Q.GetActiveCartByAnon(ctx, dbgen.GetActiveCartByAnonParams{AnonID: pgtype.Text{String: *anonID, Valid: true}, TenantID: s.resolveTenant(ctx)})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				tID := s.resolveTenant(ctx)
@@ -154,6 +156,20 @@ func (s *Service) EnsureCart(ctx context.Context, userID *string, anonID *string
 
 // AddItem inserts or increments a cart item.
 func (s *Service) AddItem(ctx context.Context, cartID string, productID string, variantID *string, qty int) error {
+	return s.addItem(ctx, cartID, productID, variantID, qty, pgtype.UUID{})
+}
+
+// AddItemWithCampaign validates a flash-sale campaign on the server and keeps
+// the campaign price attached to the cart line for checkout.
+func (s *Service) AddItemWithCampaign(ctx context.Context, cartID string, productID string, variantID *string, qty int, campaignID string) error {
+	id, err := toUUID(campaignID)
+	if err != nil {
+		return fmt.Errorf("parse campaign id: %w", err)
+	}
+	return s.addItem(ctx, cartID, productID, variantID, qty, id)
+}
+
+func (s *Service) addItem(ctx context.Context, cartID string, productID string, variantID *string, qty int, campaignID pgtype.UUID) error {
 	if s == nil || s.Q == nil {
 		return errors.New("cart service not configured")
 	}
@@ -178,12 +194,30 @@ func (s *Service) AddItem(ctx context.Context, cartID string, productID string, 
 
 	expires := pgtype.Timestamptz{Time: s.now().Add(s.ttl()), Valid: true}
 	item, err := s.Q.FindCartItemByProductVariant(ctx, dbgen.FindCartItemByProductVariantParams{
-		CartID:    cID,
-		ProductID: pID,
-		VariantID: vID,
+		CartID:     cID,
+		ProductID:  pID,
+		VariantID:  vID,
+		CampaignID: campaignID,
 	})
 	if err == nil {
 		newQty := item.Qty + int32(qty)
+		if item.VariantID.Valid {
+			variant, stockErr := s.Q.GetVariantForCart(ctx, dbgen.GetVariantForCartParams{ID: item.VariantID, TenantID: s.resolveTenant(ctx)})
+			if stockErr != nil {
+				return stockErr
+			}
+			if int32(variant.Stock) < newQty {
+				return fmt.Errorf("requested quantity exceeds available stock: %w", ErrInvalidInput)
+			}
+		} else {
+			product, stockErr := s.Q.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: item.ProductID, TenantID: s.resolveTenant(ctx)})
+			if stockErr != nil {
+				return stockErr
+			}
+			if !product.InStock {
+				return fmt.Errorf("product out of stock: %w", ErrInvalidInput)
+			}
+		}
 		newSubtotal := int64(newQty) * item.UnitPrice
 		if _, err := s.Q.UpdateCartItemQty(ctx, dbgen.UpdateCartItemQtyParams{ID: item.ID, Qty: newQty, Subtotal: newSubtotal}); err != nil {
 			return err
@@ -195,23 +229,34 @@ func (s *Service) AddItem(ctx context.Context, cartID string, productID string, 
 		return err
 	}
 
-	product, err := s.Q.GetProductForCart(ctx, pID)
+	product, err := s.Q.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: pID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		return err
 	}
 	unitPrice := product.Price
+	if campaignID.Valid {
+		campaignPrice, err := s.flashSalePrice(ctx, campaignID, pID, qty)
+		if err != nil {
+			return err
+		}
+		unitPrice = campaignPrice
+	}
 	if vID.Valid {
-		variant, err := s.Q.GetVariantForCart(ctx, vID)
+		variant, err := s.Q.GetVariantForCart(ctx, dbgen.GetVariantForCartParams{ID: vID, TenantID: s.resolveTenant(ctx)})
 		if err != nil {
 			return err
 		}
 		if !uuidEqual(variant.ProductID, pID) {
 			return fmt.Errorf("variant does not belong to product: %w", ErrInvalidInput)
 		}
-		unitPrice = variant.Price
-		if variant.Stock <= 0 {
+		if !campaignID.Valid {
+			unitPrice = variant.Price
+		}
+		if variant.Stock < int32(qty) {
 			return fmt.Errorf("variant out of stock: %w", ErrInvalidInput)
 		}
+	} else if !product.InStock {
+		return fmt.Errorf("product out of stock: %w", ErrInvalidInput)
 	}
 	if unitPrice < 0 {
 		unitPrice = 0
@@ -221,19 +266,40 @@ func (s *Service) AddItem(ctx context.Context, cartID string, productID string, 
 		subtotal = 0
 	}
 	if _, err := s.Q.CreateCartItem(ctx, dbgen.CreateCartItemParams{
-		CartID:    cID,
-		ProductID: pID,
-		VariantID: vID,
-		Title:     product.Title,
-		Slug:      product.Slug,
-		Qty:       int32(qty),
-		UnitPrice: unitPrice,
-		Subtotal:  subtotal,
+		CartID:     cID,
+		ProductID:  pID,
+		VariantID:  vID,
+		CampaignID: campaignID,
+		Title:      product.Title,
+		Slug:       product.Slug,
+		Qty:        int32(qty),
+		UnitPrice:  unitPrice,
+		Subtotal:   subtotal,
 	}); err != nil {
 		return err
 	}
 	_ = s.Q.TouchCart(ctx, dbgen.TouchCartParams{ID: cID, ExpiresAt: expires})
 	return nil
+}
+
+func (s *Service) flashSalePrice(ctx context.Context, campaignID, productID pgtype.UUID, qty int) (int64, error) {
+	if s.Pool == nil {
+		return 0, errors.New("flash-sale pricing is not configured")
+	}
+	var salePrice int64
+	var stockLimit pgtype.Int4
+	var soldCount int32
+	err := s.Pool.QueryRow(ctx, `SELECT i.sale_price,i.stock_limit,i.sold_count FROM flash_sale_items i JOIN flash_sale_campaigns c ON c.id=i.campaign_id WHERE i.campaign_id=$1 AND i.product_id=$2 AND c.tenant_id=$3 AND c.status IN ('SCHEDULED','ACTIVE') AND c.starts_at <= now() AND c.ends_at > now()`, campaignID, productID, s.resolveTenant(ctx)).Scan(&salePrice, &stockLimit, &soldCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("flash sale is no longer active: %w", ErrInvalidInput)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if stockLimit.Valid && soldCount+int32(qty) > stockLimit.Int32 {
+		return 0, fmt.Errorf("flash sale stock is unavailable: %w", ErrInvalidInput)
+	}
+	return salePrice, nil
 }
 
 // UpdateQty updates the quantity for a cart item.
@@ -254,6 +320,28 @@ func (s *Service) UpdateQty(ctx context.Context, itemID string, qty int) error {
 			return ErrNotFound
 		}
 		return err
+	}
+	if item.CampaignID.Valid {
+		if _, err := s.flashSalePrice(ctx, item.CampaignID, item.ProductID, qty); err != nil {
+			return err
+		}
+	}
+	if item.VariantID.Valid {
+		variant, stockErr := s.Q.GetVariantForCart(ctx, dbgen.GetVariantForCartParams{ID: item.VariantID, TenantID: s.resolveTenant(ctx)})
+		if stockErr != nil {
+			return stockErr
+		}
+		if variant.Stock < int32(qty) {
+			return fmt.Errorf("requested quantity exceeds available stock: %w", ErrInvalidInput)
+		}
+	} else {
+		product, stockErr := s.Q.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: item.ProductID, TenantID: s.resolveTenant(ctx)})
+		if stockErr != nil {
+			return stockErr
+		}
+		if !product.InStock {
+			return fmt.Errorf("product out of stock: %w", ErrInvalidInput)
+		}
 	}
 	newSubtotal := int64(qty) * item.UnitPrice
 	_, err = s.Q.UpdateCartItemQty(ctx, dbgen.UpdateCartItemQtyParams{ID: item.ID, Qty: int32(qty), Subtotal: newSubtotal})
@@ -298,7 +386,7 @@ func (s *Service) ApplyVoucher(ctx context.Context, cartID string, code string) 
 	if err != nil {
 		return 0, fmt.Errorf("parse cart id: %w", err)
 	}
-	row, err := s.Q.GetCartByID(ctx, cID)
+	row, err := s.Q.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrNotFound
@@ -356,7 +444,7 @@ func (s *Service) Merge(ctx context.Context, guestCartID string, userID string) 
 	if err != nil {
 		return "", fmt.Errorf("parse user id: %w", err)
 	}
-	guestCart, err := s.Q.GetCartByID(ctx, gID)
+	guestCart, err := s.Q.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: gID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", ErrNotFound
@@ -374,9 +462,10 @@ func (s *Service) Merge(ctx context.Context, guestCartID string, userID string) 
 	}
 	for _, item := range guestItems {
 		existing, err := s.Q.FindCartItemByProductVariant(ctx, dbgen.FindCartItemByProductVariantParams{
-			CartID:    userCart.ID,
-			ProductID: item.ProductID,
-			VariantID: item.VariantID,
+			CartID:     userCart.ID,
+			ProductID:  item.ProductID,
+			VariantID:  item.VariantID,
+			CampaignID: item.CampaignID,
 		})
 		if err == nil {
 			if existing.Qty < item.Qty {
@@ -391,14 +480,15 @@ func (s *Service) Merge(ctx context.Context, guestCartID string, userID string) 
 			return "", err
 		}
 		if _, err := s.Q.CreateCartItem(ctx, dbgen.CreateCartItemParams{
-			CartID:    userCart.ID,
-			ProductID: item.ProductID,
-			VariantID: item.VariantID,
-			Title:     item.Title,
-			Slug:      item.Slug,
-			Qty:       item.Qty,
-			UnitPrice: item.UnitPrice,
-			Subtotal:  item.Subtotal,
+			CartID:     userCart.ID,
+			ProductID:  item.ProductID,
+			VariantID:  item.VariantID,
+			CampaignID: item.CampaignID,
+			Title:      item.Title,
+			Slug:       item.Slug,
+			Qty:        item.Qty,
+			UnitPrice:  item.UnitPrice,
+			Subtotal:   item.Subtotal,
 		}); err != nil {
 			return "", err
 		}
@@ -418,7 +508,7 @@ func (s *Service) itemEligible(ctx context.Context, productID pgtype.UUID, vouch
 	if len(voucher.ProductIds) == 0 && len(voucher.CategoryIds) == 0 && len(voucher.BrandIds) == 0 {
 		return true, nil
 	}
-	product, err := s.Q.GetProductForCart(ctx, productID)
+	product, err := s.Q.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: productID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		return false, err
 	}
@@ -573,7 +663,7 @@ func (s *Service) EvaluateVoucher(ctx context.Context, cartID pgtype.UUID, code 
 	if s == nil {
 		return 0, dbgen.Voucher{}, errors.New("cart service not configured")
 	}
-	row, err := s.Q.GetCartByID(ctx, cartID)
+	row, err := s.Q.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cartID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		return 0, dbgen.Voucher{}, err
 	}

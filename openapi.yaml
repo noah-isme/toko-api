@@ -267,6 +267,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+    delete:
+      summary: Delete the authenticated account and anonymize retained orders
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Account deleted }
+  /api/v1/users/me/privacy:
+    get:
+      summary: Get privacy preferences
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Privacy preferences } }
+    put:
+      summary: Save privacy preferences
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                marketingEmails: { type: boolean }
+                orderUpdates: { type: boolean }
+                securityAlerts: { type: boolean }
+                profileVisibility: { type: string, enum: [public, friends, private] }
+                dataProcessing: { type: boolean }
+                analyticsTracking: { type: boolean }
+      responses: { '200': { description: Privacy preferences saved } }
+  /api/v1/users/me/data-export:
+    get:
+      summary: Export the authenticated user's data
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: JSON data export } }
   /api/v1/users/me/addresses:
     get:
       summary: List saved addresses
@@ -560,7 +592,7 @@ paths:
         '500':
           description: Server error
     delete:
-      summary: Delete a product review (not implemented)
+      summary: Delete the authenticated customer's product review
       security:
         - bearerAuth: []
       parameters:
@@ -572,8 +604,16 @@ paths:
             format: uuid
           description: Product ID
       responses:
-        '501':
-          description: Not implemented
+        '204':
+          description: Review deleted
+        '400':
+          description: Invalid product ID
+        '401':
+          description: Unauthorized
+        '404':
+          description: Review not found
+        '500':
+          description: Server error
   /api/v1/products/{id}/reviews/stats:
     get:
       summary: Get product review stats
@@ -847,6 +887,21 @@ paths:
           description: Authentication required
         '500':
           description: Address not found, cart empty, or tenant missing
+  /api/v1/checkout/draft:
+    post:
+      summary: Preview checkout totals before creating an order
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '201': { description: Checkout draft }
+        '400': { description: Invalid checkout draft }
+        '401': { description: Authentication required }
   /api/v1/orders:
     get:
       summary: List user orders
@@ -1546,12 +1601,62 @@ paths:
   /api/v1/analytics/overview:
     get:
       summary: Overview for dashboard
-      description: Dashboard summary. Not currently implemented.
+      description: Aggregated order and revenue metrics for the requested date range.
       security:
         - bearerAuth: []
       responses:
-        '501':
-          description: Not implemented
+        '200': { description: Analytics overview }
+        '400': { description: Invalid range }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Analytics service error }
+  /api/v1/vouchers:
+    get:
+      summary: List active public vouchers
+      responses: { '200': { description: Active vouchers } }
+  /api/v1/flash-sales:
+    get:
+      summary: List scheduled and active flash-sale campaigns
+      responses: { '200': { description: Flash-sale campaigns and server-calculated prices } }
+  /api/v1/admin/flash-sales:
+    post:
+      summary: Create a flash-sale campaign
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug, startsAt, endsAt, items]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+                status: { type: string }
+                startsAt: { type: string, format: date-time }
+                endsAt: { type: string, format: date-time }
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [productId, salePrice]
+                    properties:
+                      productId: { type: string, format: uuid }
+                      salePrice: { type: integer, minimum: 0 }
+                      stockLimit: { type: integer, minimum: 1, nullable: true }
+      responses: { '201': { description: Campaign created } }
+  /api/v1/admin/flash-sales/{id}:
+    patch:
+      summary: Update flash-sale campaign status
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusRequest' }
+      responses: { '200': { description: Campaign status updated } }
   /api/v1/payments/intent:
     post:
       summary: Create or reuse a payment intent
@@ -1583,6 +1688,29 @@ paths:
           description: Order not found
         '500':
           description: Payment provider error
+  /api/v1/payments/{orderId}/instructions:
+    get:
+      summary: Get payment instructions for an order
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: Payment instructions } }
+  /api/v1/payments/{orderId}/proof:
+    post:
+      summary: Upload payment proof
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [proof]
+              properties:
+                proof: { type: string, format: binary }
+      responses: { '201': { description: Payment proof stored } }
   /api/v1/webhooks/shipping/{courier}:
     post:
       summary: Shipping webhook receiver (idempotent)
@@ -2306,6 +2434,185 @@ paths:
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '500': { description: Server error }
+  /api/v1/tenant:
+    get:
+      summary: Get the current tenant context
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Tenant metadata }
+        '401': { description: Unauthorized }
+  /api/v1/onboarding:
+    post:
+      summary: Create a new store tenant for the authenticated user
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+      responses:
+        '201': { description: Tenant created }
+        '409': { description: Tenant slug already exists }
+  /api/v1/orders/{orderId}/returns:
+    post:
+      summary: Request a return for an eligible order
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReturnRequest' }
+      responses:
+        '201': { description: Return request created }
+        '409': { description: Order is not eligible or has an active return }
+  /api/v1/returns:
+    get:
+      summary: List the current customer's returns
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Return requests } }
+  /api/v1/returns/{returnId}:
+    get:
+      summary: Get a return request
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: Return request detail } }
+  /api/v1/support/tickets:
+    get:
+      summary: List customer support tickets
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Support tickets } }
+    post:
+      summary: Open a support ticket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportTicketRequest' }
+      responses: { '201': { description: Support ticket created } }
+  /api/v1/support/tickets/{ticketId}/messages:
+    post:
+      summary: Add a message to a support ticket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportMessageRequest' }
+      responses: { '201': { description: Message created } }
+  /api/v1/admin/customers:
+    get:
+      summary: List customers for the current tenant
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Customer list } }
+  /api/v1/admin/inventory:
+    get:
+      summary: List variant inventory
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Inventory list } }
+  /api/v1/admin/inventory/{variantId}:
+    patch:
+      summary: Set or adjust variant stock
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: variantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stock: { type: integer, minimum: 0 }
+                delta: { type: integer }
+      responses: { '200': { description: Inventory updated } }
+  /api/v1/admin/returns:
+    get:
+      summary: List tenant return requests
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Return requests } }
+  /api/v1/admin/returns/{returnId}:
+    patch:
+      summary: Update return workflow status
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusRequest' }
+      responses: { '200': { description: Return status updated } }
+  /api/v1/admin/returns/{returnId}/refund:
+    post:
+      summary: Issue a provider-backed refund for a return
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: Refund issued } }
+  /api/v1/admin/support/tickets:
+    get:
+      summary: List tenant support tickets
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Support tickets } }
+  /api/v1/admin/support/tickets/{ticketId}:
+    patch:
+      summary: Update support ticket status
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusRequest' }
+      responses: { '200': { description: Ticket status updated } }
+  /api/v1/admin/support/tickets/{ticketId}/messages:
+    post:
+      summary: Add an agent message to a ticket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportMessageRequest' }
+      responses: { '201': { description: Message created } }
+  /api/v1/admin/settings:
+    get:
+      summary: Read tenant store configuration
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Store configuration } }
+    patch:
+      summary: Update tenant store configuration
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: { '200': { description: Store configuration updated } }
+  /api/v1/admin/onboarding:
+    post:
+      summary: Complete tenant onboarding
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: { '200': { description: Tenant onboarding saved } }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2313,6 +2620,29 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    ReturnRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1 }
+        notes: { type: string }
+    StatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    SupportTicketRequest:
+      type: object
+      required: [subject, message]
+      properties:
+        subject: { type: string, minLength: 1 }
+        message: { type: string, minLength: 1 }
+        orderId: { type: string, format: uuid }
+    SupportMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
     AdminProduct:
       type: object
       required: [id, title, slug, price, inStock, stock, badges, variantCount, createdAt, updatedAt]
@@ -3138,6 +3468,10 @@ components:
           type: string
           format: uuid
           nullable: true
+        campaignId:
+          type: string
+          format: uuid
+          nullable: true
         title:
           type: string
         slug:
@@ -3219,6 +3553,10 @@ components:
           type: string
           format: uuid
         variantId:
+          type: string
+          format: uuid
+          nullable: true
+        campaignId:
           type: string
           format: uuid
           nullable: true

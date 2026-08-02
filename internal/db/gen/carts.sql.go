@@ -48,13 +48,20 @@ func (q *Queries) CreateCart(ctx context.Context, arg CreateCartParams) (Cart, e
 const getActiveCartByAnon = `-- name: GetActiveCartByAnon :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
-WHERE anon_id = $1 AND (expires_at IS NULL OR expires_at > now())
+WHERE anon_id = $1
+  AND tenant_id = $2
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (Cart, error) {
-	row := q.db.QueryRow(ctx, getActiveCartByAnon, anonID)
+type GetActiveCartByAnonParams struct {
+	AnonID   pgtype.Text `json:"anon_id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error) {
+	row := q.db.QueryRow(ctx, getActiveCartByAnon, arg.AnonID, arg.TenantID)
 	var i Cart
 	err := row.Scan(
 		&i.ID,
@@ -72,13 +79,20 @@ func (q *Queries) GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (
 const getActiveCartByUser = `-- name: GetActiveCartByUser :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
-WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > now())
+WHERE user_id = $1
+  AND tenant_id = $2
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetActiveCartByUser(ctx context.Context, userID pgtype.UUID) (Cart, error) {
-	row := q.db.QueryRow(ctx, getActiveCartByUser, userID)
+type GetActiveCartByUserParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error) {
+	row := q.db.QueryRow(ctx, getActiveCartByUser, arg.UserID, arg.TenantID)
 	var i Cart
 	err := row.Scan(
 		&i.ID,
@@ -97,11 +111,17 @@ const getCartByID = `-- name: GetCartByID :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
 WHERE id = $1
+  AND tenant_id = $2
 LIMIT 1
 `
 
-func (q *Queries) GetCartByID(ctx context.Context, id pgtype.UUID) (Cart, error) {
-	row := q.db.QueryRow(ctx, getCartByID, id)
+type GetCartByIDParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) GetCartByID(ctx context.Context, arg GetCartByIDParams) (Cart, error) {
+	row := q.db.QueryRow(ctx, getCartByID, arg.ID, arg.TenantID)
 	var i Cart
 	err := row.Scan(
 		&i.ID,

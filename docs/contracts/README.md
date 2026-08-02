@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0  
 **Base URL:** `https://api.toko.com/api/v1` (production) | `http://localhost:8080/api/v1` (development)  
-**Last Updated:** 2026-07-24
+**Last Updated:** 2026-08-02
 
 ## 📋 Table of Contents
 
@@ -12,8 +12,12 @@
 - [Checkout](checkout.md)
 - [Orders](orders.md)
 - [Payment](payment.md)
+- [Promotions](promotions.md)
 - [Notifications](notifications.md)
 - [User Addresses](user.md)
+- [Privacy & Account](privacy.md)
+- [Returns & Support](customer-operations.md)
+- [Tenant Operations](operations.md)
 - [Reviews](reviews.md)
 - [Favorites](favorites.md)
 - [Analytics](analytics.md)

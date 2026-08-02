@@ -6,20 +6,25 @@ RETURNING id, user_id, anon_id, applied_voucher_code, created_at, updated_at, ex
 -- name: GetCartByID :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
-WHERE id = $1
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: GetActiveCartByUser :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
-WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > now())
+WHERE user_id = sqlc.arg(user_id)
+  AND tenant_id = sqlc.arg(tenant_id)
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
 LIMIT 1;
 
 -- name: GetActiveCartByAnon :one
 SELECT id, user_id, anon_id, applied_voucher_code, created_at, updated_at, expires_at, tenant_id
 FROM carts
-WHERE anon_id = $1 AND (expires_at IS NULL OR expires_at > now())
+WHERE anon_id = sqlc.arg(anon_id)
+  AND tenant_id = sqlc.arg(tenant_id)
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY updated_at DESC
 LIMIT 1;
 

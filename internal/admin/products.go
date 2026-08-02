@@ -136,7 +136,9 @@ func (h *CatalogHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	inStock := queryBool(r, "inStock")
 
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	total, err := h.Q.AdminCountProducts(ctx, dbgen.AdminCountProductsParams{
+		TenantID:     tenantID,
 		Search:       search,
 		CategorySlug: category,
 		BrandSlug:    brand,
@@ -147,6 +149,7 @@ func (h *CatalogHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Q.AdminListProducts(ctx, dbgen.AdminListProductsParams{
+		TenantID:     tenantID,
 		Search:       search,
 		CategorySlug: category,
 		BrandSlug:    brand,
@@ -196,7 +199,7 @@ func (h *CatalogHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 		return
 	}
-	row, err := h.Q.AdminGetProduct(ctx, id)
+	row, err := h.Q.AdminGetProduct(ctx, dbgen.AdminGetProductParams{ID: id, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
@@ -311,6 +314,7 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	id, err := h.Q.AdminCreateProduct(ctx, dbgen.AdminCreateProductParams{
 		Title:       title,
 		Slug:        slug,
@@ -322,6 +326,7 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		Thumbnail:   optionalText(payload.Thumbnail),
 		Badges:      payload.Badges,
 		Description: optionalText(payload.Description),
+		TenantID:    tenantID,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -350,12 +355,13 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	id, err := h.resolveProductID(ctx, chi.URLParam(r, "id"))
 	if err != nil {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 		return
 	}
-	existing, err := h.Q.AdminGetProduct(ctx, id)
+	existing, err := h.Q.AdminGetProduct(ctx, dbgen.AdminGetProductParams{ID: id, TenantID: tenantID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
@@ -406,6 +412,7 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		SetDescription: payload.has("description"),
 		Description:    optionalText(payload.Description),
 		ID:             id,
+		TenantID:       tenantID,
 	}
 	if _, err := h.Q.AdminUpdateProduct(ctx, params); err != nil {
 		if isUniqueViolation(err) {
@@ -441,17 +448,18 @@ func (h *CatalogHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	id, err := h.resolveProductID(ctx, chi.URLParam(r, "id"))
 	if err != nil {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 		return
 	}
-	existing, err := h.Q.AdminGetProduct(ctx, id)
+	existing, err := h.Q.AdminGetProduct(ctx, dbgen.AdminGetProductParams{ID: id, TenantID: tenantID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load product", nil)
 		return
 	}
-	affected, err := h.Q.AdminDeleteProduct(ctx, id)
+	affected, err := h.Q.AdminDeleteProduct(ctx, dbgen.AdminDeleteProductParams{ID: id, TenantID: tenantID})
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			common.JSONError(w, http.StatusConflict, "CONFLICT", "product is referenced by existing orders", nil)
@@ -482,12 +490,13 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	id, err := h.resolveProductID(ctx, chi.URLParam(r, "id"))
 	if err != nil {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 		return
 	}
-	product, err := h.Q.AdminGetProduct(ctx, id)
+	product, err := h.Q.AdminGetProduct(ctx, dbgen.AdminGetProductParams{ID: id, TenantID: tenantID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
@@ -510,13 +519,14 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "stock cannot be negative", nil)
 			return
 		}
-		variant, err := h.Q.AdminGetPrimaryVariant(ctx, id)
+		variant, err := h.Q.AdminGetPrimaryVariant(ctx, dbgen.AdminGetPrimaryVariantParams{ProductID: id, TenantID: tenantID})
 		switch {
 		case err == nil:
 			if _, err := h.Q.AdminUpdateProductVariant(ctx, dbgen.AdminUpdateProductVariantParams{
 				Stock:     pgtype.Int4{Int32: *payload.Stock, Valid: true},
 				ID:        variant.ID,
 				ProductID: id,
+				TenantID:  tenantID,
 			}); err != nil {
 				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to update stock", nil)
 				return
@@ -527,6 +537,7 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 				Price:      product.Price,
 				Stock:      *payload.Stock,
 				Attributes: []byte(`{}`),
+				TenantID:   tenantID,
 			}); err != nil {
 				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to create variant for stock", nil)
 				return
@@ -544,7 +555,7 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 	case payload.Stock != nil:
 		inStock = *payload.Stock > 0
 	}
-	if err := h.Q.AdminSetProductStockFlag(ctx, dbgen.AdminSetProductStockFlagParams{InStock: inStock, ID: id}); err != nil {
+	if err := h.Q.AdminSetProductStockFlag(ctx, dbgen.AdminSetProductStockFlagParams{InStock: inStock, ID: id, TenantID: tenantID}); err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to update stock flag", nil)
 		return
 	}
@@ -564,15 +575,16 @@ func (h *CatalogHandler) resolveProductID(ctx context.Context, raw string) (pgty
 	if id, err := parsePGUUID(trimmed); err == nil {
 		return id, nil
 	}
-	return h.Q.AdminGetProductIDBySlug(ctx, trimmed)
+	return h.Q.AdminGetProductIDBySlug(ctx, dbgen.AdminGetProductIDBySlugParams{Slug: trimmed, TenantID: tenantIDFromContext(ctx)})
 }
 
 // writeChildRows replaces images/specs and upserts variants when the payload
 // includes them. On create the caller passes replaceAll so absent collections
 // still produce a consistent (empty) child set.
 func (h *CatalogHandler) writeChildRows(ctx context.Context, id pgtype.UUID, payload productPayload, isCreate bool) error {
+	tenantID := tenantIDFromContext(ctx)
 	if payload.has("images") || (isCreate && len(payload.Images) > 0) {
-		if err := h.Q.AdminReplaceProductImages(ctx, id); err != nil {
+		if err := h.Q.AdminReplaceProductImages(ctx, dbgen.AdminReplaceProductImagesParams{ProductID: id, TenantID: tenantID}); err != nil {
 			return err
 		}
 		for i, url := range payload.Images {
@@ -584,13 +596,14 @@ func (h *CatalogHandler) writeChildRows(ctx context.Context, id pgtype.UUID, pay
 				ProductID: id,
 				Url:       trimmed,
 				SortOrder: int32(i),
+				TenantID:  tenantID,
 			}); err != nil {
 				return err
 			}
 		}
 	}
 	if payload.has("specs") || (isCreate && len(payload.Specs) > 0) {
-		if err := h.Q.AdminDeleteProductSpecs(ctx, id); err != nil {
+		if err := h.Q.AdminDeleteProductSpecs(ctx, dbgen.AdminDeleteProductSpecsParams{ProductID: id, TenantID: tenantID}); err != nil {
 			return err
 		}
 		for _, spec := range payload.Specs {
@@ -603,6 +616,7 @@ func (h *CatalogHandler) writeChildRows(ctx context.Context, id pgtype.UUID, pay
 				ProductID: id,
 				Key:       key,
 				Value:     value,
+				TenantID:  tenantID,
 			}); err != nil {
 				return err
 			}
@@ -625,6 +639,7 @@ func (h *CatalogHandler) writeChildRows(ctx context.Context, id pgtype.UUID, pay
 				Attributes: attributes,
 				ID:         variantID,
 				ProductID:  id,
+				TenantID:   tenantID,
 			}); err != nil {
 				return err
 			}
@@ -644,6 +659,7 @@ func (h *CatalogHandler) writeChildRows(ctx context.Context, id pgtype.UUID, pay
 			Price:      price,
 			Stock:      stock,
 			Attributes: attributes,
+			TenantID:   tenantID,
 		}); err != nil {
 			return err
 		}

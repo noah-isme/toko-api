@@ -13,20 +13,111 @@ import (
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Handler exposes administrative voucher management endpoints.
 type Handler struct {
 	Q               dbgen.Querier
 	Svc             *Service
+	Pool            *pgxpool.Pool
 	DefaultPriority int
 	CatalogCache    *catalog.Cache
 	Analytics       *analytics.Service
+}
+
+// PublicList returns active vouchers that shoppers can discover without an
+// admin session. Eligibility is still evaluated at cart/checkout time; this
+// endpoint deliberately exposes rules, not a guaranteed discount.
+func (h *Handler) PublicList(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Pool == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "voucher service not configured", nil)
+		return
+	}
+	tenantID, ok := tenant.FromContext(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	tenantUUID, err := uuid.Parse(strings.TrimSpace(tenantID))
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "invalid tenant", nil)
+		return
+	}
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id,code,value,kind,percent_bps,min_spend,usage_limit,used_count,
+		       per_user_limit,valid_from,valid_to,combinable,priority,
+		       product_ids,category_ids,brand_ids,created_at,updated_at
+		FROM vouchers
+		WHERE tenant_id=$1
+		  AND (valid_from IS NULL OR valid_from <= now())
+		  AND (valid_to IS NULL OR valid_to > now())
+		  AND (usage_limit IS NULL OR used_count < usage_limit)
+		ORDER BY priority ASC, valid_to ASC NULLS LAST, created_at DESC`, tenantUUID)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list vouchers", nil)
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id pgtype.UUID
+		var code, kind string
+		var value, minSpend int64
+		var percent, usageLimit, perUserLimit pgtype.Int4
+		var used int32
+		var validFrom, validTo pgtype.Timestamptz
+		var combinable bool
+		var priority int32
+		var productIDs, categoryIDs, brandIDs []pgtype.UUID
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &code, &value, &kind, &percent, &minSpend, &usageLimit, &used, &perUserLimit, &validFrom, &validTo, &combinable, &priority, &productIDs, &categoryIDs, &brandIDs, &createdAt, &updatedAt); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read vouchers", nil)
+			return
+		}
+		items = append(items, map[string]any{
+			"id": uuid.UUID(id.Bytes), "code": code, "kind": kind, "value": value,
+			"percentBps": nullableInt4Value(percent), "minSpend": minSpend,
+			"usageLimit": nullableInt4Value(usageLimit), "usedCount": used,
+			"perUserLimit": nullableInt4Value(perUserLimit), "validFrom": nullableTime(validFrom),
+			"validTo": nullableTime(validTo), "combinable": combinable, "priority": priority,
+			"productIds": uuidStrings(productIDs), "categoryIds": uuidStrings(categoryIDs),
+			"brandIds": uuidStrings(brandIDs), "createdAt": createdAt, "updatedAt": updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read vouchers", nil)
+		return
+	}
+	common.JSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func nullableInt4Value(value pgtype.Int4) any {
+	if value.Valid {
+		return value.Int32
+	}
+	return nil
+}
+func nullableTime(value pgtype.Timestamptz) any {
+	if value.Valid {
+		return value.Time
+	}
+	return nil
+}
+func uuidStrings(values []pgtype.UUID) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value.Valid {
+			result = append(result, uuid.UUID(value.Bytes).String())
+		}
+	}
+	return result
 }
 
 type voucherPayload struct {

@@ -12,6 +12,9 @@ type IntentRequest struct {
 	Channel         string
 	ExpiresAtSec    int
 	CallbackBaseURL string
+	CustomerName    string
+	CustomerEmail   string
+	CustomerPhone   string
 }
 
 // IntentResponse represents the minimal information returned by a provider when creating an intent.
@@ -36,4 +39,12 @@ type WebhookVerifyResult struct {
 type Provider interface {
 	CreateIntent(ctx context.Context, req IntentRequest) (IntentResponse, error)
 	VerifyWebhook(r *http.Request, body []byte) (WebhookVerifyResult, error)
+}
+
+// RefundProvider is implemented by gateways that support server-side refunds.
+// Keeping refunds separate lets an installation expose checkout providers that
+// do not support refunds without weakening the payment intent contract.
+type RefundProvider interface {
+	Provider
+	Refund(ctx context.Context, orderID string, amount int64, reason string) (string, error)
 }

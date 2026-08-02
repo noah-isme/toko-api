@@ -250,24 +250,24 @@ func newFakeCatalogQueries(t *testing.T) *fakeCatalogQueries {
 	}
 }
 
-func (f *fakeCatalogQueries) ListBrands(context.Context) ([]dbgen.ListBrandsRow, error) {
+func (f *fakeCatalogQueries) ListBrands(context.Context, pgtype.UUID) ([]dbgen.ListBrandsRow, error) {
 	return append([]dbgen.ListBrandsRow(nil), f.brands...), nil
 }
 
-func (f *fakeCatalogQueries) GetBrandByID(ctx context.Context, id pgtype.UUID) (dbgen.GetBrandByIDRow, error) {
-	row, ok := f.brandsByID[uuidString(id)]
+func (f *fakeCatalogQueries) GetBrandByID(ctx context.Context, arg dbgen.GetBrandByIDParams) (dbgen.GetBrandByIDRow, error) {
+	row, ok := f.brandsByID[uuidString(arg.ID)]
 	if !ok {
 		return dbgen.GetBrandByIDRow{}, fmt.Errorf("brand not found")
 	}
 	return row, nil
 }
 
-func (f *fakeCatalogQueries) ListCategories(context.Context) ([]dbgen.ListCategoriesRow, error) {
+func (f *fakeCatalogQueries) ListCategories(context.Context, pgtype.UUID) ([]dbgen.ListCategoriesRow, error) {
 	return append([]dbgen.ListCategoriesRow(nil), f.categories...), nil
 }
 
-func (f *fakeCatalogQueries) GetCategoryByID(ctx context.Context, id pgtype.UUID) (dbgen.GetCategoryByIDRow, error) {
-	row, ok := f.categoriesByID[uuidString(id)]
+func (f *fakeCatalogQueries) GetCategoryByID(ctx context.Context, arg dbgen.GetCategoryByIDParams) (dbgen.GetCategoryByIDRow, error) {
+	row, ok := f.categoriesByID[uuidString(arg.ID)]
 	if !ok {
 		return dbgen.GetCategoryByIDRow{}, fmt.Errorf("category not found")
 	}
@@ -298,8 +298,8 @@ func (f *fakeCatalogQueries) ListProductsPublic(ctx context.Context, arg dbgen.L
 	return append([]dbgen.ListProductsPublicRow(nil), filtered[start:end]...), nil
 }
 
-func (f *fakeCatalogQueries) GetProductBySlug(ctx context.Context, slug string) (dbgen.GetProductBySlugRow, error) {
-	row, ok := f.productsBySlug[slug]
+func (f *fakeCatalogQueries) GetProductBySlug(ctx context.Context, arg dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error) {
+	row, ok := f.productsBySlug[arg.Slug]
 	if !ok {
 		return dbgen.GetProductBySlugRow{}, fmt.Errorf("product not found")
 	}

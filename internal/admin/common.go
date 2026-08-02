@@ -5,6 +5,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 const (
@@ -40,6 +42,18 @@ func parsePGUUID(value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
+}
+
+func tenantIDFromContext(ctx context.Context) pgtype.UUID {
+	value, ok := tenant.FromContext(ctx)
+	if !ok {
+		return pgtype.UUID{}
+	}
+	id, err := parsePGUUID(value)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return id
 }
 
 func optionalUUID(value *string) (pgtype.UUID, error) {

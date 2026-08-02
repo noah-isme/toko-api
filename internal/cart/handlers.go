@@ -1,6 +1,7 @@
 package cart
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/pricing"
 	"github.com/noah-isme/backend-toko/internal/shipping"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Handler wires cart services to HTTP.
@@ -68,7 +70,12 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid cart id", nil)
 		return
 	}
-	cart, err := h.Q.GetCartByID(r.Context(), cID)
+	tenantID, err := requestTenantID(r.Context())
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	cart, err := h.Q.GetCartByID(r.Context(), dbgen.GetCartByIDParams{ID: cID, TenantID: tenantID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "cart not found", nil)
@@ -189,9 +196,10 @@ func (h *Handler) AddItem(w http.ResponseWriter, r *http.Request) {
 	}
 	cartID := chi.URLParam(r, "id")
 	var payload struct {
-		ProductID string  `json:"productId"`
-		VariantID *string `json:"variantId"`
-		Qty       int     `json:"qty"`
+		ProductID  string  `json:"productId"`
+		VariantID  *string `json:"variantId"`
+		CampaignID *string `json:"campaignId"`
+		Qty        int     `json:"qty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid payload", nil)
@@ -205,8 +213,14 @@ func (h *Handler) AddItem(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "qty must be positive", nil)
 		return
 	}
-	if err := h.Svc.AddItem(r.Context(), cartID, payload.ProductID, payload.VariantID, payload.Qty); err != nil {
-		h.writeError(w, err)
+	var addErr error
+	if payload.CampaignID != nil && strings.TrimSpace(*payload.CampaignID) != "" {
+		addErr = h.Svc.AddItemWithCampaign(r.Context(), cartID, payload.ProductID, payload.VariantID, payload.Qty, *payload.CampaignID)
+	} else {
+		addErr = h.Svc.AddItem(r.Context(), cartID, payload.ProductID, payload.VariantID, payload.Qty)
+	}
+	if addErr != nil {
+		h.writeError(w, addErr)
 		return
 	}
 	h.Get(w, r)
@@ -318,7 +332,12 @@ func (h *Handler) QuoteShipping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Q != nil {
-		if _, err := h.Q.GetCartByID(r.Context(), cID); err != nil {
+		tenantID, tenantErr := requestTenantID(r.Context())
+		if tenantErr != nil {
+			common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+			return
+		}
+		if _, err := h.Q.GetCartByID(r.Context(), dbgen.GetCartByIDParams{ID: cID, TenantID: tenantID}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "cart not found", nil)
 				return
@@ -438,4 +457,12 @@ func nullableUUID(v pgtype.UUID) *string {
 	}
 	s := uuid.UUID(v.Bytes).String()
 	return &s
+}
+
+func requestTenantID(ctx context.Context) (pgtype.UUID, error) {
+	id, ok := tenant.FromContext(ctx)
+	if !ok {
+		return pgtype.UUID{}, errors.New("tenant is required")
+	}
+	return toUUID(id)
 }

@@ -64,7 +64,8 @@ func (h *CatalogHandler) ListCategories(w http.ResponseWriter, r *http.Request) 
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "admin queries not configured", nil)
 		return
 	}
-	rows, err := h.Q.AdminListCategories(r.Context())
+	ctx := r.Context()
+	rows, err := h.Q.AdminListCategories(ctx, tenantIDFromContext(ctx))
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list categories", nil)
 		return
@@ -114,10 +115,12 @@ func (h *CatalogHandler) CreateCategory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	row, err := h.Q.AdminCreateCategory(ctx, dbgen.AdminCreateCategoryParams{
 		Name:     name,
 		Slug:     slug,
 		ParentID: parentID,
+		TenantID: tenantID,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -173,12 +176,14 @@ func (h *CatalogHandler) UpdateCategory(w http.ResponseWriter, r *http.Request) 
 		slug = text(normalized)
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	row, err := h.Q.AdminUpdateCategory(ctx, dbgen.AdminUpdateCategoryParams{
 		Name:      optionalText(payload.Name),
 		Slug:      slug,
 		SetParent: payload.has("parentId"),
 		ParentID:  parentID,
 		ID:        id,
+		TenantID:  tenantID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -215,7 +220,7 @@ func (h *CatalogHandler) DeleteCategory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := r.Context()
-	affected, err := h.Q.AdminDeleteCategory(ctx, id)
+	affected, err := h.Q.AdminDeleteCategory(ctx, dbgen.AdminDeleteCategoryParams{ID: id, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to delete category", nil)
 		return
@@ -234,7 +239,8 @@ func (h *CatalogHandler) ListBrands(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "admin queries not configured", nil)
 		return
 	}
-	rows, err := h.Q.AdminListBrands(r.Context())
+	ctx := r.Context()
+	rows, err := h.Q.AdminListBrands(ctx, tenantIDFromContext(ctx))
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list brands", nil)
 		return
@@ -278,7 +284,7 @@ func (h *CatalogHandler) CreateBrand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	row, err := h.Q.AdminCreateBrand(ctx, dbgen.AdminCreateBrandParams{Name: name, Slug: slug})
+	row, err := h.Q.AdminCreateBrand(ctx, dbgen.AdminCreateBrandParams{Name: name, Slug: slug, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		if isUniqueViolation(err) {
 			common.JSONError(w, http.StatusConflict, "CONFLICT", "brand name or slug already exists", nil)
@@ -323,10 +329,12 @@ func (h *CatalogHandler) UpdateBrand(w http.ResponseWriter, r *http.Request) {
 		slug = text(normalized)
 	}
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	row, err := h.Q.AdminUpdateBrand(ctx, dbgen.AdminUpdateBrandParams{
-		Name: optionalText(payload.Name),
-		Slug: slug,
-		ID:   id,
+		Name:     optionalText(payload.Name),
+		Slug:     slug,
+		ID:       id,
+		TenantID: tenantID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -362,7 +370,7 @@ func (h *CatalogHandler) DeleteBrand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	affected, err := h.Q.AdminDeleteBrand(ctx, id)
+	affected, err := h.Q.AdminDeleteBrand(ctx, dbgen.AdminDeleteBrandParams{ID: id, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to delete brand", nil)
 		return

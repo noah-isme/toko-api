@@ -16,16 +16,17 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 type queryProvider interface {
-	ListBrands(ctx context.Context) ([]dbgen.ListBrandsRow, error)
-	GetBrandByID(ctx context.Context, id pgtype.UUID) (dbgen.GetBrandByIDRow, error)
-	ListCategories(ctx context.Context) ([]dbgen.ListCategoriesRow, error)
-	GetCategoryByID(ctx context.Context, id pgtype.UUID) (dbgen.GetCategoryByIDRow, error)
+	ListBrands(ctx context.Context, tenantID pgtype.UUID) ([]dbgen.ListBrandsRow, error)
+	GetBrandByID(ctx context.Context, arg dbgen.GetBrandByIDParams) (dbgen.GetBrandByIDRow, error)
+	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]dbgen.ListCategoriesRow, error)
+	GetCategoryByID(ctx context.Context, arg dbgen.GetCategoryByIDParams) (dbgen.GetCategoryByIDRow, error)
 	CountProductsPublic(ctx context.Context, arg dbgen.CountProductsPublicParams) (int64, error)
 	ListProductsPublic(ctx context.Context, arg dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error)
-	GetProductBySlug(ctx context.Context, slug string) (dbgen.GetProductBySlugRow, error)
+	GetProductBySlug(ctx context.Context, arg dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]dbgen.ProductVariant, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]dbgen.ProductImage, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]dbgen.ProductSpec, error)
@@ -238,7 +239,8 @@ func (s *Service) ParseListParams(values url.Values) (ListParams, error) {
 
 // ListBrands returns the list of brands sorted by name.
 func (s *Service) ListBrands(ctx context.Context) ([]Brand, error) {
-	rows, err := s.queries.ListBrands(ctx)
+	tenantID := tenantIDFromContext(ctx)
+	rows, err := s.queries.ListBrands(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list brands: %w", err)
 	}
@@ -255,7 +257,8 @@ func (s *Service) ListBrands(ctx context.Context) ([]Brand, error) {
 
 // ListCategories returns all categories with parent linkage.
 func (s *Service) ListCategories(ctx context.Context) ([]Category, error) {
-	rows, err := s.queries.ListCategories(ctx)
+	tenantID := tenantIDFromContext(ctx)
+	rows, err := s.queries.ListCategories(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list categories: %w", err)
 	}
@@ -277,7 +280,7 @@ func (s *Service) ListCategories(ctx context.Context) ([]Category, error) {
 
 // ListProducts returns filtered product list with pagination metadata.
 func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductListResult, error) {
-	key, shouldUseCache := s.listCacheKey(params)
+	key, shouldUseCache := s.listCacheKey(ctx, params)
 	if shouldUseCache && s.cache != nil {
 		var cached cachedList
 		ok, err := s.cache.GetJSON(ctx, key, &cached)
@@ -287,6 +290,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 	}
 
 	countParams := dbgen.CountProductsPublicParams{
+		TenantID:     tenantIDFromContext(ctx),
 		Q:            optionalStringValue(params.Query),
 		CategorySlug: optionalStringValue(params.Category),
 		BrandSlug:    optionalStringValue(params.Brand),
@@ -303,6 +307,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		offset = 0
 	}
 	listParams := dbgen.ListProductsPublicParams{
+		TenantID:     countParams.TenantID,
 		Q:            countParams.Q,
 		CategorySlug: countParams.CategorySlug,
 		BrandSlug:    countParams.BrandSlug,
@@ -372,14 +377,14 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 	}
 	var cacheKey string
 	if s.cache != nil {
-		cacheKey = s.cache.ProductDetailKey(slug)
+		cacheKey = s.cache.ProductDetailKeyForTenant(tenantCacheKey(ctx), slug)
 		var cached ProductDetail
 		ok, err := s.cache.GetJSON(ctx, cacheKey, &cached)
 		if err == nil && ok {
 			return cached, nil
 		}
 	}
-	product, err := s.queries.GetProductBySlug(ctx, slug)
+	product, err := s.queries.GetProductBySlug(ctx, dbgen.GetProductBySlugParams{Slug: slug, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ProductDetail{}, &common.AppError{Code: "NOT_FOUND", Message: "product not found", HTTPStatus: http.StatusNotFound, Err: err}
@@ -407,7 +412,7 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 		detail.Thumbnail = &thumb
 	}
 	if product.BrandID.Valid {
-		brand, err := s.queries.GetBrandByID(ctx, product.BrandID)
+		brand, err := s.queries.GetBrandByID(ctx, dbgen.GetBrandByIDParams{ID: product.BrandID, TenantID: tenantIDFromContext(ctx)})
 		if err == nil {
 			detail.Brand = &Mini{ID: uuidString(brand.ID), Name: brand.Name, Slug: brand.Slug}
 		}
@@ -466,7 +471,8 @@ func (s *Service) GetProductDetail(ctx context.Context, slug string) (ProductDet
 
 // ListRelatedProducts fetches related products from the same category.
 func (s *Service) ListRelatedProducts(ctx context.Context, slug string) ([]ProductListItem, error) {
-	product, err := s.queries.GetProductBySlug(ctx, slug)
+	tenantID := tenantIDFromContext(ctx)
+	product, err := s.queries.GetProductBySlug(ctx, dbgen.GetProductBySlugParams{Slug: slug, TenantID: tenantID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, &common.AppError{Code: "NOT_FOUND", Message: "product not found", HTTPStatus: http.StatusNotFound, Err: err}
@@ -476,7 +482,7 @@ func (s *Service) ListRelatedProducts(ctx context.Context, slug string) ([]Produ
 	if !product.CategoryID.Valid {
 		return []ProductListItem{}, nil
 	}
-	rows, err := s.queries.ListRelatedByCategory(ctx, dbgen.ListRelatedByCategoryParams{CategoryID: product.CategoryID, Slug: slug})
+	rows, err := s.queries.ListRelatedByCategory(ctx, dbgen.ListRelatedByCategoryParams{CategoryID: product.CategoryID, Slug: slug, TenantID: tenantID})
 	if err != nil {
 		return nil, fmt.Errorf("list related products: %w", err)
 	}
@@ -511,7 +517,7 @@ func (s *Service) categoryPath(ctx context.Context, id pgtype.UUID) ([]string, e
 	seen := make(map[string]struct{})
 	current := id
 	for current.Valid {
-		cat, err := s.queries.GetCategoryByID(ctx, current)
+		cat, err := s.queries.GetCategoryByID(ctx, dbgen.GetCategoryByIDParams{ID: current, TenantID: tenantIDFromContext(ctx)})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				break
@@ -537,7 +543,7 @@ type cachedList struct {
 	Total int64             `json:"total"`
 }
 
-func (s *Service) listCacheKey(params ListParams) (string, bool) {
+func (s *Service) listCacheKey(ctx context.Context, params ListParams) (string, bool) {
 	if s.cache == nil {
 		return "", false
 	}
@@ -550,7 +556,7 @@ func (s *Service) listCacheKey(params ListParams) (string, bool) {
 	if params.Query != "" || params.Category != "" || params.Brand != "" || params.MinPrice != nil || params.MaxPrice != nil || params.InStock != nil || params.Sort != "" {
 		return "", false
 	}
-	return s.cache.ProductListKey(), true
+	return s.cache.ProductListKeyForTenant(tenantCacheKey(ctx)), true
 }
 
 func optionalStringValue(value string) pgtype.Text {
@@ -605,6 +611,26 @@ func uuidString(id pgtype.UUID) string {
 		return ""
 	}
 	return u.String()
+}
+
+func tenantIDFromContext(ctx context.Context) pgtype.UUID {
+	id, ok := tenant.FromContext(ctx)
+	if !ok {
+		return pgtype.UUID{}
+	}
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: parsed, Valid: true}
+}
+
+func tenantCacheKey(ctx context.Context) string {
+	id, ok := tenant.FromContext(ctx)
+	if !ok {
+		return "unscoped"
+	}
+	return id
 }
 
 func badRequest(field, message string, err error) *common.AppError {

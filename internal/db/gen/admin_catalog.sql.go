@@ -15,17 +15,19 @@ const adminCountProducts = `-- name: AdminCountProducts :one
 
 SELECT COUNT(*)
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL
-       OR p.title ILIKE '%' || $1::text || '%'
-       OR p.slug ILIKE '%' || $1::text || '%')
-  AND ($2::text IS NULL OR c.slug = $2::text)
-  AND ($3::text IS NULL OR b.slug = $3::text)
-  AND ($4::boolean IS NULL OR p.in_stock = $4::boolean)
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL
+       OR p.title ILIKE '%' || $2::text || '%'
+       OR p.slug ILIKE '%' || $2::text || '%')
+  AND ($3::text IS NULL OR c.slug = $3::text)
+  AND ($4::text IS NULL OR b.slug = $4::text)
+  AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
 `
 
 type AdminCountProductsParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
 	Search       pgtype.Text `json:"search"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
@@ -37,6 +39,7 @@ type AdminCountProductsParams struct {
 // catalog queries, which are cached and shaped for storefront consumption.
 func (q *Queries) AdminCountProducts(ctx context.Context, arg AdminCountProductsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, adminCountProducts,
+		arg.TenantID,
 		arg.Search,
 		arg.CategorySlug,
 		arg.BrandSlug,
@@ -52,7 +55,7 @@ INSERT INTO brands (name, slug, tenant_id)
 VALUES (
     $1,
     $2,
-    COALESCE($3::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    $3
 )
 RETURNING id, name, slug, created_at, updated_at
 `
@@ -90,7 +93,7 @@ VALUES (
     $1,
     $2,
     $3,
-    COALESCE($4::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    $4
 )
 RETURNING id, name, slug, parent_id, created_at, updated_at
 `
@@ -143,7 +146,7 @@ VALUES (
     $8,
     $9,
     $10,
-    COALESCE($11::uuid, (SELECT id FROM tenants WHERE slug = 'default'))
+    $11
 )
 RETURNING id
 `
@@ -182,11 +185,16 @@ func (q *Queries) AdminCreateProduct(ctx context.Context, arg AdminCreateProduct
 }
 
 const adminDeleteBrand = `-- name: AdminDeleteBrand :execrows
-DELETE FROM brands WHERE id = $1
+DELETE FROM brands WHERE id = $1 AND tenant_id = $2
 `
 
-func (q *Queries) AdminDeleteBrand(ctx context.Context, id pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, adminDeleteBrand, id)
+type AdminDeleteBrandParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminDeleteBrand(ctx context.Context, arg AdminDeleteBrandParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adminDeleteBrand, arg.ID, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -194,11 +202,16 @@ func (q *Queries) AdminDeleteBrand(ctx context.Context, id pgtype.UUID) (int64, 
 }
 
 const adminDeleteCategory = `-- name: AdminDeleteCategory :execrows
-DELETE FROM categories WHERE id = $1
+DELETE FROM categories WHERE id = $1 AND tenant_id = $2
 `
 
-func (q *Queries) AdminDeleteCategory(ctx context.Context, id pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, adminDeleteCategory, id)
+type AdminDeleteCategoryParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminDeleteCategory(ctx context.Context, arg AdminDeleteCategoryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adminDeleteCategory, arg.ID, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -206,11 +219,16 @@ func (q *Queries) AdminDeleteCategory(ctx context.Context, id pgtype.UUID) (int6
 }
 
 const adminDeleteProduct = `-- name: AdminDeleteProduct :execrows
-DELETE FROM products WHERE id = $1
+DELETE FROM products WHERE id = $1 AND tenant_id = $2
 `
 
-func (q *Queries) AdminDeleteProduct(ctx context.Context, id pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, adminDeleteProduct, id)
+type AdminDeleteProductParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminDeleteProduct(ctx context.Context, arg AdminDeleteProductParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adminDeleteProduct, arg.ID, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -219,24 +237,33 @@ func (q *Queries) AdminDeleteProduct(ctx context.Context, id pgtype.UUID) (int64
 
 const adminDeleteProductSpecs = `-- name: AdminDeleteProductSpecs :exec
 DELETE FROM product_specs WHERE product_id = $1
+  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
 `
 
-func (q *Queries) AdminDeleteProductSpecs(ctx context.Context, productID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, adminDeleteProductSpecs, productID)
+type AdminDeleteProductSpecsParams struct {
+	ProductID pgtype.UUID `json:"product_id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminDeleteProductSpecs(ctx context.Context, arg AdminDeleteProductSpecsParams) error {
+	_, err := q.db.Exec(ctx, adminDeleteProductSpecs, arg.ProductID, arg.TenantID)
 	return err
 }
 
 const adminDeleteProductVariant = `-- name: AdminDeleteProductVariant :execrows
-DELETE FROM product_variants WHERE id = $1 AND product_id = $2
+DELETE FROM product_variants
+WHERE product_variants.id = $1 AND product_id = $2
+  AND EXISTS (SELECT 1 FROM products WHERE id = $2 AND tenant_id = $3)
 `
 
 type AdminDeleteProductVariantParams struct {
 	ID        pgtype.UUID `json:"id"`
 	ProductID pgtype.UUID `json:"product_id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error) {
-	result, err := q.db.Exec(ctx, adminDeleteProductVariant, arg.ID, arg.ProductID)
+	result, err := q.db.Exec(ctx, adminDeleteProductVariant, arg.ID, arg.ProductID, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -247,12 +274,18 @@ const adminGetPrimaryVariant = `-- name: AdminGetPrimaryVariant :one
 SELECT id, product_id, sku, price, stock, attributes
 FROM product_variants
 WHERE product_id = $1
+  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
 ORDER BY sku NULLS LAST, id
 LIMIT 1
 `
 
-func (q *Queries) AdminGetPrimaryVariant(ctx context.Context, productID pgtype.UUID) (ProductVariant, error) {
-	row := q.db.QueryRow(ctx, adminGetPrimaryVariant, productID)
+type AdminGetPrimaryVariantParams struct {
+	ProductID pgtype.UUID `json:"product_id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimaryVariantParams) (ProductVariant, error) {
+	row := q.db.QueryRow(ctx, adminGetPrimaryVariant, arg.ProductID, arg.TenantID)
 	var i ProductVariant
 	err := row.Scan(
 		&i.ID,
@@ -283,11 +316,17 @@ SELECT p.id,
        b.name AS brand_name,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE p.id = $1
+  AND p.tenant_id = $2
 LIMIT 1
 `
+
+type AdminGetProductParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type AdminGetProductRow struct {
 	ID           pgtype.UUID        `json:"id"`
@@ -308,8 +347,8 @@ type AdminGetProductRow struct {
 	TotalStock   int32              `json:"total_stock"`
 }
 
-func (q *Queries) AdminGetProduct(ctx context.Context, id pgtype.UUID) (AdminGetProductRow, error) {
-	row := q.db.QueryRow(ctx, adminGetProduct, id)
+func (q *Queries) AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error) {
+	row := q.db.QueryRow(ctx, adminGetProduct, arg.ID, arg.TenantID)
 	var i AdminGetProductRow
 	err := row.Scan(
 		&i.ID,
@@ -333,11 +372,16 @@ func (q *Queries) AdminGetProduct(ctx context.Context, id pgtype.UUID) (AdminGet
 }
 
 const adminGetProductIDBySlug = `-- name: AdminGetProductIDBySlug :one
-SELECT id FROM products WHERE slug = $1 LIMIT 1
+SELECT id FROM products WHERE slug = $1 AND tenant_id = $2 LIMIT 1
 `
 
-func (q *Queries) AdminGetProductIDBySlug(ctx context.Context, slug string) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, adminGetProductIDBySlug, slug)
+type AdminGetProductIDBySlugParams struct {
+	Slug     string      `json:"slug"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, adminGetProductIDBySlug, arg.Slug, arg.TenantID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
@@ -345,39 +389,54 @@ func (q *Queries) AdminGetProductIDBySlug(ctx context.Context, slug string) (pgt
 
 const adminInsertProductImage = `-- name: AdminInsertProductImage :exec
 INSERT INTO product_images (product_id, url, sort_order)
-VALUES ($1, $2, $3)
+SELECT $1, $2, $3
+WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $4)
 `
 
 type AdminInsertProductImageParams struct {
 	ProductID pgtype.UUID `json:"product_id"`
 	Url       string      `json:"url"`
 	SortOrder int32       `json:"sort_order"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminInsertProductImage(ctx context.Context, arg AdminInsertProductImageParams) error {
-	_, err := q.db.Exec(ctx, adminInsertProductImage, arg.ProductID, arg.Url, arg.SortOrder)
+	_, err := q.db.Exec(ctx, adminInsertProductImage,
+		arg.ProductID,
+		arg.Url,
+		arg.SortOrder,
+		arg.TenantID,
+	)
 	return err
 }
 
 const adminInsertProductSpec = `-- name: AdminInsertProductSpec :exec
 INSERT INTO product_specs (product_id, key, value)
-VALUES ($1, $2, $3)
+SELECT $1, $2, $3
+WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $4)
 `
 
 type AdminInsertProductSpecParams struct {
 	ProductID pgtype.UUID `json:"product_id"`
 	Key       string      `json:"key"`
 	Value     string      `json:"value"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminInsertProductSpec(ctx context.Context, arg AdminInsertProductSpecParams) error {
-	_, err := q.db.Exec(ctx, adminInsertProductSpec, arg.ProductID, arg.Key, arg.Value)
+	_, err := q.db.Exec(ctx, adminInsertProductSpec,
+		arg.ProductID,
+		arg.Key,
+		arg.Value,
+		arg.TenantID,
+	)
 	return err
 }
 
 const adminInsertProductVariant = `-- name: AdminInsertProductVariant :one
 INSERT INTO product_variants (product_id, sku, price, stock, attributes)
-VALUES ($1, $2, $3, $4, $5)
+SELECT $1, $2, $3, $4, $5
+WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $6)
 RETURNING id
 `
 
@@ -387,6 +446,7 @@ type AdminInsertProductVariantParams struct {
 	Price      int64       `json:"price"`
 	Stock      int32       `json:"stock"`
 	Attributes []byte      `json:"attributes"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminInsertProductVariant(ctx context.Context, arg AdminInsertProductVariantParams) (pgtype.UUID, error) {
@@ -396,6 +456,7 @@ func (q *Queries) AdminInsertProductVariant(ctx context.Context, arg AdminInsert
 		arg.Price,
 		arg.Stock,
 		arg.Attributes,
+		arg.TenantID,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -408,8 +469,9 @@ SELECT b.id,
        b.slug,
        b.created_at,
        b.updated_at,
-       COALESCE((SELECT COUNT(*) FROM products WHERE brand_id = b.id), 0)::int AS product_count
+       COALESCE((SELECT COUNT(*) FROM products WHERE brand_id = b.id AND tenant_id = b.tenant_id), 0)::int AS product_count
 FROM brands b
+WHERE b.tenant_id = $1
 ORDER BY b.name ASC
 `
 
@@ -422,8 +484,8 @@ type AdminListBrandsRow struct {
 	ProductCount int32              `json:"product_count"`
 }
 
-func (q *Queries) AdminListBrands(ctx context.Context) ([]AdminListBrandsRow, error) {
-	rows, err := q.db.Query(ctx, adminListBrands)
+func (q *Queries) AdminListBrands(ctx context.Context, tenantID pgtype.UUID) ([]AdminListBrandsRow, error) {
+	rows, err := q.db.Query(ctx, adminListBrands, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -456,8 +518,9 @@ SELECT c.id,
        c.parent_id,
        c.created_at,
        c.updated_at,
-       COALESCE((SELECT COUNT(*) FROM products WHERE category_id = c.id), 0)::int AS product_count
+       COALESCE((SELECT COUNT(*) FROM products WHERE category_id = c.id AND tenant_id = c.tenant_id), 0)::int AS product_count
 FROM categories c
+WHERE c.tenant_id = $1
 ORDER BY c.name ASC
 `
 
@@ -471,8 +534,8 @@ type AdminListCategoriesRow struct {
 	ProductCount int32              `json:"product_count"`
 }
 
-func (q *Queries) AdminListCategories(ctx context.Context) ([]AdminListCategoriesRow, error) {
-	rows, err := q.db.Query(ctx, adminListCategories)
+func (q *Queries) AdminListCategories(ctx context.Context, tenantID pgtype.UUID) ([]AdminListCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, adminListCategories, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -519,19 +582,21 @@ SELECT p.id,
        COALESCE((SELECT COUNT(*) FROM product_variants WHERE product_id = p.id), 0)::int AS variant_count,
        (SELECT sku FROM product_variants WHERE product_id = p.id ORDER BY sku NULLS LAST LIMIT 1) AS primary_sku
 FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id
-LEFT JOIN categories c ON c.id = p.category_id
-WHERE ($1::text IS NULL
-       OR p.title ILIKE '%' || $1::text || '%'
-       OR p.slug ILIKE '%' || $1::text || '%')
-  AND ($2::text IS NULL OR c.slug = $2::text)
-  AND ($3::text IS NULL OR b.slug = $3::text)
-  AND ($4::boolean IS NULL OR p.in_stock = $4::boolean)
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL
+       OR p.title ILIKE '%' || $2::text || '%'
+       OR p.slug ILIKE '%' || $2::text || '%')
+  AND ($3::text IS NULL OR c.slug = $3::text)
+  AND ($4::text IS NULL OR b.slug = $4::text)
+  AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
 ORDER BY p.created_at DESC, p.id
-LIMIT $6 OFFSET $5
+LIMIT $7 OFFSET $6
 `
 
 type AdminListProductsParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
 	Search       pgtype.Text `json:"search"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
@@ -563,6 +628,7 @@ type AdminListProductsRow struct {
 
 func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error) {
 	rows, err := q.db.Query(ctx, adminListProducts,
+		arg.TenantID,
 		arg.Search,
 		arg.CategorySlug,
 		arg.BrandSlug,
@@ -609,10 +675,16 @@ func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsPa
 
 const adminReplaceProductImages = `-- name: AdminReplaceProductImages :exec
 DELETE FROM product_images WHERE product_id = $1
+  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
 `
 
-func (q *Queries) AdminReplaceProductImages(ctx context.Context, productID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, adminReplaceProductImages, productID)
+type AdminReplaceProductImagesParams struct {
+	ProductID pgtype.UUID `json:"product_id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminReplaceProductImages(ctx context.Context, arg AdminReplaceProductImagesParams) error {
+	_, err := q.db.Exec(ctx, adminReplaceProductImages, arg.ProductID, arg.TenantID)
 	return err
 }
 
@@ -620,16 +692,17 @@ const adminSetProductStockFlag = `-- name: AdminSetProductStockFlag :exec
 UPDATE products
 SET in_stock   = $1,
     updated_at = now()
-WHERE id = $2
+WHERE id = $2 AND tenant_id = $3
 `
 
 type AdminSetProductStockFlagParams struct {
-	InStock bool        `json:"in_stock"`
-	ID      pgtype.UUID `json:"id"`
+	InStock  bool        `json:"in_stock"`
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error {
-	_, err := q.db.Exec(ctx, adminSetProductStockFlag, arg.InStock, arg.ID)
+	_, err := q.db.Exec(ctx, adminSetProductStockFlag, arg.InStock, arg.ID, arg.TenantID)
 	return err
 }
 
@@ -639,13 +712,15 @@ SET name       = COALESCE($1, name),
     slug       = COALESCE($2, slug),
     updated_at = now()
 WHERE id = $3
+  AND tenant_id = $4
 RETURNING id, name, slug, created_at, updated_at
 `
 
 type AdminUpdateBrandParams struct {
-	Name pgtype.Text `json:"name"`
-	Slug pgtype.Text `json:"slug"`
-	ID   pgtype.UUID `json:"id"`
+	Name     pgtype.Text `json:"name"`
+	Slug     pgtype.Text `json:"slug"`
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
 }
 
 type AdminUpdateBrandRow struct {
@@ -657,7 +732,12 @@ type AdminUpdateBrandRow struct {
 }
 
 func (q *Queries) AdminUpdateBrand(ctx context.Context, arg AdminUpdateBrandParams) (AdminUpdateBrandRow, error) {
-	row := q.db.QueryRow(ctx, adminUpdateBrand, arg.Name, arg.Slug, arg.ID)
+	row := q.db.QueryRow(ctx, adminUpdateBrand,
+		arg.Name,
+		arg.Slug,
+		arg.ID,
+		arg.TenantID,
+	)
 	var i AdminUpdateBrandRow
 	err := row.Scan(
 		&i.ID,
@@ -676,6 +756,7 @@ SET name       = COALESCE($1, name),
     parent_id  = CASE WHEN $3::boolean THEN $4 ELSE parent_id END,
     updated_at = now()
 WHERE id = $5
+  AND tenant_id = $6
 RETURNING id, name, slug, parent_id, created_at, updated_at
 `
 
@@ -685,6 +766,7 @@ type AdminUpdateCategoryParams struct {
 	SetParent bool        `json:"set_parent"`
 	ParentID  pgtype.UUID `json:"parent_id"`
 	ID        pgtype.UUID `json:"id"`
+	TenantID  pgtype.UUID `json:"tenant_id"`
 }
 
 type AdminUpdateCategoryRow struct {
@@ -703,6 +785,7 @@ func (q *Queries) AdminUpdateCategory(ctx context.Context, arg AdminUpdateCatego
 		arg.SetParent,
 		arg.ParentID,
 		arg.ID,
+		arg.TenantID,
 	)
 	var i AdminUpdateCategoryRow
 	err := row.Scan(
@@ -730,6 +813,7 @@ SET title       = COALESCE($1, title),
     description = CASE WHEN $15::boolean THEN $16 ELSE description END,
     updated_at  = now()
 WHERE id = $17
+  AND tenant_id = $18
 RETURNING id
 `
 
@@ -751,6 +835,7 @@ type AdminUpdateProductParams struct {
 	SetDescription bool        `json:"set_description"`
 	Description    pgtype.Text `json:"description"`
 	ID             pgtype.UUID `json:"id"`
+	TenantID       pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminUpdateProduct(ctx context.Context, arg AdminUpdateProductParams) (pgtype.UUID, error) {
@@ -772,6 +857,7 @@ func (q *Queries) AdminUpdateProduct(ctx context.Context, arg AdminUpdateProduct
 		arg.SetDescription,
 		arg.Description,
 		arg.ID,
+		arg.TenantID,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -784,7 +870,8 @@ SET sku        = COALESCE($1, sku),
     price      = COALESCE($2, price),
     stock      = COALESCE($3, stock),
     attributes = COALESCE($4, attributes)
-WHERE id = $5 AND product_id = $6
+WHERE product_variants.id = $5 AND product_id = $6
+  AND EXISTS (SELECT 1 FROM products WHERE id = $6 AND tenant_id = $7)
 RETURNING id, product_id, sku, price, stock, attributes
 `
 
@@ -795,6 +882,7 @@ type AdminUpdateProductVariantParams struct {
 	Attributes []byte      `json:"attributes"`
 	ID         pgtype.UUID `json:"id"`
 	ProductID  pgtype.UUID `json:"product_id"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminUpdateProductVariant(ctx context.Context, arg AdminUpdateProductVariantParams) (ProductVariant, error) {
@@ -805,6 +893,7 @@ func (q *Queries) AdminUpdateProductVariant(ctx context.Context, arg AdminUpdate
 		arg.Attributes,
 		arg.ID,
 		arg.ProductID,
+		arg.TenantID,
 	)
 	var i ProductVariant
 	err := row.Scan(

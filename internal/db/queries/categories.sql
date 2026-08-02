@@ -1,12 +1,14 @@
 -- name: ListCategories :many
 SELECT id, name, slug, parent_id
 FROM categories
+WHERE tenant_id = sqlc.arg(tenant_id)
 ORDER BY name ASC;
 
 -- name: GetCategoryByID :one
 SELECT id, name, slug, parent_id
 FROM categories
-WHERE id = $1
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: GetCategoryBySlug :one

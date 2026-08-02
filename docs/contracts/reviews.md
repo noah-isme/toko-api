@@ -110,4 +110,4 @@ DELETE /api/v1/products/{id}/reviews
 Authorization: Bearer <token>
 ```
 
-Requires authentication. This endpoint is currently **not implemented** and returns `501 Not Implemented`.
+Requires authentication. The endpoint deletes the authenticated user's review for the product and returns `204 No Content`.

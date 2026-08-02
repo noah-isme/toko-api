@@ -12,20 +12,21 @@ import (
 )
 
 const createCartItem = `-- name: CreateCartItem :one
-INSERT INTO cart_items (cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
+INSERT INTO cart_items (cart_id, product_id, variant_id, campaign_id, title, slug, qty, unit_price, subtotal)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal, campaign_id
 `
 
 type CreateCartItemParams struct {
-	CartID    pgtype.UUID `json:"cart_id"`
-	ProductID pgtype.UUID `json:"product_id"`
-	VariantID pgtype.UUID `json:"variant_id"`
-	Title     string      `json:"title"`
-	Slug      string      `json:"slug"`
-	Qty       int32       `json:"qty"`
-	UnitPrice int64       `json:"unit_price"`
-	Subtotal  int64       `json:"subtotal"`
+	CartID     pgtype.UUID `json:"cart_id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	VariantID  pgtype.UUID `json:"variant_id"`
+	CampaignID pgtype.UUID `json:"campaign_id"`
+	Title      string      `json:"title"`
+	Slug       string      `json:"slug"`
+	Qty        int32       `json:"qty"`
+	UnitPrice  int64       `json:"unit_price"`
+	Subtotal   int64       `json:"subtotal"`
 }
 
 func (q *Queries) CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error) {
@@ -33,6 +34,7 @@ func (q *Queries) CreateCartItem(ctx context.Context, arg CreateCartItemParams) 
 		arg.CartID,
 		arg.ProductID,
 		arg.VariantID,
+		arg.CampaignID,
 		arg.Title,
 		arg.Slug,
 		arg.Qty,
@@ -50,6 +52,7 @@ func (q *Queries) CreateCartItem(ctx context.Context, arg CreateCartItemParams) 
 		&i.Qty,
 		&i.UnitPrice,
 		&i.Subtotal,
+		&i.CampaignID,
 	)
 	return i, err
 }
@@ -71,22 +74,29 @@ func (q *Queries) DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) 
 }
 
 const findCartItemByProductVariant = `-- name: FindCartItemByProductVariant :one
-SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
+SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal, campaign_id
 FROM cart_items
 WHERE cart_id = $1
   AND product_id = $2
   AND (variant_id IS NOT DISTINCT FROM $3)
+  AND (campaign_id IS NOT DISTINCT FROM $4)
 LIMIT 1
 `
 
 type FindCartItemByProductVariantParams struct {
-	CartID    pgtype.UUID `json:"cart_id"`
-	ProductID pgtype.UUID `json:"product_id"`
-	VariantID pgtype.UUID `json:"variant_id"`
+	CartID     pgtype.UUID `json:"cart_id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	VariantID  pgtype.UUID `json:"variant_id"`
+	CampaignID pgtype.UUID `json:"campaign_id"`
 }
 
 func (q *Queries) FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error) {
-	row := q.db.QueryRow(ctx, findCartItemByProductVariant, arg.CartID, arg.ProductID, arg.VariantID)
+	row := q.db.QueryRow(ctx, findCartItemByProductVariant,
+		arg.CartID,
+		arg.ProductID,
+		arg.VariantID,
+		arg.CampaignID,
+	)
 	var i CartItem
 	err := row.Scan(
 		&i.ID,
@@ -98,12 +108,13 @@ func (q *Queries) FindCartItemByProductVariant(ctx context.Context, arg FindCart
 		&i.Qty,
 		&i.UnitPrice,
 		&i.Subtotal,
+		&i.CampaignID,
 	)
 	return i, err
 }
 
 const getCartItemByID = `-- name: GetCartItemByID :one
-SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
+SELECT id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal, campaign_id
 FROM cart_items
 WHERE id = $1
 LIMIT 1
@@ -122,12 +133,13 @@ func (q *Queries) GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem
 		&i.Qty,
 		&i.UnitPrice,
 		&i.Subtotal,
+		&i.CampaignID,
 	)
 	return i, err
 }
 
 const listCartItems = `-- name: ListCartItems :many
-SELECT ci.id, ci.cart_id, ci.product_id, ci.variant_id, ci.title, ci.slug,
+SELECT ci.id, ci.cart_id, ci.product_id, ci.variant_id, ci.campaign_id, ci.title, ci.slug,
        ci.qty, ci.unit_price, ci.subtotal,
        p.thumbnail AS image_url
 FROM cart_items ci
@@ -137,16 +149,17 @@ ORDER BY ci.title ASC, ci.id
 `
 
 type ListCartItemsRow struct {
-	ID        pgtype.UUID `json:"id"`
-	CartID    pgtype.UUID `json:"cart_id"`
-	ProductID pgtype.UUID `json:"product_id"`
-	VariantID pgtype.UUID `json:"variant_id"`
-	Title     string      `json:"title"`
-	Slug      string      `json:"slug"`
-	Qty       int32       `json:"qty"`
-	UnitPrice int64       `json:"unit_price"`
-	Subtotal  int64       `json:"subtotal"`
-	ImageUrl  pgtype.Text `json:"image_url"`
+	ID         pgtype.UUID `json:"id"`
+	CartID     pgtype.UUID `json:"cart_id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	VariantID  pgtype.UUID `json:"variant_id"`
+	CampaignID pgtype.UUID `json:"campaign_id"`
+	Title      string      `json:"title"`
+	Slug       string      `json:"slug"`
+	Qty        int32       `json:"qty"`
+	UnitPrice  int64       `json:"unit_price"`
+	Subtotal   int64       `json:"subtotal"`
+	ImageUrl   pgtype.Text `json:"image_url"`
 }
 
 // The image is joined live rather than snapshotted into cart_items alongside
@@ -167,6 +180,7 @@ func (q *Queries) ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]List
 			&i.CartID,
 			&i.ProductID,
 			&i.VariantID,
+			&i.CampaignID,
 			&i.Title,
 			&i.Slug,
 			&i.Qty,
@@ -189,7 +203,7 @@ UPDATE cart_items
 SET qty = $2,
     subtotal = $3
 WHERE id = $1
-RETURNING id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal
+RETURNING id, cart_id, product_id, variant_id, title, slug, qty, unit_price, subtotal, campaign_id
 `
 
 type UpdateCartItemQtyParams struct {
@@ -211,6 +225,7 @@ func (q *Queries) UpdateCartItemQty(ctx context.Context, arg UpdateCartItemQtyPa
 		&i.Qty,
 		&i.UnitPrice,
 		&i.Subtotal,
+		&i.CampaignID,
 	)
 	return i, err
 }

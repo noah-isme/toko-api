@@ -96,13 +96,14 @@ type DraftTotals struct {
 }
 
 type Service struct {
-	Q          *dbgen.Queries
-	Pool       *pgxpool.Pool
-	CartSvc    *cart.Service
-	PaymentSvc *payment.Service
-	TaxBps     int
-	Currency   string
-	Events     *events.Bus
+	Q                       *dbgen.Queries
+	Pool                    *pgxpool.Pool
+	CartSvc                 *cart.Service
+	PaymentSvc              *payment.Service
+	TaxBps                  int
+	Currency                string
+	Events                  *events.Bus
+	InventoryReservationTTL time.Duration
 }
 
 func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output, error) {
@@ -176,8 +177,21 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		_ = tx.Rollback(ctx)
 	}()
 	qtx := s.Q.WithTx(tx)
+	if expired, expiryErr := qtx.ListExpiredInventoryReservationsForTenant(ctx, tID); expiryErr == nil {
+		for _, reservation := range expired {
+			if _, transitionErr := qtx.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
+				ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusEXPIRED,
+			}); transitionErr == nil {
+				if releaseErr := qtx.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty}); releaseErr != nil {
+					return Output{}, releaseErr
+				}
+			}
+		}
+	} else {
+		return Output{}, expiryErr
+	}
 
-	cartRow, err := qtx.GetCartByID(ctx, cID)
+	cartRow, err := qtx.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cID, TenantID: tID})
 	if err != nil {
 		return Output{}, err
 	}
@@ -229,6 +243,11 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	if err != nil {
 		return Output{}, err
 	}
+	reservationTTL := s.InventoryReservationTTL
+	if reservationTTL <= 0 {
+		reservationTTL = 15 * time.Minute
+	}
+	reservationExpiry := time.Now().Add(reservationTTL)
 	for _, it := range items {
 		if err := qtx.CreateOrderItem(ctx, dbgen.CreateOrderItemParams{
 			OrderID:   order.ID,
@@ -239,6 +258,25 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 			Qty:       it.Qty,
 			UnitPrice: it.UnitPrice,
 			Subtotal:  it.Subtotal,
+		}); err != nil {
+			return Output{}, err
+		}
+		if !it.VariantID.Valid {
+			return Output{}, fmt.Errorf("product %s has no inventory variant", cart.UUIDString(it.ProductID))
+		}
+		if _, err := qtx.ReserveVariantStock(ctx, dbgen.ReserveVariantStockParams{ID: it.VariantID, Qty: it.Qty}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Output{}, fmt.Errorf("insufficient stock for %s", it.Title)
+			}
+			return Output{}, err
+		}
+		if _, err := qtx.CreateInventoryReservation(ctx, dbgen.CreateInventoryReservationParams{
+			TenantID:  tID,
+			OrderID:   order.ID,
+			ProductID: it.ProductID,
+			VariantID: it.VariantID,
+			Qty:       it.Qty,
+			ExpiresAt: pgtype.Timestamptz{Time: reservationExpiry, Valid: true},
 		}); err != nil {
 			return Output{}, err
 		}
@@ -258,14 +296,29 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	}
 
 	if s.PaymentSvc != nil {
-		if pay, perr := s.PaymentSvc.CreateIntent(ctx, out.OrderID, int64(summary.Total), in.PaymentMethod, ""); perr == nil {
-			if pay.RedirectUrl.Valid {
-				out.PaymentURL = pay.RedirectUrl.String
+		pay, perr := s.PaymentSvc.CreateIntent(ctx, out.OrderID, int64(summary.Total), in.PaymentMethod, "")
+		if perr != nil {
+			// A provider outage must not strand the reserved stock. Release the
+			// reservation only when it is still RESERVED, making this cleanup
+			// safe to retry.
+			if reservations, listErr := s.Q.ListInventoryReservationsByOrder(ctx, order.ID); listErr == nil {
+				for _, reservation := range reservations {
+					if _, transitionErr := s.Q.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
+						ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusRELEASED,
+					}); transitionErr == nil {
+						_ = s.Q.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty})
+					}
+				}
 			}
-			if pay.ExpiresAt.Valid {
-				t := pay.ExpiresAt.Time
-				out.PaymentExpiry = &t
-			}
+			_ = s.Q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED})
+			return Output{}, fmt.Errorf("create payment intent: %w", perr)
+		}
+		if pay.RedirectUrl.Valid {
+			out.PaymentURL = pay.RedirectUrl.String
+		}
+		if pay.ExpiresAt.Valid {
+			t := pay.ExpiresAt.Time
+			out.PaymentExpiry = &t
 		}
 	}
 
@@ -313,6 +366,14 @@ func (s *Service) CreateDraft(ctx context.Context, userID *string, in Input) (Dr
 			return DraftOutput{}, fmt.Errorf("unsupported paymentMethod: %q", in.PaymentMethod)
 		}
 	}
+	tenantID, ok := tenant.FromContext(ctx)
+	if !ok || tenantID == "" {
+		return DraftOutput{}, errors.New("tenant is required")
+	}
+	tID, err := cart.ToUUID(tenantID)
+	if err != nil {
+		return DraftOutput{}, fmt.Errorf("invalid tenant id: %w", err)
+	}
 
 	cID, err := cart.ToUUID(in.CartID)
 	if err != nil {
@@ -332,7 +393,7 @@ func (s *Service) CreateDraft(ctx context.Context, userID *string, in Input) (Dr
 		return DraftOutput{}, fmt.Errorf("shipping address not found: %w", err)
 	}
 
-	cartRow, err := s.Q.GetCartByID(ctx, cID)
+	cartRow, err := s.Q.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cID, TenantID: tID})
 	if err != nil {
 		return DraftOutput{}, err
 	}

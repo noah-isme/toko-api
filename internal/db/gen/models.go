@@ -141,6 +141,50 @@ func (ns NullDiscountKind) Value() (driver.Value, error) {
 	return string(ns.DiscountKind), nil
 }
 
+type InventoryReservationStatus string
+
+const (
+	InventoryReservationStatusRESERVED  InventoryReservationStatus = "RESERVED"
+	InventoryReservationStatusCOMMITTED InventoryReservationStatus = "COMMITTED"
+	InventoryReservationStatusRELEASED  InventoryReservationStatus = "RELEASED"
+	InventoryReservationStatusEXPIRED   InventoryReservationStatus = "EXPIRED"
+)
+
+func (e *InventoryReservationStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = InventoryReservationStatus(s)
+	case string:
+		*e = InventoryReservationStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for InventoryReservationStatus: %T", src)
+	}
+	return nil
+}
+
+type NullInventoryReservationStatus struct {
+	InventoryReservationStatus InventoryReservationStatus `json:"inventory_reservation_status"`
+	Valid                      bool                       `json:"valid"` // Valid is true if InventoryReservationStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullInventoryReservationStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.InventoryReservationStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.InventoryReservationStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullInventoryReservationStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.InventoryReservationStatus), nil
+}
+
 type OrderStatus string
 
 const (
@@ -340,15 +384,16 @@ type Cart struct {
 }
 
 type CartItem struct {
-	ID        pgtype.UUID `json:"id"`
-	CartID    pgtype.UUID `json:"cart_id"`
-	ProductID pgtype.UUID `json:"product_id"`
-	VariantID pgtype.UUID `json:"variant_id"`
-	Title     string      `json:"title"`
-	Slug      string      `json:"slug"`
-	Qty       int32       `json:"qty"`
-	UnitPrice int64       `json:"unit_price"`
-	Subtotal  int64       `json:"subtotal"`
+	ID         pgtype.UUID `json:"id"`
+	CartID     pgtype.UUID `json:"cart_id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	VariantID  pgtype.UUID `json:"variant_id"`
+	Title      string      `json:"title"`
+	Slug       string      `json:"slug"`
+	Qty        int32       `json:"qty"`
+	UnitPrice  int64       `json:"unit_price"`
+	Subtotal   int64       `json:"subtotal"`
+	CampaignID pgtype.UUID `json:"campaign_id"`
 }
 
 type Category struct {
@@ -384,6 +429,41 @@ type Favorite struct {
 	ProductID pgtype.UUID        `json:"product_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	TenantID  pgtype.UUID        `json:"tenant_id"`
+}
+
+type FlashSaleCampaign struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	Status    string             `json:"status"`
+	StartsAt  pgtype.Timestamptz `json:"starts_at"`
+	EndsAt    pgtype.Timestamptz `json:"ends_at"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type FlashSaleItem struct {
+	ID         pgtype.UUID        `json:"id"`
+	CampaignID pgtype.UUID        `json:"campaign_id"`
+	ProductID  pgtype.UUID        `json:"product_id"`
+	SalePrice  int64              `json:"sale_price"`
+	StockLimit pgtype.Int4        `json:"stock_limit"`
+	SoldCount  int32              `json:"sold_count"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type InventoryReservation struct {
+	ID        pgtype.UUID                `json:"id"`
+	TenantID  pgtype.UUID                `json:"tenant_id"`
+	OrderID   pgtype.UUID                `json:"order_id"`
+	ProductID pgtype.UUID                `json:"product_id"`
+	VariantID pgtype.UUID                `json:"variant_id"`
+	Qty       int32                      `json:"qty"`
+	Status    InventoryReservationStatus `json:"status"`
+	ExpiresAt pgtype.Timestamptz         `json:"expires_at"`
+	CreatedAt pgtype.Timestamptz         `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz         `json:"updated_at"`
 }
 
 type MvSalesDaily struct {
@@ -477,6 +557,16 @@ type PaymentEvent struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PaymentProof struct {
+	ID          pgtype.UUID        `json:"id"`
+	OrderID     pgtype.UUID        `json:"order_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Filename    string             `json:"filename"`
+	ContentType string             `json:"content_type"`
+	Content     []byte             `json:"content"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Plan struct {
 	ID               pgtype.UUID        `json:"id"`
 	Code             string             `json:"code"`
@@ -554,6 +644,31 @@ type QuotaCounter struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Refund struct {
+	ID          pgtype.UUID        `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	ReturnID    pgtype.UUID        `json:"return_id"`
+	OrderID     pgtype.UUID        `json:"order_id"`
+	Provider    string             `json:"provider"`
+	ProviderRef string             `json:"provider_ref"`
+	Amount      int64              `json:"amount"`
+	Status      string             `json:"status"`
+	Reason      pgtype.Text        `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type Return struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	OrderID   pgtype.UUID        `json:"order_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Status    string             `json:"status"`
+	Reason    string             `json:"reason"`
+	Notes     pgtype.Text        `json:"notes"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Review struct {
 	ID        pgtype.UUID        `json:"id"`
 	ProductID pgtype.UUID        `json:"product_id"`
@@ -614,6 +729,26 @@ type Subscription struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
+type SupportMessage struct {
+	ID        pgtype.UUID        `json:"id"`
+	TicketID  pgtype.UUID        `json:"ticket_id"`
+	AuthorID  pgtype.UUID        `json:"author_id"`
+	Body      string             `json:"body"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SupportTicket struct {
+	ID        pgtype.UUID        `json:"id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	OrderID   pgtype.UUID        `json:"order_id"`
+	Subject   string             `json:"subject"`
+	Status    string             `json:"status"`
+	Priority  string             `json:"priority"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Tenant struct {
 	ID           pgtype.UUID        `json:"id"`
 	Slug         string             `json:"slug"`
@@ -624,6 +759,15 @@ type Tenant struct {
 	Metadata     []byte             `json:"metadata"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type TenantMembership struct {
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Role      string             `json:"role"`
+	Status    string             `json:"status"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TenantSetting struct {
@@ -643,6 +787,17 @@ type User struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	Phone           pgtype.Text        `json:"phone"`
 	EmailVerifiedAt pgtype.Timestamptz `json:"email_verified_at"`
+}
+
+type UserPrivacyPreference struct {
+	UserID            pgtype.UUID        `json:"user_id"`
+	MarketingEmails   bool               `json:"marketing_emails"`
+	OrderUpdates      bool               `json:"order_updates"`
+	SecurityAlerts    bool               `json:"security_alerts"`
+	ProfileVisibility string             `json:"profile_visibility"`
+	DataProcessing    bool               `json:"data_processing"`
+	AnalyticsTracking bool               `json:"analytics_tracking"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Voucher struct {

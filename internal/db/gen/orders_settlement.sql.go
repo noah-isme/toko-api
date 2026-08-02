@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createInventoryReservation = `-- name: CreateInventoryReservation :one
+INSERT INTO inventory_reservations (tenant_id, order_id, product_id, variant_id, qty, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
+`
+
+type CreateInventoryReservationParams struct {
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	OrderID   pgtype.UUID        `json:"order_id"`
+	ProductID pgtype.UUID        `json:"product_id"`
+	VariantID pgtype.UUID        `json:"variant_id"`
+	Qty       int32              `json:"qty"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) CreateInventoryReservation(ctx context.Context, arg CreateInventoryReservationParams) (InventoryReservation, error) {
+	row := q.db.QueryRow(ctx, createInventoryReservation,
+		arg.TenantID,
+		arg.OrderID,
+		arg.ProductID,
+		arg.VariantID,
+		arg.Qty,
+		arg.ExpiresAt,
+	)
+	var i InventoryReservation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.ProductID,
+		&i.VariantID,
+		&i.Qty,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const decrementVariantStock = `-- name: DecrementVariantStock :exec
 UPDATE product_variants
 SET stock = GREATEST(0, stock - $1)
@@ -37,6 +77,84 @@ WHERE code = $1
 func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, code string) error {
 	_, err := q.db.Exec(ctx, incrementVoucherUsageByCode, code)
 	return err
+}
+
+const listExpiredInventoryReservationsForTenant = `-- name: ListExpiredInventoryReservationsForTenant :many
+SELECT id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
+FROM inventory_reservations
+WHERE tenant_id = $1
+  AND status = 'RESERVED'
+  AND expires_at <= now()
+FOR UPDATE
+`
+
+func (q *Queries) ListExpiredInventoryReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) ([]InventoryReservation, error) {
+	rows, err := q.db.Query(ctx, listExpiredInventoryReservationsForTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InventoryReservation
+	for rows.Next() {
+		var i InventoryReservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.ProductID,
+			&i.VariantID,
+			&i.Qty,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInventoryReservationsByOrder = `-- name: ListInventoryReservationsByOrder :many
+SELECT id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
+FROM inventory_reservations
+WHERE order_id = $1
+ORDER BY id
+`
+
+func (q *Queries) ListInventoryReservationsByOrder(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error) {
+	rows, err := q.db.Query(ctx, listInventoryReservationsByOrder, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InventoryReservation
+	for rows.Next() {
+		var i InventoryReservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.ProductID,
+			&i.VariantID,
+			&i.Qty,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOrderItemsForStock = `-- name: ListOrderItemsForStock :many
@@ -75,4 +193,73 @@ func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUI
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseVariantStock = `-- name: ReleaseVariantStock :exec
+UPDATE product_variants
+SET stock = stock + $1
+WHERE id = $2
+`
+
+type ReleaseVariantStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ReleaseVariantStock(ctx context.Context, arg ReleaseVariantStockParams) error {
+	_, err := q.db.Exec(ctx, releaseVariantStock, arg.Qty, arg.ID)
+	return err
+}
+
+const reserveVariantStock = `-- name: ReserveVariantStock :one
+UPDATE product_variants
+SET stock = stock - $1
+WHERE id = $2
+  AND stock >= $1
+RETURNING id
+`
+
+type ReserveVariantStockParams struct {
+	Qty int32       `json:"qty"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+// Reserve stock at order creation. The predicate makes concurrent checkouts
+// fail instead of silently overselling the last units.
+func (q *Queries) ReserveVariantStock(ctx context.Context, arg ReserveVariantStockParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, reserveVariantStock, arg.Qty, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const transitionInventoryReservation = `-- name: TransitionInventoryReservation :one
+UPDATE inventory_reservations
+SET status = $1, updated_at = now()
+WHERE id = $2 AND status = $3
+RETURNING id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
+`
+
+type TransitionInventoryReservationParams struct {
+	ToStatus   InventoryReservationStatus `json:"to_status"`
+	ID         pgtype.UUID                `json:"id"`
+	FromStatus InventoryReservationStatus `json:"from_status"`
+}
+
+func (q *Queries) TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error) {
+	row := q.db.QueryRow(ctx, transitionInventoryReservation, arg.ToStatus, arg.ID, arg.FromStatus)
+	var i InventoryReservation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OrderID,
+		&i.ProductID,
+		&i.VariantID,
+		&i.Qty,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

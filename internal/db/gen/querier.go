@@ -26,26 +26,26 @@ type Querier interface {
 	AdminCreateBrand(ctx context.Context, arg AdminCreateBrandParams) (AdminCreateBrandRow, error)
 	AdminCreateCategory(ctx context.Context, arg AdminCreateCategoryParams) (AdminCreateCategoryRow, error)
 	AdminCreateProduct(ctx context.Context, arg AdminCreateProductParams) (pgtype.UUID, error)
-	AdminDeleteBrand(ctx context.Context, id pgtype.UUID) (int64, error)
-	AdminDeleteCategory(ctx context.Context, id pgtype.UUID) (int64, error)
-	AdminDeleteProduct(ctx context.Context, id pgtype.UUID) (int64, error)
-	AdminDeleteProductSpecs(ctx context.Context, productID pgtype.UUID) error
+	AdminDeleteBrand(ctx context.Context, arg AdminDeleteBrandParams) (int64, error)
+	AdminDeleteCategory(ctx context.Context, arg AdminDeleteCategoryParams) (int64, error)
+	AdminDeleteProduct(ctx context.Context, arg AdminDeleteProductParams) (int64, error)
+	AdminDeleteProductSpecs(ctx context.Context, arg AdminDeleteProductSpecsParams) error
 	AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error)
 	AdminDeleteVoucher(ctx context.Context, code string) (int64, error)
 	AdminGetOrder(ctx context.Context, id pgtype.UUID) (AdminGetOrderRow, error)
-	AdminGetPrimaryVariant(ctx context.Context, productID pgtype.UUID) (ProductVariant, error)
-	AdminGetProduct(ctx context.Context, id pgtype.UUID) (AdminGetProductRow, error)
-	AdminGetProductIDBySlug(ctx context.Context, slug string) (pgtype.UUID, error)
+	AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimaryVariantParams) (ProductVariant, error)
+	AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error)
+	AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error)
 	AdminInsertProductImage(ctx context.Context, arg AdminInsertProductImageParams) error
 	AdminInsertProductSpec(ctx context.Context, arg AdminInsertProductSpecParams) error
 	AdminInsertProductVariant(ctx context.Context, arg AdminInsertProductVariantParams) (pgtype.UUID, error)
-	AdminListBrands(ctx context.Context) ([]AdminListBrandsRow, error)
-	AdminListCategories(ctx context.Context) ([]AdminListCategoriesRow, error)
+	AdminListBrands(ctx context.Context, tenantID pgtype.UUID) ([]AdminListBrandsRow, error)
+	AdminListCategories(ctx context.Context, tenantID pgtype.UUID) ([]AdminListCategoriesRow, error)
 	AdminListOrders(ctx context.Context, arg AdminListOrdersParams) ([]AdminListOrdersRow, error)
 	AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error)
 	AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error)
 	AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams) (AdminOrderStatsRow, error)
-	AdminReplaceProductImages(ctx context.Context, productID pgtype.UUID) error
+	AdminReplaceProductImages(ctx context.Context, arg AdminReplaceProductImagesParams) error
 	AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error
 	AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error)
 	AdminUpdateBrand(ctx context.Context, arg AdminUpdateBrandParams) (AdminUpdateBrandRow, error)
@@ -69,6 +69,7 @@ type Querier interface {
 	CreateCart(ctx context.Context, arg CreateCartParams) (Cart, error)
 	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
 	CreateEmailVerification(ctx context.Context, arg CreateEmailVerificationParams) (EmailVerification, error)
+	CreateInventoryReservation(ctx context.Context, arg CreateInventoryReservationParams) (InventoryReservation, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) error
@@ -94,14 +95,14 @@ type Querier interface {
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
 	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
-	GetActiveCartByAnon(ctx context.Context, anonID pgtype.Text) (Cart, error)
-	GetActiveCartByUser(ctx context.Context, userID pgtype.UUID) (Cart, error)
+	GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error)
+	GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error)
 	GetAddressByID(ctx context.Context, arg GetAddressByIDParams) (Address, error)
-	GetBrandByID(ctx context.Context, id pgtype.UUID) (GetBrandByIDRow, error)
+	GetBrandByID(ctx context.Context, arg GetBrandByIDParams) (GetBrandByIDRow, error)
 	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
-	GetCartByID(ctx context.Context, id pgtype.UUID) (Cart, error)
+	GetCartByID(ctx context.Context, arg GetCartByIDParams) (Cart, error)
 	GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem, error)
-	GetCategoryByID(ctx context.Context, id pgtype.UUID) (GetCategoryByIDRow, error)
+	GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
@@ -113,9 +114,9 @@ type Querier interface {
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
 	GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
-	GetProductBySlug(ctx context.Context, slug string) (GetProductBySlugRow, error)
+	GetProductBySlug(ctx context.Context, arg GetProductBySlugParams) (GetProductBySlugRow, error)
 	GetProductDetailByTenant(ctx context.Context, arg GetProductDetailByTenantParams) (GetProductDetailByTenantRow, error)
-	GetProductForCart(ctx context.Context, id pgtype.UUID) (GetProductForCartRow, error)
+	GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error)
 	GetProductReviews(ctx context.Context, arg GetProductReviewsParams) ([]Review, error)
 	GetReviewStats(ctx context.Context, arg GetReviewStatsParams) (GetReviewStatsRow, error)
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
@@ -124,7 +125,7 @@ type Querier interface {
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
-	GetVariantForCart(ctx context.Context, id pgtype.UUID) (GetVariantForCartRow, error)
+	GetVariantForCart(ctx context.Context, arg GetVariantForCartParams) (GetVariantForCartRow, error)
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
 	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
 	GetVoucherByTenant(ctx context.Context, arg GetVoucherByTenantParams) (GetVoucherByTenantRow, error)
@@ -144,16 +145,18 @@ type Querier interface {
 	// Filtered variants back the admin audit-log screen. Each filter is skipped when
 	// its parameter is NULL so one query serves every combination.
 	ListAuditLogsFiltered(ctx context.Context, arg ListAuditLogsFilteredParams) ([]AuditLog, error)
-	ListBrands(ctx context.Context) ([]ListBrandsRow, error)
+	ListBrands(ctx context.Context, tenantID pgtype.UUID) ([]ListBrandsRow, error)
 	// The image is joined live rather than snapshotted into cart_items alongside
 	// title and unit_price: those are frozen because a cart's price must not shift
 	// underneath the shopper, whereas the image is presentational and should track
 	// the product.
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]ListCartItemsRow, error)
-	ListCategories(ctx context.Context) ([]ListCategoriesRow, error)
+	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]ListCategoriesRow, error)
 	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
+	ListExpiredInventoryReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) ([]InventoryReservation, error)
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
+	ListInventoryReservationsByOrder(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error)
 	ListNotifications(ctx context.Context, arg ListNotificationsParams) ([]Notification, error)
 	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
 	ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUID) ([]ListOrderItemsForStockRow, error)
@@ -178,11 +181,16 @@ type Querier interface {
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
+	ReleaseVariantStock(ctx context.Context, arg ReleaseVariantStockParams) error
 	RemoveFavorite(ctx context.Context, arg RemoveFavoriteParams) error
+	// Reserve stock at order creation. The predicate makes concurrent checkouts
+	// fail instead of silently overselling the last units.
+	ReserveVariantStock(ctx context.Context, arg ReserveVariantStockParams) (pgtype.UUID, error)
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
+	TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error)
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
 	UpdateCartItemQty(ctx context.Context, arg UpdateCartItemQtyParams) (CartItem, error)

@@ -43,19 +43,19 @@ func (f *fakeQueries) AdminCreateProduct(context.Context, dbgen.AdminCreateProdu
 	return pgtype.UUID{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminDeleteBrand(context.Context, pgtype.UUID) (int64, error) {
+func (f *fakeQueries) AdminDeleteBrand(context.Context, dbgen.AdminDeleteBrandParams) (int64, error) {
 	return 0, errNotImplemented
 }
 
-func (f *fakeQueries) AdminDeleteCategory(context.Context, pgtype.UUID) (int64, error) {
+func (f *fakeQueries) AdminDeleteCategory(context.Context, dbgen.AdminDeleteCategoryParams) (int64, error) {
 	return 0, errNotImplemented
 }
 
-func (f *fakeQueries) AdminDeleteProduct(context.Context, pgtype.UUID) (int64, error) {
+func (f *fakeQueries) AdminDeleteProduct(context.Context, dbgen.AdminDeleteProductParams) (int64, error) {
 	return 0, errNotImplemented
 }
 
-func (f *fakeQueries) AdminDeleteProductSpecs(context.Context, pgtype.UUID) error {
+func (f *fakeQueries) AdminDeleteProductSpecs(context.Context, dbgen.AdminDeleteProductSpecsParams) error {
 	return errNotImplemented
 }
 
@@ -71,15 +71,15 @@ func (f *fakeQueries) AdminGetOrder(context.Context, pgtype.UUID) (dbgen.AdminGe
 	return dbgen.AdminGetOrderRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminGetPrimaryVariant(context.Context, pgtype.UUID) (dbgen.ProductVariant, error) {
+func (f *fakeQueries) AdminGetPrimaryVariant(context.Context, dbgen.AdminGetPrimaryVariantParams) (dbgen.ProductVariant, error) {
 	return dbgen.ProductVariant{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminGetProduct(context.Context, pgtype.UUID) (dbgen.AdminGetProductRow, error) {
+func (f *fakeQueries) AdminGetProduct(context.Context, dbgen.AdminGetProductParams) (dbgen.AdminGetProductRow, error) {
 	return dbgen.AdminGetProductRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminGetProductIDBySlug(context.Context, string) (pgtype.UUID, error) {
+func (f *fakeQueries) AdminGetProductIDBySlug(context.Context, dbgen.AdminGetProductIDBySlugParams) (pgtype.UUID, error) {
 	return pgtype.UUID{}, errNotImplemented
 }
 
@@ -95,11 +95,11 @@ func (f *fakeQueries) AdminInsertProductVariant(context.Context, dbgen.AdminInse
 	return pgtype.UUID{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminListBrands(context.Context) ([]dbgen.AdminListBrandsRow, error) {
+func (f *fakeQueries) AdminListBrands(context.Context, pgtype.UUID) ([]dbgen.AdminListBrandsRow, error) {
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) AdminListCategories(context.Context) ([]dbgen.AdminListCategoriesRow, error) {
+func (f *fakeQueries) AdminListCategories(context.Context, pgtype.UUID) ([]dbgen.AdminListCategoriesRow, error) {
 	return nil, errNotImplemented
 }
 
@@ -119,7 +119,7 @@ func (f *fakeQueries) AdminOrderStats(context.Context, dbgen.AdminOrderStatsPara
 	return dbgen.AdminOrderStatsRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) AdminReplaceProductImages(context.Context, pgtype.UUID) error {
+func (f *fakeQueries) AdminReplaceProductImages(context.Context, dbgen.AdminReplaceProductImagesParams) error {
 	return errNotImplemented
 }
 

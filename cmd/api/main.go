@@ -30,6 +30,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/audit"
 	"github.com/noah-isme/backend-toko/internal/auth"
+	"github.com/noah-isme/backend-toko/internal/campaign"
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/checkout"
@@ -44,6 +45,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/payment"
+	"github.com/noah-isme/backend-toko/internal/platform"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
 	"github.com/noah-isme/backend-toko/internal/resilience"
@@ -232,6 +234,7 @@ func main() {
 	authHandler := &auth.Handler{
 		Service:               authService,
 		Mailer:                mailer,
+		MembershipPool:        pool,
 		RefreshCookieName:     cfg.RefreshCookieName,
 		RefreshCookieDomain:   cfg.RefreshCookieDomain,
 		RefreshCookieSecure:   cfg.RefreshCookieSecure,
@@ -264,15 +267,18 @@ func main() {
 		baseDomain = baseURL.Hostname()
 	}
 	tenantResolver := tenant.NewResolver("X-Tenant-ID", baseDomain, defaultTenantIDStr)
+	tenantMembership := requireTenantMembership(pool)
 
 	cartSvc := &cart.Service{
 		Q:                          queries,
+		Pool:                       pool,
 		TTL:                        cfg.CartTTL,
 		VoucherPerUserLimitDefault: cfg.VoucherPerUserLimit,
 		DefaultTenantID:            defaultTenantID,
 	}
 	voucherSvc := &voucher.Service{Q: queries, DefaultPerUserLimit: cfg.VoucherPerUserLimit}
-	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, DefaultPriority: cfg.VoucherDefaultPriority, CatalogCache: catalogCache, Analytics: nil}
+	voucherHandler := &voucher.Handler{Q: queries, Svc: voucherSvc, Pool: pool, DefaultPriority: cfg.VoucherDefaultPriority, CatalogCache: catalogCache, Analytics: nil}
+	campaignHandler := &campaign.Handler{Pool: pool}
 	cartHandler := &cart.Handler{
 		Q:              queries,
 		Svc:            cartSvc,
@@ -340,10 +346,12 @@ func main() {
 
 	var shipProvider shipping.Provider
 	switch cfg.ShippingProvider {
-	case "rajaongkir-mock", "":
+	case "rajaongkir-mock", "mock":
 		shipProvider = shipping.RajaOngkirMock{}
+	case "rajaongkir", "":
+		shipProvider = shipping.RajaOngkirTracker{APIKey: cfg.RajaOngkirAPIKey, BaseURL: cfg.RajaOngkirBaseURL}
 	default:
-		shipProvider = shipping.RajaOngkirMock{}
+		logger.Fatal().Str("provider", cfg.ShippingProvider).Msg("unsupported shipping provider")
 	}
 	shipSvc := &shipping.Service{
 		Q:                      queries,
@@ -356,6 +364,12 @@ func main() {
 	}
 	shipHandler := &shipping.Handler{Svc: shipSvc, Q: queries}
 	shipWebhook := shipping.Webhook{Svc: shipSvc, Replay: redisClient, ReplayTTL: cfg.ShippingTrackReplayTTL}
+	switch cfg.ShippingProvider {
+	case "rajaongkir", "":
+		cartHandler.ShippingClient = shipping.RajaOngkirClient{APIKey: cfg.RajaOngkirAPIKey, BaseURL: cfg.RajaOngkirBaseURL}
+	case "rajaongkir-mock", "mock":
+		cartHandler.ShippingClient = shipping.MockClient{}
+	}
 
 	providers := map[string]payment.Provider{
 		"midtrans": payment.Midtrans{
@@ -364,9 +378,11 @@ func main() {
 			Sandbox:   cfg.PaymentSandbox,
 		},
 		"xendit": payment.Xendit{
-			SecretKey: cfg.XenditSecretKey,
-			BaseURL:   cfg.XenditBaseURL,
+			SecretKey:     cfg.XenditSecretKey,
+			BaseURL:       cfg.XenditBaseURL,
+			CallbackToken: cfg.XenditCallbackToken,
 		},
+		"stub": payment.Midtrans{Stub: true, Sandbox: true},
 	}
 	activeProvider := providers[cfg.PaymentProvider]
 	if activeProvider == nil {
@@ -378,16 +394,17 @@ func main() {
 		IntentTTL:       cfg.PaymentIntentTTL,
 		CallbackBaseURL: cfg.PaymentCallbackBaseURL,
 	}
-	paymentHandler := &payment.Handler{Svc: paymentSvc, Q: queries}
+	paymentHandler := &payment.Handler{Svc: paymentSvc, Q: queries, Pool: pool, BankName: cfg.PaymentBankName, BankAccountName: cfg.PaymentBankAccountName, BankAccountNumber: cfg.PaymentBankAccountNumber, QRURL: cfg.PaymentQRURL}
 
 	checkoutSvc := &checkout.Service{
-		Q:          queries,
-		Pool:       pool,
-		CartSvc:    cartSvc,
-		PaymentSvc: paymentSvc,
-		TaxBps:     cfg.PricingTaxRateBPS,
-		Currency:   cfg.CurrencyCode,
-		Events:     bus,
+		Q:                       queries,
+		Pool:                    pool,
+		CartSvc:                 cartSvc,
+		PaymentSvc:              paymentSvc,
+		TaxBps:                  cfg.PricingTaxRateBPS,
+		Currency:                cfg.CurrencyCode,
+		Events:                  bus,
+		InventoryReservationTTL: cfg.PaymentIntentTTL,
 	}
 	checkoutHandler := &checkout.Handler{Svc: checkoutSvc}
 
@@ -402,6 +419,7 @@ func main() {
 		CatalogCache: catalogCache,
 		Analytics:    nil,
 	}
+	platformHandler := &platform.Handler{Pool: pool, Providers: providers}
 
 	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange, Prefix: cfg.RedisCachePrefix}
 	voucherHandler.Analytics = analyticsSvc
@@ -595,16 +613,19 @@ func main() {
 		v.Get("/products", catalogHandler.Products)
 		v.Get("/products/{slug}", catalogHandler.ProductDetail)
 		v.Get("/products/{slug}/related", catalogHandler.Related)
+		v.Get("/vouchers", voucherHandler.PublicList)
+		v.Get("/flash-sales", campaignHandler.Public)
 
 		// Reviews
 		v.Get("/products/{id}/reviews", reviewsHandler.List)
 		v.Get("/products/{id}/reviews/stats", reviewsHandler.Stats)
-		v.With(authMiddleware.RequireAuth).Post("/products/{id}/reviews", reviewsHandler.Create)
-		v.With(authMiddleware.RequireAuth).Delete("/products/{id}/reviews", reviewsHandler.Delete) // Optional
+		v.With(authMiddleware.RequireAuth, tenantMembership).Post("/products/{id}/reviews", reviewsHandler.Create)
+		v.With(authMiddleware.RequireAuth, tenantMembership).Delete("/products/{id}/reviews", reviewsHandler.Delete) // Optional
 
 		// Favorites
 		v.Route("/favorites", func(f chi.Router) {
 			f.Use(authMiddleware.RequireAuth)
+			f.Use(tenantMembership)
 			f.Get("/", favoritesHandler.List)
 			f.Post("/", favoritesHandler.Toggle)
 			f.Get("/{id}", favoritesHandler.Check)
@@ -623,6 +644,7 @@ func main() {
 
 			a.Group(func(protected chi.Router) {
 				protected.Use(authMiddleware.RequireAuth)
+				protected.Use(tenantMembership)
 				protected.Get("/me", authHandler.Me)
 				protected.Get("/sessions", authHandler.ListSessions)
 				protected.Post("/logout/all", authHandler.LogoutAll)
@@ -631,10 +653,11 @@ func main() {
 
 		// Registered directly rather than via Route("/users/me") so it does not
 		// mount a subrouter that would collide with /users/me/addresses below.
-		v.With(authMiddleware.RequireAuth).Patch("/users/me", authHandler.UpdateProfile)
+		v.With(authMiddleware.RequireAuth, tenantMembership).Patch("/users/me", authHandler.UpdateProfile)
 
 		v.Route("/users/me/addresses", func(a chi.Router) {
 			a.Use(authMiddleware.RequireAuth)
+			a.Use(tenantMembership)
 			a.Get("/", addressHandler.List)
 			a.Post("/", addressHandler.Create)
 			a.Route("/{addressID}", func(child chi.Router) {
@@ -656,19 +679,32 @@ func main() {
 				g.Delete("/{id}/voucher", cartHandler.RemoveVoucher)
 				g.Post("/{id}/quote/shipping", cartHandler.QuoteShipping)
 				g.Post("/{id}/quote/tax", cartHandler.QuoteTax)
-				g.With(authMiddleware.RequireAuth).Post("/merge", cartHandler.Merge)
+				g.With(authMiddleware.RequireAuth, tenantMembership).Post("/merge", cartHandler.Merge)
 			})
 		})
 
-		v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout", checkoutHandler.Checkout)
+		v.With(idem.Middleware, authMiddleware.RequireAuth, tenantMembership).Post("/checkout", checkoutHandler.Checkout)
 
-		v.With(idem.Middleware, authMiddleware.RequireAuth).Post("/checkout/draft", checkoutHandler.CreateDraft)
+		v.With(idem.Middleware, authMiddleware.RequireAuth, tenantMembership).Post("/checkout/draft", checkoutHandler.CreateDraft)
 		v.Group(func(authR chi.Router) {
 			authR.Use(authMiddleware.RequireAuth)
+			authR.Use(tenantMembership)
+			authR.Get("/tenant", platformHandler.Tenant)
+			authR.Get("/users/me/privacy", platformHandler.PrivacyGet)
+			authR.Put("/users/me/privacy", platformHandler.PrivacyUpdate)
+			authR.Get("/users/me/data-export", platformHandler.DataExport)
+			authR.Delete("/users/me", platformHandler.DeleteAccount)
+			authR.Post("/onboarding", platformHandler.CreateTenant)
 			authR.Get("/orders", orderHandler.List)
 			authR.Get("/orders/{orderId}", orderHandler.Get)
 			authR.Get("/orders/{orderId}/shipment", shipHandler.GetByOrder)
 			authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+			authR.Post("/orders/{orderId}/returns", platformHandler.ReturnCreate)
+			authR.Get("/returns", platformHandler.ReturnList)
+			authR.Get("/returns/{returnId}", platformHandler.ReturnGet)
+			authR.Post("/support/tickets", platformHandler.TicketCreate)
+			authR.Get("/support/tickets", platformHandler.TicketList)
+			authR.Post("/support/tickets/{ticketId}/messages", platformHandler.TicketMessage)
 
 			authR.Get("/notifications", notificationsHandler.List)
 			authR.Get("/notifications/unread-count", notificationsHandler.UnreadCount)
@@ -678,11 +714,14 @@ func main() {
 
 		v.Route("/admin", func(admin chi.Router) {
 			admin.Use(authMiddleware.RequireAuth)
+			admin.Use(tenantMembership)
 			admin.Use(requireRole(queries, "admin"))
 			admin.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}))
 			admin.Post("/vouchers", voucherHandler.Create)
 			admin.Put("/vouchers/{code}", voucherHandler.Update)
 			admin.Post("/vouchers/preview", voucherHandler.Preview)
+			admin.Post("/flash-sales", campaignHandler.AdminCreate)
+			admin.Patch("/flash-sales/{id}", campaignHandler.AdminUpdate)
 			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
 			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
 			admin.Post("/webhooks", notifyAdmin.CreateEndpoint)
@@ -695,6 +734,18 @@ func main() {
 			admin.Post("/queue/dlq/replay", queueAdmin.ReplayDLQ)
 			admin.Get("/queue/stats", queueAdmin.Stats)
 			admin.Get("/audit-logs", auditHandler.List)
+			admin.Get("/customers", platformHandler.Customers)
+			admin.Get("/inventory", platformHandler.InventoryList)
+			admin.Patch("/inventory/{variantId}", platformHandler.InventoryUpdate)
+			admin.Get("/returns", platformHandler.AdminReturnList)
+			admin.Patch("/returns/{returnId}", platformHandler.AdminReturnStatus)
+			admin.Post("/returns/{returnId}/refund", platformHandler.AdminRefund)
+			admin.Get("/support/tickets", platformHandler.AdminTicketList)
+			admin.Patch("/support/tickets/{ticketId}", platformHandler.AdminTicketStatus)
+			admin.Post("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessage)
+			admin.Get("/settings", platformHandler.SettingsGet)
+			admin.Patch("/settings", platformHandler.SettingsUpdate)
+			admin.Post("/onboarding", platformHandler.Onboarding)
 
 			// Catalog management.
 			admin.Get("/products", adminCatalog.ListProducts)
@@ -729,6 +780,7 @@ func main() {
 
 		v.Route("/analytics", func(an chi.Router) {
 			an.Use(authMiddleware.RequireAuth)
+			an.Use(tenantMembership)
 			an.Use(requireRole(queries, "admin"))
 			an.Get("/sales", analyticsHandler.Sales)
 			an.Get("/top-products", analyticsHandler.TopProducts)
@@ -737,11 +789,14 @@ func main() {
 
 		v.Route("/payments", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
+			p.Use(tenantMembership)
 			p.Group(func(g chi.Router) {
 				g.Use(idem.Middleware)
 				g.Post("/intent", paymentHandler.Intent)
 			})
 			p.Get("/{orderId}/status", paymentHandler.Status)
+			p.Get("/{orderId}/instructions", paymentHandler.Instructions)
+			p.Post("/{orderId}/proof", paymentHandler.UploadProof)
 		})
 
 		v.Post("/webhooks/shipping/{courier}", shipWebhook.Handle)
@@ -800,6 +855,42 @@ func requireRole(q dbgen.Querier, role string) func(http.Handler) http.Handler {
 			}
 			if !slices.Contains(user.Roles, role) {
 				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "insufficient permissions", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireTenantMembership prevents an authenticated user from selecting an
+// arbitrary tenant with X-Tenant-ID. Public catalogue requests remain open,
+// while every authenticated workflow requires an ACTIVE membership row.
+func requireTenantMembership(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if pool == nil {
+				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "tenant membership store not configured", nil)
+				return
+			}
+			userID, hasUser := common.UserID(r.Context())
+			tenantID, hasTenant := tenant.FromContext(r.Context())
+			if !hasUser || !hasTenant {
+				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication and tenant are required", nil)
+				return
+			}
+			uid, userErr := cart.ToUUID(userID)
+			tid, tenantErr := cart.ToUUID(tenantID)
+			if userErr != nil || tenantErr != nil {
+				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authentication or tenant context", nil)
+				return
+			}
+			var member bool
+			if err := pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND status='ACTIVE')`, tid, uid).Scan(&member); err != nil {
+				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to validate tenant membership", nil)
+				return
+			}
+			if !member {
+				common.JSONError(w, http.StatusForbidden, "TENANT_FORBIDDEN", "user is not a member of this tenant", nil)
 				return
 			}
 			next.ServeHTTP(w, r)
