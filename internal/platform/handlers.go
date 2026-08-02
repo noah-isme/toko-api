@@ -476,6 +476,11 @@ func (h *Handler) TicketList(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	h.writeTickets(w, rows)
 }
+
+func (h *Handler) TicketMessages(w http.ResponseWriter, r *http.Request) {
+	h.ticketMessages(w, r, false)
+}
+
 func (h *Handler) AdminTicketList(w http.ResponseWriter, r *http.Request) {
 	tenantID, _, ok := h.identity(w, r)
 	if !ok {
@@ -489,6 +494,58 @@ func (h *Handler) AdminTicketList(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	h.writeTickets(w, rows)
 }
+
+func (h *Handler) AdminTicketMessages(w http.ResponseWriter, r *http.Request) {
+	h.ticketMessages(w, r, true)
+}
+
+func (h *Handler) ticketMessages(w http.ResponseWriter, r *http.Request, admin bool) {
+	tenantID, userID, ok := h.identity(w, r)
+	if !ok {
+		return
+	}
+	ticketID, err := cart.ToUUID(chi.URLParam(r, "ticketId"))
+	if err != nil {
+		common.JSONError(w, 400, "BAD_REQUEST", "invalid ticket id", nil)
+		return
+	}
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT m.id,m.ticket_id,m.author_id,m.body,m.created_at,
+		       CASE WHEN m.author_id=t.user_id THEN 'customer' ELSE 'agent' END
+		FROM support_messages m
+		JOIN support_tickets t ON t.id=m.ticket_id
+		WHERE m.ticket_id=$1 AND t.tenant_id=$2 AND (t.user_id=$3 OR $4)
+		ORDER BY m.created_at ASC, m.id ASC`, ticketID, tenantID, userID, admin)
+	if err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to list ticket messages", nil)
+		return
+	}
+	defer rows.Close()
+	messages := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, messageTicketID, authorID pgtype.UUID
+		var body, authorType string
+		var created time.Time
+		if err := rows.Scan(&id, &messageTicketID, &authorID, &body, &created, &authorType); err != nil {
+			common.JSONError(w, 500, "INTERNAL", "failed to read ticket messages", nil)
+			return
+		}
+		messages = append(messages, map[string]any{
+			"id":         cart.UUIDString(id),
+			"ticketId":   cart.UUIDString(messageTicketID),
+			"authorId":   cart.UUIDString(authorID),
+			"authorType": authorType,
+			"message":    body,
+			"createdAt":  created,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to read ticket messages", nil)
+		return
+	}
+	common.JSON(w, 200, map[string]any{"data": messages})
+}
+
 func (h *Handler) writeTickets(w http.ResponseWriter, rows pgx.Rows) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {

@@ -185,6 +185,9 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 				if releaseErr := qtx.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty}); releaseErr != nil {
 					return Output{}, releaseErr
 				}
+				if releaseErr := qtx.ReleaseFlashSaleReservations(ctx, reservation.OrderID); releaseErr != nil {
+					return Output{}, releaseErr
+				}
 			}
 		}
 	} else {
@@ -280,6 +283,20 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		}); err != nil {
 			return Output{}, err
 		}
+		if it.CampaignID.Valid {
+			if _, err := qtx.ReserveFlashSaleItem(ctx, dbgen.ReserveFlashSaleItemParams{
+				OrderID:    order.ID,
+				CampaignID: it.CampaignID,
+				ProductID:  it.ProductID,
+				TenantID:   tID,
+				Qty:        it.Qty,
+			}); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return Output{}, fmt.Errorf("flash sale stock unavailable for %s", it.Title)
+				}
+				return Output{}, err
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Output{}, err
@@ -310,6 +327,7 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 					}
 				}
 			}
+			_ = s.Q.ReleaseFlashSaleReservations(ctx, order.ID)
 			_ = s.Q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED})
 			return Output{}, fmt.Errorf("create payment intent: %w", perr)
 		}

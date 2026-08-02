@@ -55,6 +55,7 @@ type Querier interface {
 	AdminVoucherStats(ctx context.Context) (AdminVoucherStatsRow, error)
 	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
 	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
+	CommitFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountAuditLogsFiltered(ctx context.Context, arg CountAuditLogsFilteredParams) (int64, error)
 	CountNotifications(ctx context.Context, arg CountNotificationsParams) (int64, error)
@@ -181,8 +182,13 @@ type Querier interface {
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
+	// Release quota reserved by an unpaid, expired, or cancelled order.
+	ReleaseFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	ReleaseVariantStock(ctx context.Context, arg ReleaseVariantStockParams) error
 	RemoveFavorite(ctx context.Context, arg RemoveFavoriteParams) error
+	// Reserve flash-sale quota at checkout. sold_count includes active order
+	// reservations; the update predicate is the concurrency guard.
+	ReserveFlashSaleItem(ctx context.Context, arg ReserveFlashSaleItemParams) (FlashSaleOrderItem, error)
 	// Reserve stock at order creation. The predicate makes concurrent checkouts
 	// fail instead of silently overselling the last units.
 	ReserveVariantStock(ctx context.Context, arg ReserveVariantStockParams) (pgtype.UUID, error)

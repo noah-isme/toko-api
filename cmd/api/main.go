@@ -704,6 +704,7 @@ func main() {
 			authR.Get("/returns/{returnId}", platformHandler.ReturnGet)
 			authR.Post("/support/tickets", platformHandler.TicketCreate)
 			authR.Get("/support/tickets", platformHandler.TicketList)
+			authR.Get("/support/tickets/{ticketId}/messages", platformHandler.TicketMessages)
 			authR.Post("/support/tickets/{ticketId}/messages", platformHandler.TicketMessage)
 
 			authR.Get("/notifications", notificationsHandler.List)
@@ -741,6 +742,7 @@ func main() {
 			admin.Patch("/returns/{returnId}", platformHandler.AdminReturnStatus)
 			admin.Post("/returns/{returnId}/refund", platformHandler.AdminRefund)
 			admin.Get("/support/tickets", platformHandler.AdminTicketList)
+			admin.Get("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessages)
 			admin.Patch("/support/tickets/{ticketId}", platformHandler.AdminTicketStatus)
 			admin.Post("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessage)
 			admin.Get("/settings", platformHandler.SettingsGet)

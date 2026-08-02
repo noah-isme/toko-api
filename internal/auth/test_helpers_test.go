@@ -573,6 +573,18 @@ func (f *fakeQueries) CreateInventoryReservation(context.Context, dbgen.CreateIn
 	return dbgen.InventoryReservation{}, errNotImplemented
 }
 
+func (f *fakeQueries) CommitFlashSaleReservations(context.Context, pgtype.UUID) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ReleaseFlashSaleReservations(context.Context, pgtype.UUID) error {
+	return errNotImplemented
+}
+
+func (f *fakeQueries) ReserveFlashSaleItem(context.Context, dbgen.ReserveFlashSaleItemParams) (dbgen.FlashSaleOrderItem, error) {
+	return dbgen.FlashSaleOrderItem{}, errNotImplemented
+}
+
 func (f *fakeQueries) ListExpiredInventoryReservationsForTenant(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
 	return nil, errNotImplemented
 }

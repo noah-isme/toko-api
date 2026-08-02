@@ -207,6 +207,11 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			if err := q.CommitFlashSaleReservations(ctx, order.ID); err != nil {
+				span.RecordError(err)
+				common.JSONError(w, http.StatusInternalServerError, "FLASH_SALE_COMMIT_FAILED", err.Error(), nil)
+				return
+			}
 			if h.Voucher != nil && order.AppliedVoucherCode.Valid {
 				code := strings.TrimSpace(order.AppliedVoucherCode.String)
 				if code != "" {
@@ -246,6 +251,10 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 				common.JSONError(w, http.StatusInternalServerError, "RESERVATION_RELEASE_FAILED", transitionErr.Error(), nil)
 				return
 			}
+		}
+		if err := q.ReleaseFlashSaleReservations(ctx, order.ID); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "FLASH_SALE_RELEASE_FAILED", err.Error(), nil)
+			return
 		}
 		if order.Status == dbgen.OrderStatusPENDINGPAYMENT {
 			if err := q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED}); err == nil {

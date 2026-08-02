@@ -296,6 +296,10 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err := h.Q.ReleaseFlashSaleReservations(r.Context(), ord.ID); err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "FLASH_SALE_RELEASE_FAILED", "failed to release flash-sale quota", nil)
+		return
+	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "cancelled"}})
 }
 

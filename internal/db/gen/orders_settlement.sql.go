@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const commitFlashSaleReservations = `-- name: CommitFlashSaleReservations :exec
+UPDATE flash_sale_order_items
+SET status = 'COMMITTED', updated_at = now()
+WHERE order_id = $1
+  AND status = 'RESERVED'
+`
+
+func (q *Queries) CommitFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, commitFlashSaleReservations, orderID)
+	return err
+}
+
 const createInventoryReservation = `-- name: CreateInventoryReservation :one
 INSERT INTO inventory_reservations (tenant_id, order_id, product_id, variant_id, qty, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -195,6 +207,26 @@ func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUI
 	return items, nil
 }
 
+const releaseFlashSaleReservations = `-- name: ReleaseFlashSaleReservations :exec
+WITH released AS (
+  UPDATE flash_sale_order_items
+  SET status = 'RELEASED', updated_at = now()
+  WHERE order_id = $1
+    AND status = 'RESERVED'
+  RETURNING flash_sale_item_id, qty
+)
+UPDATE flash_sale_items item
+SET sold_count = GREATEST(0, item.sold_count - released.qty)
+FROM released
+WHERE item.id = released.flash_sale_item_id
+`
+
+// Release quota reserved by an unpaid, expired, or cancelled order.
+func (q *Queries) ReleaseFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, releaseFlashSaleReservations, orderID)
+	return err
+}
+
 const releaseVariantStock = `-- name: ReleaseVariantStock :exec
 UPDATE product_variants
 SET stock = stock + $1
@@ -209,6 +241,59 @@ type ReleaseVariantStockParams struct {
 func (q *Queries) ReleaseVariantStock(ctx context.Context, arg ReleaseVariantStockParams) error {
 	_, err := q.db.Exec(ctx, releaseVariantStock, arg.Qty, arg.ID)
 	return err
+}
+
+const reserveFlashSaleItem = `-- name: ReserveFlashSaleItem :one
+WITH updated AS (
+  UPDATE flash_sale_items i
+  SET sold_count = i.sold_count + $2,
+      updated_at = now()
+  FROM flash_sale_campaigns c
+  WHERE i.campaign_id = $3
+    AND i.product_id = $4
+    AND c.id = i.campaign_id
+    AND c.tenant_id = $5
+    AND c.status IN ('SCHEDULED', 'ACTIVE')
+    AND c.starts_at <= now()
+    AND c.ends_at > now()
+    AND (i.stock_limit IS NULL OR i.sold_count + $2 <= i.stock_limit)
+  RETURNING i.id
+)
+INSERT INTO flash_sale_order_items (order_id, flash_sale_item_id, qty, status)
+SELECT $1, id, $2, 'RESERVED'
+FROM updated
+RETURNING id, order_id, flash_sale_item_id, qty, status, created_at, updated_at
+`
+
+type ReserveFlashSaleItemParams struct {
+	OrderID    pgtype.UUID `json:"order_id"`
+	Qty        int32       `json:"qty"`
+	CampaignID pgtype.UUID `json:"campaign_id"`
+	ProductID  pgtype.UUID `json:"product_id"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
+}
+
+// Reserve flash-sale quota at checkout. sold_count includes active order
+// reservations; the update predicate is the concurrency guard.
+func (q *Queries) ReserveFlashSaleItem(ctx context.Context, arg ReserveFlashSaleItemParams) (FlashSaleOrderItem, error) {
+	row := q.db.QueryRow(ctx, reserveFlashSaleItem,
+		arg.OrderID,
+		arg.Qty,
+		arg.CampaignID,
+		arg.ProductID,
+		arg.TenantID,
+	)
+	var i FlashSaleOrderItem
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.FlashSaleItemID,
+		&i.Qty,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const reserveVariantStock = `-- name: ReserveVariantStock :one

@@ -453,6 +453,16 @@ type FlashSaleItem struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type FlashSaleOrderItem struct {
+	ID              pgtype.UUID        `json:"id"`
+	OrderID         pgtype.UUID        `json:"order_id"`
+	FlashSaleItemID pgtype.UUID        `json:"flash_sale_item_id"`
+	Qty             int32              `json:"qty"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type InventoryReservation struct {
 	ID        pgtype.UUID                `json:"id"`
 	TenantID  pgtype.UUID                `json:"tenant_id"`

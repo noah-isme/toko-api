@@ -201,6 +201,11 @@ func (s *Service) addItem(ctx context.Context, cartID string, productID string, 
 	})
 	if err == nil {
 		newQty := item.Qty + int32(qty)
+		if item.CampaignID.Valid {
+			if _, stockErr := s.flashSalePrice(ctx, item.CampaignID, item.ProductID, int(newQty)); stockErr != nil {
+				return stockErr
+			}
+		}
 		if item.VariantID.Valid {
 			variant, stockErr := s.Q.GetVariantForCart(ctx, dbgen.GetVariantForCartParams{ID: item.VariantID, TenantID: s.resolveTenant(ctx)})
 			if stockErr != nil {

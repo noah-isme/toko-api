@@ -75,6 +75,7 @@ schema:
 - `000031_privacy_preferences` — persisted account privacy controls.
 - `000032_payment_proofs` — private payment-proof storage.
 - `000033_flash_sale_cart_items` — campaign-aware cart reservations.
+- `000034_flash_sale_order_items` — atomic flash-sale quota reservations tied to orders.
 
 Payment instructions use the merchant values in `.env`/`.env.example`:
 `PAYMENT_BANK_NAME`, `PAYMENT_BANK_ACCOUNT_NAME`,

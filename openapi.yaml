@@ -2499,6 +2499,22 @@ paths:
             schema: { $ref: '#/components/schemas/SupportTicketRequest' }
       responses: { '201': { description: Support ticket created } }
   /api/v1/support/tickets/{ticketId}/messages:
+    get:
+      summary: List messages for a customer support ticket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Ticket conversation in chronological order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SupportMessage' }
     post:
       summary: Add a message to a support ticket
       security: [{ bearerAuth: [] }]
@@ -2578,6 +2594,22 @@ paths:
             schema: { $ref: '#/components/schemas/StatusRequest' }
       responses: { '200': { description: Ticket status updated } }
   /api/v1/admin/support/tickets/{ticketId}/messages:
+    get:
+      summary: List messages for a tenant support ticket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Ticket conversation in chronological order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SupportMessage' }
     post:
       summary: Add an agent message to a ticket
       security: [{ bearerAuth: [] }]
@@ -2643,6 +2675,16 @@ components:
       required: [message]
       properties:
         message: { type: string, minLength: 1 }
+    SupportMessage:
+      type: object
+      required: [id, ticketId, authorId, authorType, message, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        ticketId: { type: string, format: uuid }
+        authorId: { type: string, format: uuid }
+        authorType: { type: string, enum: [customer, agent] }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
     AdminProduct:
       type: object
       required: [id, title, slug, price, inStock, stock, badges, variantCount, createdAt, updatedAt]
