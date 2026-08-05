@@ -722,6 +722,8 @@ func main() {
 			admin.Put("/vouchers/{code}", voucherHandler.Update)
 			admin.Post("/vouchers/preview", voucherHandler.Preview)
 			admin.Post("/flash-sales", campaignHandler.AdminCreate)
+			admin.Get("/flash-sales", campaignHandler.AdminList)
+			admin.Get("/flash-sales/{id}", campaignHandler.AdminGet)
 			admin.Patch("/flash-sales/{id}", campaignHandler.AdminUpdate)
 			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
 			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)

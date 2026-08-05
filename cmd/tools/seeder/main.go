@@ -52,6 +52,7 @@ func main() {
 	seedUsers(db)
 	seedCatalog(db, tenantID)
 	seedVouchers(db, tenantID)
+	seedFlashSales(db, tenantID)
 	seedAddresses(db)
 	
 	log.Println("Seeding completed successfully!")
@@ -281,5 +282,98 @@ func seedAddresses(db *sql.DB) {
 	`, userID)
 	if err != nil {
 		log.Printf("Failed to seed address: %v", err)
+	}
+}
+
+func seedFlashSales(db *sql.DB, tenantID string) {
+	fmt.Println("Seeding Flash Sales...")
+
+	// Get product IDs
+	var macbookID, iphoneID, airforceID, ultraboostID string
+	db.QueryRow("SELECT id FROM products WHERE slug = 'macbook-pro-14-m3' AND tenant_id = $1", tenantID).Scan(&macbookID)
+	db.QueryRow("SELECT id FROM products WHERE slug = 'iphone-15-pro' AND tenant_id = $1", tenantID).Scan(&iphoneID)
+	db.QueryRow("SELECT id FROM products WHERE slug = 'nike-air-force-1' AND tenant_id = $1", tenantID).Scan(&airforceID)
+	db.QueryRow("SELECT id FROM products WHERE slug = 'adidas-ultraboost' AND tenant_id = $1", tenantID).Scan(&ultraboostID)
+
+	if macbookID == "" || iphoneID == "" || airforceID == "" || ultraboostID == "" {
+		log.Printf("Skipping flash sale seed: required products not found")
+		return
+	}
+
+	// Campaign 1: Active Flash Sale
+	var campaign1ID string
+	err := db.QueryRow(`
+		INSERT INTO flash_sale_campaigns (tenant_id, name, slug, status, starts_at, ends_at)
+		VALUES ($1, 'Summer Flash Sale', 'summer-flash-sale', 'ACTIVE', NOW() - INTERVAL '1 day', NOW() + INTERVAL '3 days')
+		ON CONFLICT (tenant_id, slug) DO UPDATE SET status = EXCLUDED.status, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at
+		RETURNING id;
+	`, tenantID).Scan(&campaign1ID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale campaign 1: %v", err)
+		return
+	}
+
+	// Campaign 2: Scheduled Flash Sale
+	var campaign2ID string
+	err = db.QueryRow(`
+		INSERT INTO flash_sale_campaigns (tenant_id, name, slug, status, starts_at, ends_at)
+		VALUES ($1, 'Weekend Special', 'weekend-special', 'SCHEDULED', NOW() + INTERVAL '2 days', NOW() + INTERVAL '5 days')
+		ON CONFLICT (tenant_id, slug) DO UPDATE SET status = EXCLUDED.status, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at
+		RETURNING id;
+	`, tenantID).Scan(&campaign2ID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale campaign 2: %v", err)
+		return
+	}
+
+	// Campaign 3: Draft Flash Sale
+	var campaign3ID string
+	err = db.QueryRow(`
+		INSERT INTO flash_sale_campaigns (tenant_id, name, slug, status, starts_at, ends_at)
+		VALUES ($1, 'Holiday Sale', 'holiday-sale', 'DRAFT', NOW() + INTERVAL '10 days', NOW() + INTERVAL '15 days')
+		ON CONFLICT (tenant_id, slug) DO UPDATE SET status = EXCLUDED.status, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at
+		RETURNING id;
+	`, tenantID).Scan(&campaign3ID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale campaign 3: %v", err)
+		return
+	}
+
+	// Campaign 1 items
+	_, err = db.Exec(`
+		INSERT INTO flash_sale_items (campaign_id, product_id, sale_price, stock_limit)
+		VALUES
+			($1, $2, 20000000, 10),
+			($1, $3, 17000000, 15),
+			($1, $4, 1200000, 50)
+		ON CONFLICT (campaign_id, product_id) DO UPDATE SET sale_price = EXCLUDED.sale_price, stock_limit = EXCLUDED.stock_limit;
+	`, campaign1ID, macbookID, iphoneID, airforceID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale items for campaign 1: %v", err)
+	}
+
+	// Campaign 2 items
+	_, err = db.Exec(`
+		INSERT INTO flash_sale_items (campaign_id, product_id, sale_price, stock_limit)
+		VALUES
+			($1, $2, 22000000, 8),
+			($1, $3, 1400000, 30),
+			($1, $4, 1800000, 25)
+		ON CONFLICT (campaign_id, product_id) DO UPDATE SET sale_price = EXCLUDED.sale_price, stock_limit = EXCLUDED.stock_limit;
+	`, campaign2ID, macbookID, airforceID, ultraboostID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale items for campaign 2: %v", err)
+	}
+
+	// Campaign 3 items
+	_, err = db.Exec(`
+		INSERT INTO flash_sale_items (campaign_id, product_id, sale_price, stock_limit)
+		VALUES
+			($1, $2, 15000000, 5),
+			($1, $3, 18000000, 10)
+		ON CONFLICT (campaign_id, product_id) DO UPDATE SET sale_price = EXCLUDED.sale_price, stock_limit = EXCLUDED.stock_limit;
+	`, campaign3ID, macbookID, iphoneID)
+	if err != nil {
+		log.Printf("Failed to seed flash sale items for campaign 3: %v", err)
 	}
 }

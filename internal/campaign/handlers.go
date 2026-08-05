@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +122,195 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 		result = append(result, *item)
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Pool == nil {
+		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		return
+	}
+	tenantID, ok := tenantUUID(r)
+	if !ok {
+		common.JSONError(w, 400, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	campaignID, err := cart.ToUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		common.JSONError(w, 400, "BAD_REQUEST", "invalid campaign id", nil)
+		return
+	}
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT c.id,c.name,c.slug,c.status,c.starts_at,c.ends_at,c.created_at,c.updated_at,
+		       i.id,i.product_id,p.title,p.slug,p.price,i.sale_price,
+		       i.stock_limit,i.sold_count,p.thumbnail,
+		       CASE WHEN p.price > 0 THEN ((p.price-i.sale_price)*10000/p.price)::int ELSE 0 END
+		FROM flash_sale_campaigns c
+		JOIN flash_sale_items i ON i.campaign_id=c.id
+		JOIN products p ON p.id=i.product_id AND p.tenant_id=c.tenant_id
+		WHERE c.id=$1 AND c.tenant_id=$2
+		ORDER BY i.created_at ASC`, campaignID, tenantID)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sale", nil)
+		return
+	}
+	defer rows.Close()
+
+	var campaign map[string]any
+	items := make([]publicItem, 0)
+	for rows.Next() {
+		var cID, itemID, productID pgtype.UUID
+		var name, slug, status, title, productSlug string
+		var startsAt, endsAt, createdAt, updatedAt time.Time
+		var original, sale int64
+		var stockLimit pgtype.Int4
+		var sold int32
+		var thumbnail pgtype.Text
+		var discount int32
+		if err := rows.Scan(&cID, &name, &slug, &status, &startsAt, &endsAt, &createdAt, &updatedAt, &itemID, &productID, &title, &productSlug, &original, &sale, &stockLimit, &sold, &thumbnail, &discount); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sale", nil)
+			return
+		}
+		if campaign == nil {
+			campaign = map[string]any{
+				"id":         cart.UUIDString(cID),
+				"name":       name,
+				"slug":       slug,
+				"status":     status,
+				"startsAt":   startsAt,
+				"endsAt":     endsAt,
+				"createdAt":  createdAt,
+				"updatedAt":  updatedAt,
+				"items":      []publicItem{},
+			}
+		}
+		stock := 0
+		if stockLimit.Valid {
+			stock = int(stockLimit.Int32 - sold)
+		} else {
+			_ = h.Pool.QueryRow(r.Context(), `SELECT COALESCE(SUM(stock),0)::int FROM product_variants WHERE product_id=$1`, productID).Scan(&stock)
+		}
+		if stock < 0 {
+			stock = 0
+		}
+		items = append(items, publicItem{ID: cart.UUIDString(itemID), ProductID: cart.UUIDString(productID), Title: title, Slug: productSlug, OriginalPrice: original, SalePrice: sale, DiscountBps: discount, Stock: stock, StockLimit: nullableInt4(stockLimit), SoldCount: sold, Thumbnail: nullableText(thumbnail)})
+	}
+	if err := rows.Err(); err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sale", nil)
+		return
+	}
+	if campaign == nil {
+		common.JSONError(w, 404, "NOT_FOUND", "campaign not found", nil)
+		return
+	}
+	campaign["items"] = items
+	common.JSON(w, http.StatusOK, map[string]any{"data": campaign})
+}
+
+func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Pool == nil {
+		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		return
+	}
+	tenantID, ok := tenantUUID(r)
+	if !ok {
+		common.JSONError(w, 400, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+
+	// Parse pagination
+	page := 1
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
+
+	// Get total count
+	var total int64
+	err := h.Pool.QueryRow(r.Context(), `SELECT COUNT(*) FROM flash_sale_campaigns WHERE tenant_id=$1`, tenantID).Scan(&total)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count flash sales", nil)
+		return
+	}
+
+	// Get paginated results
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT c.id,c.name,c.slug,c.status,c.starts_at,c.ends_at,c.created_at,c.updated_at,
+		       i.id,i.product_id,p.title,p.slug,p.price,i.sale_price,
+		       i.stock_limit,i.sold_count,p.thumbnail,
+		       CASE WHEN p.price > 0 THEN ((p.price-i.sale_price)*10000/p.price)::int ELSE 0 END
+		FROM flash_sale_campaigns c
+		LEFT JOIN flash_sale_items i ON i.campaign_id=c.id
+		LEFT JOIN products p ON p.id=i.product_id AND p.tenant_id=c.tenant_id
+		WHERE c.tenant_id=$1
+		ORDER BY c.created_at DESC, i.created_at ASC
+		LIMIT $2 OFFSET $3`, tenantID, limit, offset)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list flash sales", nil)
+		return
+	}
+	defer rows.Close()
+
+	campaigns := map[string]*map[string]any{}
+	ordered := make([]*map[string]any, 0)
+	for rows.Next() {
+		var cID, itemID, productID pgtype.UUID
+		var name, slug, status, title, productSlug string
+		var startsAt, endsAt, createdAt, updatedAt time.Time
+		var original, sale int64
+		var stockLimit pgtype.Int4
+		var sold int32
+		var thumbnail pgtype.Text
+		var discount int32
+		if err := rows.Scan(&cID, &name, &slug, &status, &startsAt, &endsAt, &createdAt, &updatedAt, &itemID, &productID, &title, &productSlug, &original, &sale, &stockLimit, &sold, &thumbnail, &discount); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+			return
+		}
+		key := cart.UUIDString(cID)
+		current, exists := campaigns[key]
+		if !exists {
+			body := map[string]any{"id": key, "name": name, "slug": slug, "status": status, "startsAt": startsAt, "endsAt": endsAt, "createdAt": createdAt, "updatedAt": updatedAt, "items": []publicItem{}}
+			campaigns[key] = &body
+			ordered = append(ordered, &body)
+			current = &body
+		}
+		if itemID.Valid {
+			stock := 0
+			if stockLimit.Valid {
+				stock = int(stockLimit.Int32 - sold)
+			} else {
+				_ = h.Pool.QueryRow(r.Context(), `SELECT COALESCE(SUM(stock),0)::int FROM product_variants WHERE product_id=$1`, productID).Scan(&stock)
+			}
+			if stock < 0 {
+				stock = 0
+			}
+			items := (*current)["items"].([]publicItem)
+			items = append(items, publicItem{ID: cart.UUIDString(itemID), ProductID: cart.UUIDString(productID), Title: title, Slug: productSlug, OriginalPrice: original, SalePrice: sale, DiscountBps: discount, Stock: stock, StockLimit: nullableInt4(stockLimit), SoldCount: sold, Thumbnail: nullableText(thumbnail)})
+			(*current)["items"] = items
+		}
+	}
+	if err := rows.Err(); err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+		return
+	}
+	result := make([]map[string]any, 0, len(ordered))
+	for _, item := range ordered {
+		result = append(result, *item)
+	}
+	common.JSON(w, http.StatusOK, map[string]any{
+		"data":       result,
+		"pagination": common.Pagination{Page: page, PerPage: limit, TotalItems: int(total)},
+	})
 }
 
 func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
