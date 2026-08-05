@@ -7,6 +7,7 @@ GET /api/v1/categories
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "data": [
@@ -30,6 +31,7 @@ GET /api/v1/brands
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "data": [
@@ -52,6 +54,7 @@ GET /api/v1/products
 ```
 
 **Query Parameters:**
+
 - `q` (string): Search query
 - `category` (string): Filter by category slug
 - `brand` (string): Filter by brand slug
@@ -63,11 +66,13 @@ GET /api/v1/products
 - `limit` (integer): Items per page (default: 20, max: 100)
 
 **Example:**
+
 ```http
 GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=price:asc&page=1&limit=20
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "data": [
@@ -103,6 +108,7 @@ GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=
 > `brandName` are omitted when unset.
 
 **Headers:**
+
 ```
 X-Total-Count: 150
 ```
@@ -116,6 +122,7 @@ GET /api/v1/products/{slug}
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "data": {
@@ -186,6 +193,7 @@ GET /api/v1/products/{slug}/related
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "data": [
@@ -201,3 +209,124 @@ GET /api/v1/products/{slug}/related
   ]
 }
 ```
+
+---
+
+## 2.6 Frequently Bought Together
+
+```http
+GET /api/v1/products/{productId}/frequently-bought-together
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "MacBook Pro 14 M3",
+      "slug": "macbook-pro-14-m3",
+      "price": 25000000,
+      "thumbnail": "https://cdn.toko.com/products/mbp14.jpg",
+      "rating": 4.9,
+      "inStock": true
+    }
+  ]
+}
+```
+
+Returns products frequently purchased together with the specified product.
+
+---
+
+## 2.7 Customers Also Viewed
+
+```http
+GET /api/v1/products/{productId}/also-viewed
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "MacBook Air M2",
+      "slug": "macbook-air-m2",
+      "price": 18000000,
+      "thumbnail": "https://cdn.toko.com/products/mba-m2.jpg",
+      "rating": 4.8,
+      "inStock": true
+    }
+  ]
+}
+```
+
+Returns products that other customers viewed after viewing the specified product.
+
+---
+
+## 2.8 Personalized Recommendations
+
+```http
+GET /api/v1/recommendations/personalized?limit=10
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters:**
+
+- `limit` (integer): Number of recommendations to return (default: 10)
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "Samsung Galaxy S24",
+      "slug": "samsung-galaxy-s24",
+      "price": 12000000,
+      "thumbnail": "https://cdn.toko.com/products/s24.jpg",
+      "rating": 4.8,
+      "inStock": true
+    }
+  ]
+}
+```
+
+Returns personalized product recommendations for the authenticated user based on their browsing and purchase history.
+
+---
+
+## 2.9 Trending Products
+
+```http
+GET /api/v1/recommendations/trending?limit=10
+```
+
+**Query Parameters:**
+
+- `limit` (integer): Number of trending products to return (default: 10)
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "iPhone 15 Pro",
+      "slug": "iphone-15-pro",
+      "price": 25000000,
+      "thumbnail": "https://cdn.toko.com/products/iphone15pro.jpg",
+      "rating": 4.9,
+      "inStock": true
+    }
+  ]
+}
+```
+
+Returns currently trending/popular products across the platform.

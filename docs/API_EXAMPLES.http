@@ -12,6 +12,7 @@
 
 @baseUrl = http://localhost:8080
 @accessToken = your-access-token-here
+@adminToken = your-admin-token-here
 
 ### ============================================================================
 ### AUTHENTICATION
@@ -88,6 +89,19 @@ GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24
 
 ### Get Related Products
 GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24/related
+
+### Get Frequently Bought Together
+GET {{baseUrl}}/api/v1/products/{{productId}}/frequently-bought-together
+
+### Get Customers Also Viewed
+GET {{baseUrl}}/api/v1/products/{{productId}}/also-viewed
+
+### Get Personalized Recommendations
+GET {{baseUrl}}/api/v1/recommendations/personalized?limit=10
+Authorization: Bearer {{accessToken}}
+
+### Get Trending Products
+GET {{baseUrl}}/api/v1/recommendations/trending?limit=10
 
 ### ============================================================================
 ### CART (Guest)
@@ -274,6 +288,57 @@ Content-Type: application/json
   "code": "DISC20",
   "subtotal": 500000,
   "userId": "user-uuid"
+}
+
+### ============================================================================
+### ADMIN - FLASH SALES
+### ============================================================================
+
+### List Flash Sale Campaigns
+GET {{baseUrl}}/api/v1/admin/flash-sales?page=1&limit=20
+Authorization: Bearer {{adminToken}}
+
+### Get Flash Sale Campaign
+GET {{baseUrl}}/api/v1/admin/flash-sales/{{campaignId}}
+Authorization: Bearer {{adminToken}}
+
+### Create Flash Sale Campaign
+POST {{baseUrl}}/api/v1/admin/flash-sales
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Summer Flash Sale",
+  "slug": "summer-flash-sale",
+  "startsAt": "2025-12-01T00:00:00Z",
+  "endsAt": "2025-12-05T23:59:59Z",
+  "items": [
+    {
+      "productId": "product-uuid",
+      "salePrice": 20000000,
+      "stockLimit": 10
+    }
+  ]
+}
+
+### Update Flash Sale Campaign
+PATCH {{baseUrl}}/api/v1/admin/flash-sales/{{campaignId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Updated Summer Sale",
+  "status": "ACTIVE",
+  "startsAt": "2025-12-01T00:00:00Z",
+  "endsAt": "2025-12-10T23:59:59Z",
+  "items": [
+    {
+      "id": "existing-item-uuid",
+      "productId": "product-uuid",
+      "salePrice": 19000000,
+      "stockLimit": 15
+    }
+  ]
 }
 
 ### ============================================================================
