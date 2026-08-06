@@ -88,7 +88,6 @@ GET {{baseUrl}}/api/v1/products?q=samsung+galaxy
 GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24
 
 ### Get Related Products
-GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24/related
 
 ### Get Frequently Bought Together
 GET {{baseUrl}}/api/v1/products/{{productId}}/frequently-bought-together
@@ -258,7 +257,7 @@ Content-Type: application/json
 
 {
   "code": "DISC20",
-  "type": "percentage",
+  "kind": "percent",
   "value": 20,
   "minSpend": 100000,
   "maxDiscount": 50000,

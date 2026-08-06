@@ -6,6 +6,11 @@
 GET /api/v1/categories
 ```
 
+**Query Parameters:**
+
+- `page` (integer): Page number (default: 1)
+- `limit` (integer): Items per page (default: 20, max: 100)
+
 **Response:** `200 OK`
 
 ```json
@@ -15,12 +20,18 @@ GET /api/v1/categories
       "id": "uuid",
       "name": "Electronics",
       "slug": "electronics",
-      "description": "Electronic devices and accessories",
-      "imageUrl": "https://cdn.toko.com/categories/electronics.jpg"
+      "parentId": null
     }
-  ]
+  ],
+  "pagination": {
+    "page": 1,
+    "perPage": 20,
+    "totalItems": 10
+  }
 }
 ```
+
+Returns all categories with parent linkage.
 
 ---
 
@@ -30,6 +41,11 @@ GET /api/v1/categories
 GET /api/v1/brands
 ```
 
+**Query Parameters:**
+
+- `page` (integer): Page number (default: 1)
+- `limit` (integer): Items per page (default: 20, max: 100)
+
 **Response:** `200 OK`
 
 ```json
@@ -38,38 +54,38 @@ GET /api/v1/brands
     {
       "id": "uuid",
       "name": "Samsung",
-      "slug": "samsung",
-      "logoUrl": "https://cdn.toko.com/brands/samsung.png"
+      "slug": "samsung"
     }
-  ]
+  ],
+  "pagination": {
+    "page": 1,
+    "perPage": 20,
+    "totalItems": 10
+  }
 }
 ```
+
+Returns all brands sorted by name.
 
 ---
 
 ## 2.3 List Products
 
 ```http
-GET /api/v1/products
+GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&page=1&limit=20
 ```
 
 **Query Parameters:**
 
 - `q` (string): Search query
-- `category` (string): Filter by category slug
-- `brand` (string): Filter by brand slug
-- `minPrice` (integer): Minimum price
-- `maxPrice` (integer): Maximum price
-- `inStock` (boolean): Filter available items only
-- `sort` (enum): `price:asc`, `price:desc`, `title:asc`, `title:desc`
+- `category` (string): Category slug filter
+- `brand` (string): Brand slug filter
+- `minPrice` (integer): Minimum price filter
+- `maxPrice` (integer): Maximum price filter
+- `inStock` (boolean): Filter by stock availability
+- `sort` (string): Sort order: `price:asc`, `price:desc`, `title:asc`, `title:desc`
 - `page` (integer): Page number (default: 1)
 - `limit` (integer): Items per page (default: 20, max: 100)
-
-**Example:**
-
-```http
-GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=price:asc&page=1&limit=20
-```
 
 **Response:** `200 OK`
 
@@ -81,17 +97,17 @@ GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=
       "title": "Samsung Galaxy S24",
       "slug": "samsung-galaxy-s24",
       "price": 12000000,
-      "compareAt": 15000000,
+      "compareAt": 13000000,
+      "inStock": true,
+      "stock": 42,
+      "thumbnail": "https://cdn.toko.com/products/s24.jpg",
+      "badges": ["New", "Best Seller"],
       "categoryId": "uuid",
       "categoryName": "Smartphones",
       "brandId": "uuid",
       "brandName": "Samsung",
-      "thumbnail": "https://cdn.toko.com/products/s24.jpg",
-      "badges": ["new"],
-      "stock": 50,
-      "inStock": true,
       "rating": 4.8,
-      "reviewCount": 125
+      "reviewCount": 128
     }
   ],
   "pagination": {
@@ -102,24 +118,23 @@ GET /api/v1/products?category=electronics&minPrice=100000&maxPrice=5000000&sort=
 }
 ```
 
-> **List vs detail.** The list item is a summary. `description`, `images`,
-> `variants`, and `specs` are only returned by `GET /products/{slug}`.
-> `compareAt`, `thumbnail`, `categoryId`, `categoryName`, `brandId`, and
-> `brandName` are omitted when unset.
-
 **Headers:**
 
-```
-X-Total-Count: 150
-```
+- `X-Total-Count`: Total number of items
+
+Returns filtered product list with pagination metadata.
 
 ---
 
-## 2.4 Product Detail
+## 2.4 Get Product Detail
 
 ```http
 GET /api/v1/products/{slug}
 ```
+
+**Path Parameters:**
+
+- `slug` (string): Product slug
 
 **Response:** `200 OK`
 
@@ -129,122 +144,51 @@ GET /api/v1/products/{slug}
     "id": "uuid",
     "title": "Samsung Galaxy S24",
     "slug": "samsung-galaxy-s24",
-    "description": "Latest flagship smartphone with AI features...",
+    "description": "Latest Samsung flagship...",
     "price": 12000000,
-    "originalPrice": 15000000,
-    "discountPercent": 20,
-    "currency": "IDR",
-    "category": {
-      "id": "uuid",
-      "name": "Smartphones",
-      "slug": "smartphones"
-    },
-    "brand": {
-      "id": "uuid",
-      "name": "Samsung",
-      "slug": "samsung"
-    },
-    "images": [
-      {
-        "url": "https://cdn.toko.com/products/s24-1.jpg",
-        "alt": "Samsung Galaxy S24 front view",
-        "isPrimary": true
-      }
-    ],
+    "compareAt": 13000000,
+    "inStock": true,
+    "stock": 42,
+    "thumbnail": "https://cdn.toko.com/products/s24.jpg",
+    "badges": ["New", "Best Seller"],
     "variants": [
       {
         "id": "uuid",
-        "name": "8GB/128GB - Black",
-        "sku": "S24-8-128-BLK",
+        "sku": "S24-128-BLACK",
         "price": 12000000,
-        "stock": 25,
-        "attributes": {
-          "color": "Black",
-          "storage": "128GB",
-          "ram": "8GB"
-        }
+        "stock": 20,
+        "attributes": { "color": "Black", "storage": "128GB" }
       }
     ],
-    "specifications": {
-      "Display": "6.2\" AMOLED",
-      "Processor": "Snapdragon 8 Gen 3",
-      "Camera": "50MP + 12MP + 10MP",
-      "Battery": "4000mAh"
-    },
-    "stock": 50,
-    "inStock": true,
-    "weight": 167,
-    "dimensions": "14.6 x 7.0 x 0.76 cm",
-    "rating": 4.8,
-    "reviewCount": 125,
-    "tags": ["flagship", "5g", "android"],
-    "createdAt": "2025-01-01T00:00:00Z",
-    "updatedAt": "2025-12-01T00:00:00Z"
+    "images": [
+      "https://cdn.toko.com/products/s24-1.jpg",
+      "https://cdn.toko.com/products/s24-2.jpg"
+    ],
+    "specs": [
+      { "key": "Display", "value": "6.2 inch Dynamic AMOLED 2X" },
+      { "key": "Processor", "value": "Exynos 2400" }
+    ],
+    "brand": { "id": "uuid", "name": "Samsung", "slug": "samsung" },
+    "categoryPath": ["electronics", "smartphones"]
   }
 }
 ```
 
+**Response:** `404 Not Found` — Product not found.
+
+Returns full product detail including variants, images, specs, and metadata.
+
 ---
 
-## 2.5 Related Products
+## 2.5 Get Related Products
 
 ```http
 GET /api/v1/products/{slug}/related
 ```
 
-**Response:** `200 OK`
+**Path Parameters:**
 
-```json
-{
-  "data": [
-    {
-      "id": "uuid",
-      "title": "Samsung Galaxy S24 Plus",
-      "slug": "samsung-galaxy-s24-plus",
-      "price": 14000000,
-      "imageUrl": "https://cdn.toko.com/products/s24plus.jpg",
-      "rating": 4.9,
-      "inStock": true
-    }
-  ]
-}
-```
-
----
-
-## 2.6 Frequently Bought Together
-
-```http
-GET /api/v1/products/{productId}/frequently-bought-together
-```
-
-**Response:** `200 OK`
-
-```json
-{
-  "data": [
-    {
-      "id": "uuid",
-      "title": "MacBook Pro 14 M3",
-      "slug": "macbook-pro-14-m3",
-      "price": 25000000,
-      "thumbnail": "https://cdn.toko.com/products/mbp14.jpg",
-      "rating": 4.9,
-      "inStock": true
-    }
-  ]
-}
-```
-
-Returns products frequently purchased together with the specified product.
-
----
-
-## 2.7 Customers Also Viewed
-
-```http
-GET /api/v1/products/{productId}/also-viewed
-```
+- `slug` (string): Product slug
 
 **Response:** `200 OK`
 
@@ -268,7 +212,7 @@ Returns products that other customers viewed after viewing the specified product
 
 ---
 
-## 2.8 Personalized Recommendations
+## 2.6 Personalized Recommendations
 
 ```http
 GET /api/v1/recommendations/personalized?limit=10
@@ -277,7 +221,7 @@ Authorization: Bearer <access_token>
 
 **Query Parameters:**
 
-- `limit` (integer): Number of recommendations to return (default: 10)
+- `limit` (integer): Number of recommendations to return (default: 10, max: 50)
 
 **Response:** `200 OK`
 
@@ -297,11 +241,13 @@ Authorization: Bearer <access_token>
 }
 ```
 
+**Response:** `401 Unauthorized` — Missing or invalid access token.
+
 Returns personalized product recommendations for the authenticated user based on their browsing and purchase history.
 
 ---
 
-## 2.9 Trending Products
+## 2.7 Trending Products
 
 ```http
 GET /api/v1/recommendations/trending?limit=10
@@ -309,7 +255,7 @@ GET /api/v1/recommendations/trending?limit=10
 
 **Query Parameters:**
 
-- `limit` (integer): Number of trending products to return (default: 10)
+- `limit` (integer): Number of trending products to return (default: 10, max: 50)
 
 **Response:** `200 OK`
 
@@ -330,3 +276,71 @@ GET /api/v1/recommendations/trending?limit=10
 ```
 
 Returns currently trending/popular products across the platform.
+
+---
+
+## 2.8 Frequently Bought Together
+
+```http
+GET /api/v1/products/{id}/frequently-bought-together
+```
+
+**Path Parameters:**
+
+- `id` (string, UUID): Product ID
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "Phone Case",
+      "slug": "phone-case",
+      "price": 150000,
+      "thumbnail": "https://cdn.toko.com/products/case.jpg",
+      "rating": 4.5,
+      "inStock": true
+    }
+  ]
+}
+```
+
+**Response:** `404 Not Found` — Product not found.
+
+Returns products frequently bought together with the specified product.
+
+---
+
+## 2.9 Customers Also Viewed
+
+```http
+GET /api/v1/products/{id}/also-viewed
+```
+
+**Path Parameters:**
+
+- `id` (string, UUID): Product ID
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "Galaxy Buds",
+      "slug": "galaxy-buds",
+      "price": 2000000,
+      "thumbnail": "https://cdn.toko.com/products/buds.jpg",
+      "rating": 4.7,
+      "inStock": true
+    }
+  ]
+}
+```
+
+**Response:** `404 Not Found` — Product not found.
+
+Returns products other customers viewed after viewing the specified product.

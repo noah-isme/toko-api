@@ -39,6 +39,7 @@ import (
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/favorites"
+	"github.com/noah-isme/backend-toko/internal/recommendations"
 	"github.com/noah-isme/backend-toko/internal/health"
 	"github.com/noah-isme/backend-toko/internal/notifications"
 	"github.com/noah-isme/backend-toko/internal/notify"
@@ -217,6 +218,14 @@ func main() {
 		logger.Fatal().Err(err).Msg("initialise catalog service")
 	}
 	catalogHandler := catalog.NewHandler(catalog.HandlerConfig{Service: catalogService})
+
+	recommendationsService, err := recommendations.NewService(recommendations.ServiceConfig{
+		Queries: queries,
+	})
+	if err != nil {
+		logger.Fatal().Err(err).Msg("initialise recommendations service")
+	}
+	recommendationsHandler := recommendations.NewHandler(recommendations.HandlerConfig{Service: recommendationsService})
 
 	authService, err := auth.NewService(auth.Config{
 		Queries:         queries,
@@ -615,6 +624,12 @@ func main() {
 		v.Get("/products/{slug}/related", catalogHandler.Related)
 		v.Get("/vouchers", voucherHandler.PublicList)
 		v.Get("/flash-sales", campaignHandler.Public)
+
+		// Recommendations
+		v.Get("/recommendations/personalized", recommendationsHandler.Personalized)
+		v.Get("/recommendations/trending", recommendationsHandler.Trending)
+		v.Get("/products/{id}/frequently-bought-together", recommendationsHandler.FrequentlyBoughtTogether)
+		v.Get("/products/{id}/also-viewed", recommendationsHandler.CustomersAlsoViewed)
 
 		// Reviews
 		v.Get("/products/{id}/reviews", reviewsHandler.List)
