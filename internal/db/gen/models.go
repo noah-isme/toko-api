@@ -476,6 +476,39 @@ type InventoryReservation struct {
 	UpdatedAt pgtype.Timestamptz         `json:"updated_at"`
 }
 
+type LoyaltyProfile struct {
+	UserID            pgtype.UUID        `json:"user_id"`
+	Points            int32              `json:"points"`
+	Tier              string             `json:"tier"`
+	TierProgress      int32              `json:"tier_progress"`
+	LifetimePoints    int32              `json:"lifetime_points"`
+	JoinedAt          pgtype.Timestamptz `json:"joined_at"`
+	NextTierThreshold pgtype.Int4        `json:"next_tier_threshold"`
+	NextTierName      pgtype.Text        `json:"next_tier_name"`
+}
+
+type LoyaltyReward struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Description pgtype.Text        `json:"description"`
+	PointsCost  int32              `json:"points_cost"`
+	Active      bool               `json:"active"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type LoyaltyTransaction struct {
+	ID            pgtype.UUID        `json:"id"`
+	UserID        pgtype.UUID        `json:"user_id"`
+	Type          string             `json:"type"`
+	Points        int32              `json:"points"`
+	Balance       int32              `json:"balance"`
+	Description   string             `json:"description"`
+	ReferenceID   pgtype.UUID        `json:"reference_id"`
+	ReferenceType pgtype.Text        `json:"reference_type"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type MvSalesDaily struct {
 	Day        pgtype.Interval `json:"day"`
 	PaidOrders int64           `json:"paid_orders"`
@@ -617,6 +650,20 @@ type ProductImage struct {
 	SortOrder int32       `json:"sort_order"`
 }
 
+type ProductQuestion struct {
+	ID           pgtype.UUID        `json:"id"`
+	ProductID    pgtype.UUID        `json:"product_id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Question     string             `json:"question"`
+	Answer       pgtype.Text        `json:"answer"`
+	AnsweredBy   pgtype.UUID        `json:"answered_by"`
+	AnsweredAt   pgtype.Timestamptz `json:"answered_at"`
+	HelpfulCount int32              `json:"helpful_count"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	TenantID     pgtype.UUID        `json:"tenant_id"`
+}
+
 type ProductSpec struct {
 	ID        pgtype.UUID `json:"id"`
 	ProductID pgtype.UUID `json:"product_id"`
@@ -631,6 +678,32 @@ type ProductVariant struct {
 	Price      int64       `json:"price"`
 	Stock      int32       `json:"stock"`
 	Attributes []byte      `json:"attributes"`
+}
+
+type PushPreference struct {
+	UserID       pgtype.UUID        `json:"user_id"`
+	Enabled      bool               `json:"enabled"`
+	OrderUpdates bool               `json:"order_updates"`
+	PromoUpdates bool               `json:"promo_updates"`
+	StockUpdates bool               `json:"stock_updates"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type PushSubscription struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Endpoint  string             `json:"endpoint"`
+	P256dh    string             `json:"p256dh"`
+	Auth      string             `json:"auth"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type QuestionVote struct {
+	ID         pgtype.UUID        `json:"id"`
+	QuestionID pgtype.UUID        `json:"question_id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
 type QueueDlq struct {

@@ -47,6 +47,8 @@ import (
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/platform"
+	"github.com/noah-isme/backend-toko/internal/push"
+	"github.com/noah-isme/backend-toko/internal/qa"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
 	"github.com/noah-isme/backend-toko/internal/resilience"
@@ -56,6 +58,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/tenant"
 	"github.com/noah-isme/backend-toko/internal/user"
 	"github.com/noah-isme/backend-toko/internal/voucher"
+	"github.com/noah-isme/backend-toko/internal/loyalty"
 )
 
 func main() {
@@ -442,6 +445,15 @@ func main() {
 	reviewsSvc := &reviews.Service{Q: queries}
 	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
 
+	qaSvc := &qa.Service{Q: queries}
+	qaHandler := &qa.Handler{Svc: qaSvc}
+
+	loyaltySvc := &loyalty.Service{Q: queries}
+	loyaltyHandler := &loyalty.Handler{Svc: loyaltySvc}
+
+	pushSvc := &push.Service{Q: queries}
+	pushHandler := &push.Handler{Svc: pushSvc}
+
 	favoritesSvc := &favorites.Service{Q: queries}
 	favoritesHandler := &favorites.Handler{Svc: favoritesSvc}
 
@@ -636,6 +648,33 @@ func main() {
 		v.Get("/products/{id}/reviews/stats", reviewsHandler.Stats)
 		v.With(authMiddleware.RequireAuth, tenantMembership).Post("/products/{id}/reviews", reviewsHandler.Create)
 		v.With(authMiddleware.RequireAuth, tenantMembership).Delete("/products/{id}/reviews", reviewsHandler.Delete) // Optional
+
+		// Product Q&A
+		v.Get("/products/{id}/questions", qaHandler.List)
+		v.With(authMiddleware.RequireAuth, tenantMembership).Post("/products/{id}/questions", qaHandler.Create)
+		v.With(authMiddleware.RequireAuth, tenantMembership).Post("/products/{id}/questions/{questionId}/answer", qaHandler.Answer)
+		v.With(authMiddleware.RequireAuth, tenantMembership).Post("/products/{id}/questions/{questionId}/vote", qaHandler.Vote)
+
+		// Loyalty
+		v.Route("/loyalty", func(l chi.Router) {
+			l.Use(authMiddleware.RequireAuth)
+			l.Use(tenantMembership)
+			l.Get("/profile", loyaltyHandler.GetProfile)
+			l.Get("/transactions", loyaltyHandler.GetTransactions)
+			l.Post("/redeem", loyaltyHandler.RedeemReward)
+		})
+
+		// Web Push
+		v.Route("/push", func(p chi.Router) {
+			p.Use(authMiddleware.RequireAuth)
+			p.Use(tenantMembership)
+			p.Get("/vapid-key", pushHandler.GetVapidPublicKey)
+			p.Post("/subscription", pushHandler.Subscribe)
+			p.Delete("/subscription", pushHandler.Unsubscribe)
+			p.Get("/preferences", pushHandler.GetPreferences)
+			p.Patch("/preferences", pushHandler.UpdatePreferences)
+			p.Post("/send-test", pushHandler.SendTest)
+		})
 
 		// Favorites
 		v.Route("/favorites", func(f chi.Router) {

@@ -53,7 +53,9 @@ type Querier interface {
 	AdminUpdateProduct(ctx context.Context, arg AdminUpdateProductParams) (pgtype.UUID, error)
 	AdminUpdateProductVariant(ctx context.Context, arg AdminUpdateProductVariantParams) (ProductVariant, error)
 	AdminVoucherStats(ctx context.Context) (AdminVoucherStatsRow, error)
+	AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) (ProductQuestion, error)
 	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
+	CheckQuestionVote(ctx context.Context, arg CheckQuestionVoteParams) (pgtype.UUID, error)
 	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
 	CommitFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -71,11 +73,15 @@ type Querier interface {
 	CreateCartItem(ctx context.Context, arg CreateCartItemParams) (CartItem, error)
 	CreateEmailVerification(ctx context.Context, arg CreateEmailVerificationParams) (EmailVerification, error)
 	CreateInventoryReservation(ctx context.Context, arg CreateInventoryReservationParams) (InventoryReservation, error)
+	CreateLoyaltyTransaction(ctx context.Context, arg CreateLoyaltyTransactionParams) (CreateLoyaltyTransactionRow, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
+	CreateOrUpdateLoyaltyProfile(ctx context.Context, arg CreateOrUpdateLoyaltyProfileParams) (CreateOrUpdateLoyaltyProfileRow, error)
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) error
 	CreatePasswordReset(ctx context.Context, arg CreatePasswordResetParams) (PasswordReset, error)
 	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
+	CreatePushSubscription(ctx context.Context, arg CreatePushSubscriptionParams) (PushSubscription, error)
+	CreateQuestion(ctx context.Context, arg CreateQuestionParams) (ProductQuestion, error)
 	CreateReview(ctx context.Context, arg CreateReviewParams) (Review, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateShipment(ctx context.Context, arg CreateShipmentParams) (CreateShipmentRow, error)
@@ -84,11 +90,13 @@ type Querier interface {
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
+	DeleteAllPushSubscriptions(ctx context.Context, userID pgtype.UUID) error
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
 	DeleteEmailVerificationsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
+	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) error
 	DeleteReview(ctx context.Context, arg DeleteReviewParams) error
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
@@ -98,6 +106,7 @@ type Querier interface {
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
 	GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error)
 	GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error)
+	GetActiveRewards(ctx context.Context) ([]LoyaltyReward, error)
 	GetAddressByID(ctx context.Context, arg GetAddressByIDParams) (Address, error)
 	GetBrandByID(ctx context.Context, arg GetBrandByIDParams) (GetBrandByIDRow, error)
 	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
@@ -109,6 +118,9 @@ type Querier interface {
 	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
 	GetEmailVerificationByToken(ctx context.Context, token string) (EmailVerification, error)
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
+	GetLoyaltyProfile(ctx context.Context, userID pgtype.UUID) (GetLoyaltyProfileRow, error)
+	GetLoyaltyTransactionCount(ctx context.Context, userID pgtype.UUID) (int64, error)
+	GetLoyaltyTransactions(ctx context.Context, arg GetLoyaltyTransactionsParams) ([]GetLoyaltyTransactionsRow, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
 	GetOrderByTenant(ctx context.Context, arg GetOrderByTenantParams) (GetOrderByTenantRow, error)
@@ -118,7 +130,13 @@ type Querier interface {
 	GetProductBySlug(ctx context.Context, arg GetProductBySlugParams) (GetProductBySlugRow, error)
 	GetProductDetailByTenant(ctx context.Context, arg GetProductDetailByTenantParams) (GetProductDetailByTenantRow, error)
 	GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error)
+	GetProductQuestions(ctx context.Context, arg GetProductQuestionsParams) ([]ProductQuestion, error)
 	GetProductReviews(ctx context.Context, arg GetProductReviewsParams) ([]Review, error)
+	GetPushPreferences(ctx context.Context, userID pgtype.UUID) (PushPreference, error)
+	GetPushSubscription(ctx context.Context, arg GetPushSubscriptionParams) (PushSubscription, error)
+	GetPushSubscriptionsByUser(ctx context.Context, userID pgtype.UUID) ([]PushSubscription, error)
+	GetQuestion(ctx context.Context, id pgtype.UUID) (ProductQuestion, error)
+	GetQuestionVoteCount(ctx context.Context, id pgtype.UUID) (int32, error)
 	GetReviewStats(ctx context.Context, arg GetReviewStatsParams) (GetReviewStatsRow, error)
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
@@ -198,19 +216,24 @@ type Querier interface {
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
 	TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error)
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
+	UnvoteQuestion(ctx context.Context, arg UnvoteQuestionParams) error
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
 	UpdateCartItemQty(ctx context.Context, arg UpdateCartItemQtyParams) (CartItem, error)
 	UpdateCartVoucher(ctx context.Context, arg UpdateCartVoucherParams) error
+	UpdateLoyaltyProfilePoints(ctx context.Context, arg UpdateLoyaltyProfilePointsParams) (UpdateLoyaltyProfilePointsRow, error)
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
 	UpdateOrderStatusIfAllowed(ctx context.Context, arg UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
+	UpdateQuestionVoteCount(ctx context.Context, questionID pgtype.UUID) (int32, error)
 	UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentStatusParams) (pgtype.UUID, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
+	UpsertPushPreferences(ctx context.Context, arg UpsertPushPreferencesParams) (PushPreference, error)
 	UseEmailVerification(ctx context.Context, token string) error
 	UsePasswordReset(ctx context.Context, token string) error
+	VoteQuestion(ctx context.Context, arg VoteQuestionParams) error
 }
 
 var _ Querier = (*Queries)(nil)
