@@ -753,6 +753,355 @@ paths:
           description: Invalid product ID
         '500':
           description: Server error
+  /api/v1/products/{id}/questions:
+    get:
+      summary: List product questions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Product ID
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Array of questions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionListResponse'
+    post:
+      summary: Ask a product question
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - question
+              properties:
+                question:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+      responses:
+        '201':
+          description: Created question
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductQuestion'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+  /api/v1/products/{id}/questions/{questionId}/answer:
+    post:
+      summary: Answer a product question (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - answer
+              properties:
+                answer:
+                  type: string
+                  minLength: 10
+                  maxLength: 1000
+      responses:
+        '200':
+          description: Updated question
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductQuestion'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Question not found
+  /api/v1/products/{id}/questions/{questionId}/vote:
+    post:
+      summary: Vote on a product question
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - direction
+              properties:
+                direction:
+                  type: string
+                  enum: [up, clear]
+      responses:
+        '200':
+          description: Vote recorded
+        '401':
+          description: Unauthorized
+  /api/v1/loyalty/profile:
+    get:
+      summary: Get loyalty profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Loyalty profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoyaltyProfile'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Profile not found
+  /api/v1/loyalty/transactions:
+    get:
+      summary: List loyalty transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [earned, redeemed, expired, adjusted, bonus]
+      responses:
+        '200':
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoyaltyTransactionListResponse'
+        '401':
+          description: Unauthorized
+  /api/v1/loyalty/redeem:
+    post:
+      summary: Redeem a loyalty reward
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reward_id
+              properties:
+                reward_id:
+                  type: string
+      responses:
+        '200':
+          description: Reward redeemed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  remaining_points:
+                    type: integer
+        '400':
+          description: Insufficient points or invalid reward
+        '401':
+          description: Unauthorized
+  /api/v1/push/vapid-key:
+    get:
+      summary: Get VAPID public key for web push
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: VAPID public key
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - public_key
+                properties:
+                  public_key:
+                    type: string
+        '401':
+          description: Unauthorized
+  /api/v1/push/subscription:
+    post:
+      summary: Subscribe to web push notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - endpoint
+                - keys
+              properties:
+                endpoint:
+                  type: string
+                keys:
+                  type: object
+                  required:
+                    - p256dh
+                    - auth
+                  properties:
+                    p256dh:
+                      type: string
+                    auth:
+                      type: string
+      responses:
+        '200':
+          description: Subscribed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          description: Missing fields
+        '401':
+          description: Unauthorized
+    delete:
+      summary: Unsubscribe from web push notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: endpoint
+          in: query
+          schema:
+            type: string
+          description: Subscription endpoint to remove (omit to remove all)
+      responses:
+        '200':
+          description: Unsubscribed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+  /api/v1/push/preferences:
+    get:
+      summary: Get push notification preferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Push preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushPreferences'
+        '401':
+          description: Unauthorized
+    patch:
+      summary: Update push notification preferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                types:
+                  type: object
+                  properties:
+                    order_update:
+                      type: boolean
+                    promo_updates:
+                      type: boolean
+                    stock_updates:
+                      type: boolean
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushPreferences'
+        '401':
+          description: Unauthorized
   /api/v1/favorites:
     get:
       summary: List user favorites
@@ -3290,6 +3639,174 @@ components:
           maximum: 5
         comment:
           type: string
+    ProductQuestion:
+      type: object
+      required:
+        - id
+        - product_id
+        - user_id
+        - question
+        - status
+        - helpful_count
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        question:
+          type: string
+        answer:
+          type: string
+          nullable: true
+        answered_by:
+          type: string
+          format: uuid
+          nullable: true
+        answered_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [pending, answered, rejected]
+        helpful_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    QuestionListResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductQuestion'
+        meta:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+    LoyaltyProfile:
+      type: object
+      required:
+        - user_id
+        - points
+        - tier
+        - tier_progress
+        - lifetime_points
+        - joined_at
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        points:
+          type: integer
+        tier:
+          type: string
+          enum: [bronze, silver, gold, platinum]
+        tier_progress:
+          type: integer
+          description: Percentage to next tier (0-100)
+        lifetime_points:
+          type: integer
+        joined_at:
+          type: string
+          format: date-time
+        next_tier_threshold:
+          type: integer
+          nullable: true
+        next_tier_name:
+          type: string
+          nullable: true
+    LoyaltyTransaction:
+      type: object
+      required:
+        - id
+        - user_id
+        - type
+        - points
+        - balance
+        - description
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [earned, redeemed, expired, adjusted, bonus]
+        points:
+          type: integer
+        balance:
+          type: integer
+        description:
+          type: string
+        reference_id:
+          type: string
+          format: uuid
+          nullable: true
+        reference_type:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    LoyaltyTransactionListResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoyaltyTransaction'
+        meta:
+          type: object
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+            total:
+              type: integer
+            totalPages:
+              type: integer
+    PushPreferences:
+      type: object
+      required:
+        - enabled
+        - types
+      properties:
+        enabled:
+          type: boolean
+        types:
+          type: object
+          properties:
+            order_update:
+              type: boolean
+            promo_updates:
+              type: boolean
+            stock_updates:
+              type: boolean
     Favorite:
       type: object
       required:
