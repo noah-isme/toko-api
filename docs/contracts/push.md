@@ -1,5 +1,7 @@
 # Web Push Notification Endpoints
 
+> **Last Updated:** 2026-08-07
+
 Web push routes require authentication. These endpoints manage browser push subscriptions and user notification preferences.
 
 ## 1. Get VAPID Public Key

@@ -1,5 +1,7 @@
 # Reviews Endpoints
 
+> **Last Updated:** 2026-08-07
+
 All review routes are scoped to a product. The `{id}` path parameter is the product UUID.
 
 ## 7.1 List Product Reviews

@@ -1,5 +1,7 @@
 # User Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 5.0 Update Profile
 
 ```http

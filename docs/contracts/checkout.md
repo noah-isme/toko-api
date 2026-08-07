@@ -1,5 +1,7 @@
 # Checkout Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 4.1 Create Order (Checkout)
 
 ```http

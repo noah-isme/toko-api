@@ -1,5 +1,7 @@
 # Favorites Endpoints
 
+> **Last Updated:** 2026-08-07
+
 All favorites endpoints require authentication.
 
 ## 8.1 List User Favorites

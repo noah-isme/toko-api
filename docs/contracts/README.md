@@ -2,7 +2,7 @@
 
 **Version:** 0.2.0  
 **Base URL:** `https://api.toko.com/api/v1` (production) | `http://localhost:8080/api/v1` (development)  
-**Last Updated:** 2026-08-05
+**Last Updated:** 2026-08-07
 
 ## 📋 Table of Contents
 

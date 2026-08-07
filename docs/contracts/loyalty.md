@@ -1,5 +1,7 @@
 # Loyalty Endpoints
 
+> **Last Updated:** 2026-08-07
+
 Loyalty routes require authentication. All endpoints are scoped to the authenticated user's own profile.
 
 ## 1. Get Loyalty Profile

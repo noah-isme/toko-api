@@ -1,5 +1,7 @@
 # Promotions
 
+> **Last Updated:** 2026-08-07
+
 Public storefront discovery endpoints are tenant-scoped by the API tenant resolver:
 
 - `GET /api/v1/vouchers` — active vouchers with rule metadata. Cart checkout remains the eligibility authority.

@@ -1,5 +1,7 @@
 # Payment Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 6.1 Create or Reuse Payment Intent
 
 ```http

@@ -1,5 +1,7 @@
 # Admin Endpoints
 
+> **Last Updated:** 2026-08-07
+
 All admin endpoints require **admin authentication**.
 
 ## 6.1 List Flash Sale Campaigns

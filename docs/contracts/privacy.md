@@ -1,5 +1,7 @@
 # Privacy & Account
 
+> **Last Updated:** 2026-08-07
+
 Authenticated account controls:
 
 - `GET/PUT /api/v1/users/me/privacy` — persisted communication, visibility, processing, and analytics preferences.

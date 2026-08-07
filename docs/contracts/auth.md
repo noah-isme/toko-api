@@ -1,5 +1,7 @@
 # Authentication & User Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 1.1 Register
 
 ```http

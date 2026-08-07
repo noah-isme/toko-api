@@ -1,5 +1,7 @@
 # Analytics Endpoints
 
+> **Last Updated:** 2026-08-07
+
 All analytics endpoints require **admin authentication**.
 
 ## 9.1 Get Sales Analytics

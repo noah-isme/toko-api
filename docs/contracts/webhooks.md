@@ -1,5 +1,7 @@
 # Webhook Endpoints
 
+> **Last Updated:** 2026-08-07
+
 Webhooks are public endpoints invoked by external payment gateways and shipping couriers. They do **not** require a `Bearer` token; authentication is provider-specific (signature verification, API keys, etc.).
 
 ---

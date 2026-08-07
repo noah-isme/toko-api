@@ -1,5 +1,7 @@
 # In-App Notifications
 
+> **Last Updated:** 2026-08-07
+
 Per-user in-app notifications. Notifications are created automatically as a side
 effect of order and shipment lifecycle events (see [Webhooks](webhooks.md) for
 the underlying domain topics) and read back through the endpoints below.

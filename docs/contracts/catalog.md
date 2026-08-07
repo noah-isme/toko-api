@@ -1,5 +1,7 @@
 # Catalog Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 2.1 List Categories
 
 ```http

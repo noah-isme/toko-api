@@ -1,5 +1,7 @@
 # Tenant Operations
 
+> **Last Updated:** 2026-08-07
+
 Tenant and admin operational contracts:
 
 - `GET /api/v1/admin/customers`

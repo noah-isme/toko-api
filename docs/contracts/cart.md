@@ -1,5 +1,7 @@
 # Cart Endpoints
 
+> **Last Updated:** 2026-08-07
+
 ## 3.1 Create Cart (Guest)
 
 ```http

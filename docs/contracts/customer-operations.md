@@ -1,5 +1,7 @@
 # Returns & Support
 
+> **Last Updated:** 2026-08-07
+
 Customer endpoints require authentication and tenant membership:
 
 - `POST /api/v1/orders/{orderId}/returns`
