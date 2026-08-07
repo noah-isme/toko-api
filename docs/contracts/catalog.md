@@ -210,7 +210,7 @@ GET /api/v1/products/{slug}/related
 }
 ```
 
-Returns products that other customers viewed after viewing the specified product.
+Returns products from the same category as the specified product (excluding the product itself).
 
 ---
 
@@ -245,7 +245,7 @@ Authorization: Bearer <access_token>
 
 **Response:** `401 Unauthorized` — Missing or invalid access token.
 
-Returns personalized product recommendations for the authenticated user based on their browsing and purchase history.
+Returns personalized product recommendations for the authenticated user based on their browsing history (viewed categories and brands). Falls back to trending products for anonymous users.
 
 ---
 
@@ -277,7 +277,7 @@ GET /api/v1/recommendations/trending?limit=10
 }
 ```
 
-Returns currently trending/popular products across the platform.
+Returns currently trending/popular products across the platform, sorted by rating and recency.
 
 ---
 
@@ -289,7 +289,7 @@ GET /api/v1/products/{id}/frequently-bought-together
 
 **Path Parameters:**
 
-- `id` (string, UUID): Product ID
+- `id` (string, UUID or slug): Product identifier (UUID or slug)
 
 **Response:** `200 OK`
 
@@ -311,7 +311,7 @@ GET /api/v1/products/{id}/frequently-bought-together
 
 **Response:** `404 Not Found` — Product not found.
 
-Returns products frequently bought together with the specified product.
+Returns products frequently bought together with the specified product, based on order history analysis. Accepts both UUID and slug as product identifier.
 
 ---
 
@@ -323,7 +323,7 @@ GET /api/v1/products/{id}/also-viewed
 
 **Path Parameters:**
 
-- `id` (string, UUID): Product ID
+- `id` (string, UUID or slug): Product identifier (UUID or slug)
 
 **Response:** `200 OK`
 
@@ -345,4 +345,4 @@ GET /api/v1/products/{id}/also-viewed
 
 **Response:** `404 Not Found` — Product not found.
 
-Returns products other customers viewed after viewing the specified product.
+Returns products other customers viewed after viewing the specified product, based on collaborative filtering of user view history. Accepts both UUID and slug as product identifier.

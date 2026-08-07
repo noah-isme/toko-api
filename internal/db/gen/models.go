@@ -567,6 +567,16 @@ type OrderItem struct {
 	Subtotal  int64       `json:"subtotal"`
 }
 
+type OrderProductPair struct {
+	ID         pgtype.UUID        `json:"id"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	ProductIDA pgtype.UUID        `json:"product_id_a"`
+	ProductIDB pgtype.UUID        `json:"product_id_b"`
+	PairCount  int32              `json:"pair_count"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PasswordReset struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    pgtype.UUID        `json:"user_id"`
@@ -881,6 +891,28 @@ type UserPrivacyPreference struct {
 	DataProcessing    bool               `json:"data_processing"`
 	AnalyticsTracking bool               `json:"analytics_tracking"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type UserProductView struct {
+	ID           pgtype.UUID        `json:"id"`
+	TenantID     pgtype.UUID        `json:"tenant_id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	ProductID    pgtype.UUID        `json:"product_id"`
+	ViewCount    int32              `json:"view_count"`
+	LastViewedAt pgtype.Timestamptz `json:"last_viewed_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type UserRecommendationCache struct {
+	ID                 pgtype.UUID        `json:"id"`
+	TenantID           pgtype.UUID        `json:"tenant_id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	RecommendationType string             `json:"recommendation_type"`
+	ProductIds         []pgtype.UUID      `json:"product_ids"`
+	ExpiresAt          pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Voucher struct {

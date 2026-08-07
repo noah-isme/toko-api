@@ -94,6 +94,7 @@ type Querier interface {
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
 	DeleteEmailVerificationsByUser(ctx context.Context, userID pgtype.UUID) error
+	DeleteExpiredRecommendationCache(ctx context.Context) error
 	DeletePasswordReset(ctx context.Context, id pgtype.UUID) error
 	DeletePasswordResetsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) error
@@ -114,9 +115,11 @@ type Querier interface {
 	GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem, error)
 	GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
+	GetCustomersAlsoViewed(ctx context.Context, arg GetCustomersAlsoViewedParams) ([]GetCustomersAlsoViewedRow, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
 	GetEmailVerificationByToken(ctx context.Context, token string) (EmailVerification, error)
+	GetFrequentlyBoughtTogether(ctx context.Context, arg GetFrequentlyBoughtTogetherParams) ([]GetFrequentlyBoughtTogetherRow, error)
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
 	GetLoyaltyProfile(ctx context.Context, userID pgtype.UUID) (GetLoyaltyProfileRow, error)
 	GetLoyaltyTransactionCount(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -127,6 +130,7 @@ type Querier interface {
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
 	GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
+	GetPersonalizedRecommendations(ctx context.Context, arg GetPersonalizedRecommendationsParams) ([]GetPersonalizedRecommendationsRow, error)
 	GetProductBySlug(ctx context.Context, arg GetProductBySlugParams) (GetProductBySlugRow, error)
 	GetProductDetailByTenant(ctx context.Context, arg GetProductDetailByTenantParams) (GetProductDetailByTenantRow, error)
 	GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error)
@@ -142,8 +146,12 @@ type Querier interface {
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
+	GetTopViewedProductsByUser(ctx context.Context, arg GetTopViewedProductsByUserParams) ([]GetTopViewedProductsByUserRow, error)
+	GetTrendingProducts(ctx context.Context, arg GetTrendingProductsParams) ([]GetTrendingProductsRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	GetUserProductViews(ctx context.Context, arg GetUserProductViewsParams) ([]GetUserProductViewsRow, error)
+	GetUserRecommendationCache(ctx context.Context, arg GetUserRecommendationCacheParams) (UserRecommendationCache, error)
 	GetVariantForCart(ctx context.Context, arg GetVariantForCartParams) (GetVariantForCartRow, error)
 	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
 	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
@@ -230,7 +238,10 @@ type Querier interface {
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
+	UpsertOrderProductPair(ctx context.Context, arg UpsertOrderProductPairParams) (OrderProductPair, error)
 	UpsertPushPreferences(ctx context.Context, arg UpsertPushPreferencesParams) (PushPreference, error)
+	UpsertUserProductView(ctx context.Context, arg UpsertUserProductViewParams) (UserProductView, error)
+	UpsertUserRecommendationCache(ctx context.Context, arg UpsertUserRecommendationCacheParams) (UserRecommendationCache, error)
 	UseEmailVerification(ctx context.Context, token string) error
 	UsePasswordReset(ctx context.Context, token string) error
 	VoteQuestion(ctx context.Context, arg VoteQuestionParams) error
