@@ -3,8 +3,8 @@
  * 
  * Copy file ini ke project frontend Anda dan import types yang diperlukan
  * 
- * @version 0.2.0
- * @lastUpdated 2025-12-07
+ * @version 0.3.0
+ * @lastUpdated 2026-08-07
  */
 
 // ============================================================================
@@ -534,6 +534,163 @@ export interface PaymentWebhookPayload {
 }
 
 // ============================================================================
+// Product Q&A Types
+// ============================================================================
+
+export type QAStatus = 'pending' | 'answered' | 'rejected';
+export type QuestionSort = 'recent' | 'popular' | 'unanswered';
+
+export interface ProductQuestion {
+  id: string;
+  productId: string;
+  userId: string;
+  question: string;
+  answer?: string | null;
+  answeredBy?: string | null;
+  answeredAt?: string | null;
+  status: QAStatus;
+  helpfulCount: number;
+  createdAt: string;
+}
+
+export interface QuestionListParams {
+  page?: number;
+  limit?: number;
+  sort?: QuestionSort;
+}
+
+export interface QuestionListMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface QuestionListResponse {
+  data: ProductQuestion[];
+  meta: QuestionListMeta;
+}
+
+export interface CreateQuestionRequest {
+  question: string; // 10-500 chars
+}
+
+export interface AnswerQuestionRequest {
+  answer: string; // 10-1000 chars
+}
+
+export type VoteDirection = 'up' | 'clear';
+
+export interface VoteQuestionRequest {
+  direction: VoteDirection;
+}
+
+export interface VoteQuestionResponse {
+  helpfulCount: number;
+  myVote: 'up' | null;
+}
+
+// ============================================================================
+// Loyalty Types
+// ============================================================================
+
+export type LoyaltyTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+export type LoyaltyTransactionType = 'earned' | 'redeemed' | 'expired' | 'adjusted' | 'bonus';
+export type LoyaltyReferenceType = 'order' | 'review' | 'referral' | 'promo' | 'manual';
+
+export interface LoyaltyProfile {
+  userId: string;
+  points: number;
+  tier: LoyaltyTier;
+  tierProgress: number; // 0-100 percentage to next tier
+  lifetimePoints: number;
+  joinedAt: string;
+  nextTierThreshold?: number;
+  nextTierName?: LoyaltyTier;
+}
+
+export interface LoyaltyTransaction {
+  id: string;
+  userId: string;
+  type: LoyaltyTransactionType;
+  points: number;
+  balance: number;
+  description: string;
+  referenceId?: string | null;
+  referenceType?: LoyaltyReferenceType | null;
+  createdAt: string;
+}
+
+export interface LoyaltyTransactionListParams {
+  page?: number;
+  limit?: number;
+  type?: LoyaltyTransactionType;
+}
+
+export interface LoyaltyTransactionListMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface LoyaltyTransactionListResponse {
+  data: LoyaltyTransaction[];
+  meta: LoyaltyTransactionListMeta;
+}
+
+export interface RedeemRewardRequest {
+  rewardId: string;
+}
+
+export interface RedeemRewardResponse {
+  success: boolean;
+  message: string;
+  remainingPoints: number;
+}
+
+// ============================================================================
+// Web Push Types
+// ============================================================================
+
+export interface VapidPublicKeyResponse {
+  publicKey: string;
+}
+
+export interface PushSubscriptionKeys {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscriptionRequest {
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+}
+
+export interface PushSubscriptionResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface PushPreferences {
+  enabled: boolean;
+  types: {
+    orderUpdate: boolean;
+    promoUpdates: boolean;
+    stockUpdates: boolean;
+  };
+}
+
+export interface UpdatePushPreferencesRequest {
+  enabled?: boolean;
+  types?: {
+    orderUpdate?: boolean;
+    promoUpdates?: boolean;
+    stockUpdates?: boolean;
+  };
+}
+
+// ============================================================================
 // Query Types (React Query)
 // ============================================================================
 
@@ -703,4 +860,34 @@ export type {
   ApiError,
   Pagination,
   PaginatedResponse,
+  // Q&A
+  QAStatus,
+  QuestionSort,
+  ProductQuestion,
+  QuestionListParams,
+  QuestionListMeta,
+  QuestionListResponse,
+  CreateQuestionRequest,
+  AnswerQuestionRequest,
+  VoteDirection,
+  VoteQuestionRequest,
+  VoteQuestionResponse,
+  // Loyalty
+  LoyaltyTier,
+  LoyaltyTransactionType,
+  LoyaltyReferenceType,
+  LoyaltyProfile,
+  LoyaltyTransaction,
+  LoyaltyTransactionListParams,
+  LoyaltyTransactionListMeta,
+  LoyaltyTransactionListResponse,
+  RedeemRewardRequest,
+  RedeemRewardResponse,
+  // Web Push
+  VapidPublicKeyResponse,
+  PushSubscriptionKeys,
+  PushSubscriptionRequest,
+  PushSubscriptionResponse,
+  PushPreferences,
+  UpdatePushPreferencesRequest,
 };
