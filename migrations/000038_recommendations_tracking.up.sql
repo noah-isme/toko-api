@@ -47,4 +47,4 @@ CREATE TABLE user_recommendation_cache (
 );
 
 CREATE UNIQUE INDEX idx_user_recommendation_cache_unique ON user_recommendation_cache(tenant_id, user_id, recommendation_type);
-CREATE INDEX idx_user_recommendation_cache_expires ON user_recommendation_cache(expires_at) WHERE expires_at > now();
+CREATE INDEX idx_user_recommendation_cache_expires ON user_recommendation_cache(expires_at);

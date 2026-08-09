@@ -1,4 +1,5 @@
 bin/
+/api
 vendor/
 .env
 coverage.out
