@@ -33,9 +33,34 @@ const (
 	emailVerificationTTL = 72 * time.Hour
 )
 
+// QueryStore is the database surface used by authentication. Keeping this
+// interface local prevents unrelated generated queries from breaking auth
+// tests whenever another feature adds a SQL query.
+type QueryStore interface {
+	CreateEmailVerification(context.Context, db.CreateEmailVerificationParams) (db.EmailVerification, error)
+	CreatePasswordReset(context.Context, db.CreatePasswordResetParams) (db.PasswordReset, error)
+	CreateSession(context.Context, db.CreateSessionParams) (db.Session, error)
+	CreateUser(context.Context, db.CreateUserParams) (db.CreateUserRow, error)
+	DeletePasswordResetsByUser(context.Context, pgtype.UUID) error
+	DeleteSessionByToken(context.Context, string) error
+	DeleteSessionsByUser(context.Context, pgtype.UUID) error
+	GetEmailVerificationByToken(context.Context, string) (db.EmailVerification, error)
+	GetPasswordResetByToken(context.Context, string) (db.PasswordReset, error)
+	GetSessionByToken(context.Context, string) (db.Session, error)
+	GetUserByEmail(context.Context, string) (db.GetUserByEmailRow, error)
+	GetUserByID(context.Context, pgtype.UUID) (db.GetUserByIDRow, error)
+	ListSessions(context.Context, pgtype.UUID) ([]db.Session, error)
+	MarkUserEmailVerified(context.Context, pgtype.UUID) (db.MarkUserEmailVerifiedRow, error)
+	RotateSessionToken(context.Context, db.RotateSessionTokenParams) (db.Session, error)
+	UpdateUserPassword(context.Context, db.UpdateUserPasswordParams) (db.UpdateUserPasswordRow, error)
+	UpdateUserProfile(context.Context, db.UpdateUserProfileParams) (db.UpdateUserProfileRow, error)
+	UseEmailVerification(context.Context, string) error
+	UsePasswordReset(context.Context, string) error
+}
+
 // Service coordinates authentication, password management, and session persistence.
 type Service struct {
-	queries    db.Querier
+	queries    QueryStore
 	secret     []byte
 	accessTTL  time.Duration
 	refreshTTL time.Duration
@@ -50,7 +75,7 @@ type Service struct {
 
 // Config configures the auth service.
 type Config struct {
-	Queries         db.Querier
+	Queries         QueryStore
 	Secret          string
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration

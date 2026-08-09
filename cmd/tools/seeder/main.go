@@ -54,7 +54,7 @@ func main() {
 	seedVouchers(db, tenantID)
 	seedFlashSales(db, tenantID)
 	seedAddresses(db)
-	
+
 	log.Println("Seeding completed successfully!")
 }
 
@@ -195,14 +195,14 @@ func seedCatalog(db *sql.DB, tenantID string) {
 	for _, p := range products {
 		catID, ok1 := catIDs[p.Category]
 		brandID, ok2 := brandIDs[p.Brand]
-		
+
 		if !ok1 {
 			log.Printf("Missing category ID for %s", p.Category)
 		}
 		if !ok2 {
 			log.Printf("Missing brand ID for %s", p.Brand)
 		}
-		
+
 		if !ok1 || !ok2 {
 			continue
 		}
@@ -235,7 +235,7 @@ func seedCatalog(db *sql.DB, tenantID string) {
 				stock = EXCLUDED.stock,
 				price = EXCLUDED.price;
 		`, prodID, sku, p.Price, p.Stock)
-		
+
 		if err != nil {
 			log.Printf("Failed to seed variant for %s: %v", p.Title, err)
 		}
@@ -244,9 +244,9 @@ func seedCatalog(db *sql.DB, tenantID string) {
 
 func seedVouchers(db *sql.DB, tenantID string) {
 	vouchers := []struct {
-		Code   string
-		Value  int64
-		Kind   string // "percent" or "fixed_amount"
+		Code  string
+		Value int64
+		Kind  string // "percent" or "fixed_amount"
 	}{
 		{"DISC20", 20000, "fixed_amount"},
 		{"WELCOME", 50000, "fixed_amount"},
@@ -290,10 +290,21 @@ func seedFlashSales(db *sql.DB, tenantID string) {
 
 	// Get product IDs
 	var macbookID, iphoneID, airforceID, ultraboostID string
-	db.QueryRow("SELECT id FROM products WHERE slug = 'macbook-pro-14-m3' AND tenant_id = $1", tenantID).Scan(&macbookID)
-	db.QueryRow("SELECT id FROM products WHERE slug = 'iphone-15-pro' AND tenant_id = $1", tenantID).Scan(&iphoneID)
-	db.QueryRow("SELECT id FROM products WHERE slug = 'nike-air-force-1' AND tenant_id = $1", tenantID).Scan(&airforceID)
-	db.QueryRow("SELECT id FROM products WHERE slug = 'adidas-ultraboost' AND tenant_id = $1", tenantID).Scan(&ultraboostID)
+	products := []struct {
+		slug string
+		id   *string
+	}{
+		{slug: "macbook-pro-14-m3", id: &macbookID},
+		{slug: "iphone-15-pro", id: &iphoneID},
+		{slug: "nike-air-force-1", id: &airforceID},
+		{slug: "adidas-ultraboost", id: &ultraboostID},
+	}
+	for _, product := range products {
+		if err := db.QueryRow("SELECT id FROM products WHERE slug = $1 AND tenant_id = $2", product.slug, tenantID).Scan(product.id); err != nil {
+			log.Printf("Skipping flash sale seed: product %q not found: %v", product.slug, err)
+			return
+		}
+	}
 
 	if macbookID == "" || iphoneID == "" || airforceID == "" || ultraboostID == "" {
 		log.Printf("Skipping flash sale seed: required products not found")

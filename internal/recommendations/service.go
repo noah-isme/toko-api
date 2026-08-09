@@ -19,7 +19,6 @@ type Service struct {
 
 // queryProvider interface defines the DB methods we need.
 type queryProvider interface {
-	ListProductsPublic(ctx context.Context, arg dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error)
 	GetProductBySlug(ctx context.Context, arg dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error)
 	GetProductForCart(ctx context.Context, arg dbgen.GetProductForCartParams) (dbgen.GetProductForCartRow, error)
 	GetFrequentlyBoughtTogether(ctx context.Context, arg dbgen.GetFrequentlyBoughtTogetherParams) ([]dbgen.GetFrequentlyBoughtTogetherRow, error)
@@ -249,30 +248,6 @@ func mapRecommendationRow(id pgtype.UUID, title, slug string, price int64, thumb
 	}
 	if thumbnail.Valid {
 		thumb := thumbnail.String
-		item.Thumbnail = &thumb
-	}
-	return item
-}
-
-func mapProducts(rows []dbgen.ListProductsPublicRow) []ProductListItem {
-	items := make([]ProductListItem, 0, len(rows))
-	for _, row := range rows {
-		items = append(items, mapProduct(row))
-	}
-	return items
-}
-
-func mapProduct(row dbgen.ListProductsPublicRow) ProductListItem {
-	item := ProductListItem{
-		ID:      uuidString(row.ID),
-		Title:   row.Title,
-		Slug:    row.Slug,
-		Price:   row.Price,
-		InStock: row.InStock,
-		Rating:  row.Rating,
-	}
-	if row.Thumbnail.Valid {
-		thumb := row.Thumbnail.String
 		item.Thumbnail = &thumb
 	}
 	return item

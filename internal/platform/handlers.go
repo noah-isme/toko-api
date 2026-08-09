@@ -143,7 +143,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 500, "INTERNAL", "failed to begin account deletion", nil)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	// Orders remain for accounting, but are detached and their delivery PII is removed.
 	if _, err := tx.Exec(r.Context(), `UPDATE orders SET user_id=NULL,shipping_address=NULL,updated_at=now() WHERE user_id=$1`, userID); err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to anonymize orders", nil)
@@ -190,7 +190,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 500, "INTERNAL", "failed to begin tenant onboarding", nil)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var tenantID pgtype.UUID
 	if err := tx.QueryRow(r.Context(), `INSERT INTO tenants(slug,name) VALUES($1,$2) RETURNING id`, input.Slug, input.Name).Scan(&tenantID); err != nil {
 		common.JSONError(w, 409, "TENANT_EXISTS", "tenant slug is already in use", nil)
@@ -778,7 +778,7 @@ func (h *Handler) SettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 500, "INTERNAL", "failed to begin settings update", nil)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	for key, value := range settings {
 		if strings.TrimSpace(key) == "" {
 			continue

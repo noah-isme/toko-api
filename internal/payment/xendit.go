@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,16 +159,6 @@ func (x Xendit) VerifyWebhook(r *http.Request, body []byte) (WebhookVerifyResult
 		Status:          status,
 		ProviderPayload: body,
 	}, nil
-}
-
-func (x Xendit) computeSignature(body []byte) string {
-	key := strings.TrimSpace(x.SecretKey)
-	if key == "" {
-		return ""
-	}
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func normaliseXenditStatus(status string) string {

@@ -1,0 +1,25 @@
+# Never send local secrets or credentials to the Docker daemon.
+.env
+.env.*
+!.env.example
+
+# Source-control and local tooling metadata.
+.git
+.github
+.agent
+.agents
+.claude
+.codex
+.vscode
+
+# Local build, test, and development artifacts.
+tmp
+*.log
+air.log
+api
+worker
+migrate
+coverage.out
+perf/smoke.json
+scripts/seed/__pycache__
+

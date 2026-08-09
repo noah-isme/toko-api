@@ -63,11 +63,12 @@ func (h Handler) Ready(w http.ResponseWriter, r *http.Request) {
 		"redis": redisStatus,
 	}
 	if dbStatus != "ok" || redisStatus != "ok" {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 	}
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
 }
 

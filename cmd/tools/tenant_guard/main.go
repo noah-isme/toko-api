@@ -31,37 +31,37 @@ func main() {
 // Tables that DON'T require tenant_id in queries (no tenant_id column, or implicitly scoped)
 var exemptTables = map[string]bool{
 	// Global reference tables (no tenant_id column)
-	"brands":            true,
-	"categories":        true,
-	"users":             true,
-	"audit_logs":        true,
-	"password_resets":   true,
-	"sessions":          true,
-	"domain_events":     true, // filtered by topic/aggregate_id
-	"webhook_dlq":       true, // scoped by delivery
+	"brands":          true,
+	"categories":      true,
+	"users":           true,
+	"audit_logs":      true,
+	"password_resets": true,
+	"sessions":        true,
+	"domain_events":   true, // filtered by topic/aggregate_id
+	"webhook_dlq":     true, // scoped by delivery
 	// Implicitly tenant-scoped via cart_id (cart has tenant_id)
-	"cart_items":        true,
+	"cart_items": true,
 	// Implicitly tenant-scoped via user_id (users -> tenant mapping exists)
-	"addresses":         true,
+	"addresses": true,
 	// Materialized views (no direct table access)
-	"mv_sales_daily":    true,
-	"mv_top_products":   true,
+	"mv_sales_daily":  true,
+	"mv_top_products": true,
 	// Webhook tables (scoped by endpoint which has tenant_id)
 	"webhook_endpoints":  true,
 	"webhook_deliveries": true,
 	// Tables with globally unique UUID primary keys - implicitly tenant-scoped
 	// These use globally unique UUID PKs; tenant isolation is enforced at app layer
-	"carts":              true,
-	"orders":             true,
-	"payments":           true,
-	"shipments":          true,
-	"notifications":      true,
-	"reviews":            true,
-	"favorites":          true,
-	"vouchers":           true,
-	"voucher_rules":      true,
-	"orders_status":      true,
-	"orders_settlement":  true,
+	"carts":             true,
+	"orders":            true,
+	"payments":          true,
+	"shipments":         true,
+	"notifications":     true,
+	"reviews":           true,
+	"favorites":         true,
+	"vouchers":          true,
+	"voucher_rules":     true,
+	"orders_status":     true,
+	"orders_settlement": true,
 }
 
 // Tables that MUST have tenant_id in all SELECT/UPDATE/DELETE queries

@@ -6,27 +6,27 @@
 ## P1 -- Payment Failover
 ### Trigger
 - Circuit breaker for payment provider (e.g., Midtrans) trips: payment_circuit_open alert fires.
-- Health check /health/ready returns 503 due to payment dependency.
+- Payment circuit metrics show the provider is unavailable; `/health/ready` only checks the database and Redis.
 
 ### Impact
-- New checkouts fail at payment step; existing paid orders unaffected.
+- New checkouts fail at the payment step; existing paid orders are unaffected.
 - Users see "Payment temporarily unavailable" with retry guidance.
 
 ### Diagnosis
 1. Check provider status page / Midtrans dashboard.
 2. Inspect toko_http_request_duration_ms for /checkout -> p99 spike.
 3. Verify payment_circuit_open metric = 1 in Prometheus.
-4. Check recent deploy / config change for payment credentials.
+4. Check the recent deploy or configuration change for payment credentials.
 
 ### Mitigation
-- Immediate: Toggle feature flag PAYMENT_ENABLED=false to show maintenance banner; this stops new checkouts cleanly.
-- Failover: If secondary provider configured (e.g., Xendit), update PAYMENT_PROVIDER=xendit env and rollout.
+- Immediate: Disable checkout at the storefront or ingress while the provider is unavailable; this repository has no runtime `PAYMENT_ENABLED` flag.
+- Failover: If a secondary provider is configured (e.g., Xendit), update `PAYMENT_PROVIDER=xendit` and its credentials, then roll out the change.
 - Workaround: Instruct users to use bank transfer (VA) which may route through different integration path.
 
 ### Resolution
 - Root-cause: provider outage / bad credentials / rate limit.
-- Reset circuit: POST /admin/circuits/reset (admin auth) or redeploy with corrected config.
-- Re-enable feature flag; verify smoke checkout succeeds.
+- Reset circuit: breakers transition out of the open state automatically after their configured interval; redeploy after correcting credentials or provider configuration if an immediate reset is required.
+- Verify that a smoke checkout succeeds before restoring normal traffic.
 
 ### Postmortem Template
 - Timeline (UTC): detection -> mitigation -> resolution.
@@ -78,11 +78,11 @@
 1. SELECT * FROM tenants WHERE slug = '<tenant-slug>' -> verify status = 'active', domain set.
 2. Check DNS: dig <tenant-slug>.toko.com -> CNAME to wildcard cert target.
 3. Verify tenant_resolver middleware logs: X-Tenant-ID header / subdomain extraction.
-4. Check Redis cache: cache:tenant:<slug> exists and maps to correct UUID.
+4. Check Redis cache: the configured tenant cache prefix contains the expected tenant mapping.
 
 ### Mitigation
 - DNS propagation: Wait TTL (typically 60-300s); flush local DNS.
-- Cache invalidation: POST /admin/cache/flush?tenant=<slug> or restart API pods.
+- Cache invalidation: restart API pods or evict the affected tenant cache keys directly; there is no public cache-flush endpoint.
 - Status correction: PATCH /admin/tenants/{id} with status: active if stuck in pending.
 
 ### Resolution

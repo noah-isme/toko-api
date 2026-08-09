@@ -112,7 +112,7 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", err.Error())
 		return
 	}
-	
+
 	userIDStr, ok := common.UserID(ctx)
 	if !ok {
 		// If not logged in, return false
@@ -141,7 +141,7 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "CHECK_FAILED", "failed to check favorite", err.Error())
 		return
 	}
-	
+
 	common.JSON(w, http.StatusOK, map[string]bool{"favorited": exists})
 }
 

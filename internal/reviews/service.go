@@ -59,5 +59,3 @@ func (s *Service) CheckUserReview(ctx context.Context, userID, productID, tenant
 		TenantID:  tenantID,
 	})
 }
-
-

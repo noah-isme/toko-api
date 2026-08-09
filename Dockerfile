@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:alpine AS builder
+FROM golang:1.24.3-alpine AS builder
 
 WORKDIR /src
 
@@ -15,12 +15,12 @@ COPY . .
 # Build every entrypoint the deployment needs. The migrate binary embeds the
 # SQL files (see embed.go), so the runtime image ships no migrations directory
 # and cannot drift from the schema this commit expects.
-RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api \
-    && CGO_ENABLED=0 go build -o /out/worker ./cmd/worker \
-    && CGO_ENABLED=0 go build -o /out/migrate ./cmd/migrate
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /out/api ./cmd/api \
+    && CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /out/worker ./cmd/worker \
+    && CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /out/migrate ./cmd/migrate
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.21
 
 # Install ca-certificates for HTTPS requests
 RUN apk --no-cache add ca-certificates

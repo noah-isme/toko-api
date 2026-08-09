@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -436,8 +437,83 @@ func Load() (*Config, error) {
 	if cfg.JWTSecret == "" {
 		return nil, errors.New("JWT_SECRET is required")
 	}
+	if err := validateProduction(cfg); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+func validateProduction(cfg *Config) error {
+	if !strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
+		return nil
+	}
+
+	if len([]byte(cfg.JWTSecret)) < 32 || strings.EqualFold(strings.TrimSpace(cfg.JWTSecret), "change-me") {
+		return errors.New("production JWT_SECRET must be a random value of at least 32 bytes")
+	}
+	if !cfg.RefreshCookieSecure {
+		return errors.New("production REFRESH_COOKIE_SECURE must be true")
+	}
+	if cfg.PaymentSandbox {
+		return errors.New("production PAYMENT_SANDBOX must be false")
+	}
+	if cfg.SMTPAllowInsecureTLS {
+		return errors.New("production SMTP_ALLOW_INSECURE_TLS must be false")
+	}
+	if parseBool(os.Getenv("OBS_ENABLE_PPROF")) && (strings.TrimSpace(os.Getenv("SECURE_PPROF_BASIC_AUTH_USER")) == "" || strings.TrimSpace(os.Getenv("SECURE_PPROF_BASIC_AUTH_PASS")) == "") {
+		return errors.New("production pprof requires SECURE_PPROF_BASIC_AUTH_USER and SECURE_PPROF_BASIC_AUTH_PASS")
+	}
+	if cfg.NotifyEmailEnabled && strings.TrimSpace(cfg.SMTPHost) == "" {
+		return errors.New("production SMTP_HOST is required when transactional email is enabled")
+	}
+	if !isHTTPSURL(cfg.PublicBaseURL) {
+		return errors.New("production PUBLIC_BASE_URL must be an https URL")
+	}
+
+	origins := cfg.CORSAllowedOrigins
+	if override := splitAndTrim(os.Getenv("SECURITY_ALLOWED_ORIGINS")); len(override) > 0 {
+		origins = override
+	}
+	if len(origins) == 0 {
+		return errors.New("production CORS_ALLOWED_ORIGINS or SECURITY_ALLOWED_ORIGINS is required")
+	}
+	for _, origin := range origins {
+		if origin == "*" || !isHTTPSOrigin(origin) {
+			return fmt.Errorf("production CORS origin must be an https origin, got %q", origin)
+		}
+	}
+
+	switch cfg.PaymentProvider {
+	case "midtrans":
+		if strings.TrimSpace(cfg.MidtransServerKey) == "" {
+			return errors.New("production MIDTRANS_SERVER_KEY is required for the midtrans provider")
+		}
+	case "xendit":
+		if strings.TrimSpace(cfg.XenditSecretKey) == "" {
+			return errors.New("production XENDIT_SECRET_KEY is required for the xendit provider")
+		}
+	default:
+		return fmt.Errorf("unsupported production payment provider %q", cfg.PaymentProvider)
+	}
+
+	if cfg.ShippingProvider != "rajaongkir" {
+		return fmt.Errorf("unsupported production shipping provider %q", cfg.ShippingProvider)
+	}
+	if strings.TrimSpace(cfg.RajaOngkirAPIKey) == "" {
+		return errors.New("production RAJAONGKIR_API_KEY is required")
+	}
+	return nil
+}
+
+func isHTTPSURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && parsed.Scheme == "https" && parsed.Hostname() != ""
+}
+
+func isHTTPSOrigin(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && parsed.Scheme == "https" && parsed.Hostname() != "" && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 // HTTPAddr returns the address the HTTP server should bind to.

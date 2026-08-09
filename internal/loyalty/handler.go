@@ -69,10 +69,10 @@ func (h *Handler) GetTransactions(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{
 		"data": transactions,
 		"meta": map[string]any{
-			"page":         max(page, 1),
-			"limit":        max(limit, 10),
-			"total":        total,
-			"total_pages":  max(1, (total + int64(max(limit, 10)) - 1) / int64(max(limit, 10))),
+			"page":        max(page, 1),
+			"limit":       max(limit, 10),
+			"total":       total,
+			"total_pages": max(1, (total+int64(max(limit, 10))-1)/int64(max(limit, 10))),
 		},
 	})
 }
@@ -156,8 +156,8 @@ func (h *Handler) RedeemReward(w http.ResponseWriter, r *http.Request) {
 	}
 
 	common.JSON(w, http.StatusOK, map[string]any{
-		"success":        true,
-		"message":        "Reward redeemed successfully",
+		"success":          true,
+		"message":          "Reward redeemed successfully",
 		"remaining_points": updatedProfile.Points,
 	})
 }

@@ -39,8 +39,8 @@ import (
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/favorites"
-	"github.com/noah-isme/backend-toko/internal/recommendations"
 	"github.com/noah-isme/backend-toko/internal/health"
+	"github.com/noah-isme/backend-toko/internal/loyalty"
 	"github.com/noah-isme/backend-toko/internal/notifications"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
@@ -51,6 +51,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/qa"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
+	"github.com/noah-isme/backend-toko/internal/recommendations"
 	"github.com/noah-isme/backend-toko/internal/resilience"
 	"github.com/noah-isme/backend-toko/internal/reviews"
 	"github.com/noah-isme/backend-toko/internal/security"
@@ -58,7 +59,6 @@ import (
 	"github.com/noah-isme/backend-toko/internal/tenant"
 	"github.com/noah-isme/backend-toko/internal/user"
 	"github.com/noah-isme/backend-toko/internal/voucher"
-	"github.com/noah-isme/backend-toko/internal/loyalty"
 )
 
 func main() {
@@ -608,7 +608,7 @@ func main() {
 	if metricsEnabled {
 		r.Handle("/metrics", promhttp.Handler())
 	}
-	pprofEnabled := envBool("OBS_ENABLE_PPROF", true)
+	pprofEnabled := envBool("OBS_ENABLE_PPROF", false)
 	if pprofEnabled {
 		user := envOrDefault("SECURE_PPROF_BASIC_AUTH_USER", "")
 		pass := envOrDefault("SECURE_PPROF_BASIC_AUTH_PASS", "")

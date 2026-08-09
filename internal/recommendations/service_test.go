@@ -19,11 +19,6 @@ type MockQueries struct {
 	mock.Mock
 }
 
-func (m *MockQueries) ListProductsPublic(ctx context.Context, arg dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error) {
-	args := m.Called(ctx, arg)
-	return args.Get(0).([]dbgen.ListProductsPublicRow), args.Error(1)
-}
-
 func (m *MockQueries) GetProductBySlug(ctx context.Context, arg dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error) {
 	args := m.Called(ctx, arg)
 	return args.Get(0).(dbgen.GetProductBySlugRow), args.Error(1)
@@ -79,21 +74,21 @@ func TestService_Personalized_AuthenticatedUser(t *testing.T) {
 
 	expectedRows := []dbgen.GetPersonalizedRecommendationsRow{
 		{
-			ID:          productID,
-			Title:       "Test Product",
-			Slug:        "test-product",
-			Price:       10000,
-			InStock:     true,
-			Rating:      4.5,
-			Thumbnail:   pgtype.Text{String: "thumb.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           productID,
+			Title:        "Test Product",
+			Slug:         "test-product",
+			Price:        10000,
+			InStock:      true,
+			Rating:       4.5,
+			Thumbnail:    pgtype.Text{String: "thumb.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 10,
-			TotalStock:  5,
-			Score:       2.0,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  10,
+			TotalStock:   5,
+			Score:        2.0,
 		},
 	}
 
@@ -124,20 +119,20 @@ func TestService_Personalized_AnonymousUser_FallbacksToTrending(t *testing.T) {
 
 	expectedRows := []dbgen.GetTrendingProductsRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Valid: true},
-			Title:       "Trending Product",
-			Slug:        "trending-product",
-			Price:       20000,
-			InStock:     true,
-			Rating:      4.8,
-			Thumbnail:   pgtype.Text{String: "trending.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("44444444-4444-4444-4444-444444444444"), Valid: true},
+			Title:        "Trending Product",
+			Slug:         "trending-product",
+			Price:        20000,
+			InStock:      true,
+			Rating:       4.8,
+			Thumbnail:    pgtype.Text{String: "trending.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 20,
-			TotalStock:  3,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  20,
+			TotalStock:   3,
 		},
 	}
 
@@ -162,20 +157,20 @@ func TestService_Trending(t *testing.T) {
 
 	expectedRows := []dbgen.GetTrendingProductsRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("55555555-5555-5555-5555-555555555555"), Valid: true},
-			Title:       "Trending Item",
-			Slug:        "trending-item",
-			Price:       15000,
-			InStock:     true,
-			Rating:      4.7,
-			Thumbnail:   pgtype.Text{String: "item.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("55555555-5555-5555-5555-555555555555"), Valid: true},
+			Title:        "Trending Item",
+			Slug:         "trending-item",
+			Price:        15000,
+			InStock:      true,
+			Rating:       4.7,
+			Thumbnail:    pgtype.Text{String: "item.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 15,
-			TotalStock:  10,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  15,
+			TotalStock:   10,
 		},
 	}
 
@@ -201,21 +196,21 @@ func TestService_FrequentlyBoughtTogether_WithUUID(t *testing.T) {
 
 	expectedRows := []dbgen.GetFrequentlyBoughtTogetherRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("77777777-7777-7777-7777-777777777777"), Valid: true},
-			Title:       "FBT Product",
-			Slug:        "fbt-product",
-			Price:       25000,
-			InStock:     true,
-			Rating:      4.6,
-			Thumbnail:   pgtype.Text{String: "fbt.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("77777777-7777-7777-7777-777777777777"), Valid: true},
+			Title:        "FBT Product",
+			Slug:         "fbt-product",
+			Price:        25000,
+			InStock:      true,
+			Rating:       4.6,
+			Thumbnail:    pgtype.Text{String: "fbt.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 8,
-			TotalStock:  7,
-			PairCount:   50,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  8,
+			TotalStock:   7,
+			PairCount:    50,
 		},
 	}
 
@@ -244,21 +239,21 @@ func TestService_FrequentlyBoughtTogether_WithSlug(t *testing.T) {
 
 	expectedRows := []dbgen.GetFrequentlyBoughtTogetherRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("88888888-8888-8888-8888-888888888888"), Valid: true},
-			Title:       "FBT by Slug",
-			Slug:        "fbt-by-slug",
-			Price:       30000,
-			InStock:     true,
-			Rating:      4.4,
-			Thumbnail:   pgtype.Text{String: "fbt2.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("88888888-8888-8888-8888-888888888888"), Valid: true},
+			Title:        "FBT by Slug",
+			Slug:         "fbt-by-slug",
+			Price:        30000,
+			InStock:      true,
+			Rating:       4.4,
+			Thumbnail:    pgtype.Text{String: "fbt2.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 12,
-			TotalStock:  4,
-			PairCount:   30,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  12,
+			TotalStock:   4,
+			PairCount:    30,
 		},
 	}
 
@@ -288,20 +283,20 @@ func TestService_CustomersAlsoViewed_WithUUID(t *testing.T) {
 
 	expectedRows := []dbgen.GetCustomersAlsoViewedRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Valid: true},
-			Title:       "Also Viewed Product",
-			Slug:        "also-viewed",
-			Price:       18000,
-			InStock:     true,
-			Rating:      4.3,
-			Thumbnail:   pgtype.Text{String: "also.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Valid: true},
+			Title:        "Also Viewed Product",
+			Slug:         "also-viewed",
+			Price:        18000,
+			InStock:      true,
+			Rating:       4.3,
+			Thumbnail:    pgtype.Text{String: "also.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 5,
-			TotalStock:  6,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  5,
+			TotalStock:   6,
 		},
 	}
 
@@ -330,20 +325,20 @@ func TestService_CustomersAlsoViewed_WithSlug(t *testing.T) {
 
 	expectedRows := []dbgen.GetCustomersAlsoViewedRow{
 		{
-			ID:          pgtype.UUID{Bytes: uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"), Valid: true},
-			Title:       "CAV by Slug",
-			Slug:        "cav-by-slug",
-			Price:       22000,
-			InStock:     true,
-			Rating:      4.2,
-			Thumbnail:   pgtype.Text{String: "cav.jpg", Valid: true},
-			CategoryID:  pgtype.UUID{Valid: false},
+			ID:           pgtype.UUID{Bytes: uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc"), Valid: true},
+			Title:        "CAV by Slug",
+			Slug:         "cav-by-slug",
+			Price:        22000,
+			InStock:      true,
+			Rating:       4.2,
+			Thumbnail:    pgtype.Text{String: "cav.jpg", Valid: true},
+			CategoryID:   pgtype.UUID{Valid: false},
 			CategoryName: pgtype.Text{Valid: false},
-			BrandID:     pgtype.UUID{Valid: false},
-			BrandName:   pgtype.Text{Valid: false},
-			CreatedAt:   pgtype.Timestamptz{Valid: false},
-			ReviewCount: 7,
-			TotalStock:  8,
+			BrandID:      pgtype.UUID{Valid: false},
+			BrandName:    pgtype.Text{Valid: false},
+			CreatedAt:    pgtype.Timestamptz{Valid: false},
+			ReviewCount:  7,
+			TotalStock:   8,
 		},
 	}
 

@@ -12,10 +12,21 @@ spec:
       labels:
         app: backend-toko-worker
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
-          image: ghcr.io/org/backend-toko:latest
+          # Replace RELEASE_TAG with the immutable tag of the image being released.
+          image: ghcr.io/noah-isme/toko-api:RELEASE_TAG
+          imagePullPolicy: IfNotPresent
           command: ["/app/worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

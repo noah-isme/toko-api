@@ -172,15 +172,15 @@ func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
 		}
 		if campaign == nil {
 			campaign = map[string]any{
-				"id":         cart.UUIDString(cID),
-				"name":       name,
-				"slug":       slug,
-				"status":     status,
-				"startsAt":   startsAt,
-				"endsAt":     endsAt,
-				"createdAt":  createdAt,
-				"updatedAt":  updatedAt,
-				"items":      []publicItem{},
+				"id":        cart.UUIDString(cID),
+				"name":      name,
+				"slug":      slug,
+				"status":    status,
+				"startsAt":  startsAt,
+				"endsAt":    endsAt,
+				"createdAt": createdAt,
+				"updatedAt": updatedAt,
+				"items":     []publicItem{},
 			}
 		}
 		stock := 0
@@ -337,7 +337,7 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 500, "INTERNAL", "failed to begin campaign", nil)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var campaignID pgtype.UUID
 	err = tx.QueryRow(r.Context(), `INSERT INTO flash_sale_campaigns(tenant_id,name,slug,status,starts_at,ends_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, tenantID, strings.TrimSpace(input.Name), strings.TrimSpace(input.Slug), normalizedStatus(input.Status), input.StartsAt, input.EndsAt).Scan(&campaignID)
 	if err != nil {

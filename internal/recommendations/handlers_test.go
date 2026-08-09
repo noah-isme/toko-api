@@ -14,8 +14,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
-	"github.com/noah-isme/backend-toko/internal/recommendations"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/recommendations"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 type recommendationResponse struct {
@@ -38,7 +39,7 @@ func TestRecommendationHandlers(t *testing.T) {
 	t.Run("personalized recommendations for authenticated user", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/recommendations/personalized?limit=5", nil)
 		req = req.WithContext(context.WithValue(req.Context(), recommendations.UserIDKey{}, userID.String()))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.Personalized(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -55,7 +56,7 @@ func TestRecommendationHandlers(t *testing.T) {
 
 	t.Run("personalized recommendations for anonymous user falls back to trending", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/recommendations/personalized?limit=5", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.Personalized(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -68,7 +69,7 @@ func TestRecommendationHandlers(t *testing.T) {
 
 	t.Run("trending products", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/recommendations/trending?limit=5", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.Trending(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -84,7 +85,7 @@ func TestRecommendationHandlers(t *testing.T) {
 		routeCtx := chi.NewRouteContext()
 		routeCtx.URLParams.Add("id", productID.String())
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.FrequentlyBoughtTogether(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -100,7 +101,7 @@ func TestRecommendationHandlers(t *testing.T) {
 		routeCtx := chi.NewRouteContext()
 		routeCtx.URLParams.Add("id", "test-product")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.FrequentlyBoughtTogether(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -117,7 +118,7 @@ func TestRecommendationHandlers(t *testing.T) {
 		routeCtx := chi.NewRouteContext()
 		routeCtx.URLParams.Add("id", productID.String())
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.CustomersAlsoViewed(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -133,7 +134,7 @@ func TestRecommendationHandlers(t *testing.T) {
 		routeCtx := chi.NewRouteContext()
 		routeCtx.URLParams.Add("id", "test-product")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.CustomersAlsoViewed(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -151,7 +152,7 @@ func TestRecommendationHandlers(t *testing.T) {
 		routeCtx := chi.NewRouteContext()
 		routeCtx.URLParams.Add("id", nonexistentUUID)
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
-		req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenantID.String()))
+		req = req.WithContext(tenant.With(req.Context(), tenantID.String()))
 		rec := httptest.NewRecorder()
 		handler.FrequentlyBoughtTogether(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -163,13 +164,13 @@ func TestRecommendationHandlers(t *testing.T) {
 }
 
 type fakeRecommendationQueries struct {
-	personalized []dbgen.GetPersonalizedRecommendationsRow
-	trending     []dbgen.GetTrendingProductsRow
-	fbtByUUID    map[string][]dbgen.GetFrequentlyBoughtTogetherRow
-	fbtBySlug    map[string][]dbgen.GetFrequentlyBoughtTogetherRow
-	cavByUUID    map[string][]dbgen.GetCustomersAlsoViewedRow
-	cavBySlug    map[string][]dbgen.GetCustomersAlsoViewedRow
-	productByID  map[string]dbgen.GetProductForCartRow
+	personalized  []dbgen.GetPersonalizedRecommendationsRow
+	trending      []dbgen.GetTrendingProductsRow
+	fbtByUUID     map[string][]dbgen.GetFrequentlyBoughtTogetherRow
+	fbtBySlug     map[string][]dbgen.GetFrequentlyBoughtTogetherRow
+	cavByUUID     map[string][]dbgen.GetCustomersAlsoViewedRow
+	cavBySlug     map[string][]dbgen.GetCustomersAlsoViewedRow
+	productByID   map[string]dbgen.GetProductForCartRow
 	productBySlug map[string]dbgen.GetProductBySlugRow
 }
 
@@ -185,108 +186,108 @@ func newFakeRecommendationQueries(t *testing.T) *fakeRecommendationQueries {
 	now := pgtype.Timestamptz{Time: time.Now(), Valid: true}
 
 	personalizedRow := dbgen.GetPersonalizedRecommendationsRow{
-		ID:          productID,
-		Title:       "Personalized Product",
-		Slug:        "personalized-product",
-		Price:       10000,
-		InStock:     true,
-		Rating:      4.5,
-		Thumbnail:   pgtype.Text{String: "personalized.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           productID,
+		Title:        "Personalized Product",
+		Slug:         "personalized-product",
+		Price:        10000,
+		InStock:      true,
+		Rating:       4.5,
+		Thumbnail:    pgtype.Text{String: "personalized.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 10,
-		TotalStock:  5,
-		Score:       2.0,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  10,
+		TotalStock:   5,
+		Score:        2.0,
 	}
 
 	trendingRow := dbgen.GetTrendingProductsRow{
-		ID:          mustUUID(t, "66666666-6666-6666-6666-666666666666"),
-		Title:       "Trending Product",
-		Slug:        "trending-product",
-		Price:       20000,
-		InStock:     true,
-		Rating:      4.8,
-		Thumbnail:   pgtype.Text{String: "trending.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           mustUUID(t, "66666666-6666-6666-6666-666666666666"),
+		Title:        "Trending Product",
+		Slug:         "trending-product",
+		Price:        20000,
+		InStock:      true,
+		Rating:       4.8,
+		Thumbnail:    pgtype.Text{String: "trending.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 20,
-		TotalStock:  3,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  20,
+		TotalStock:   3,
 	}
 
 	fbtRow := dbgen.GetFrequentlyBoughtTogetherRow{
-		ID:          fbtProductID,
-		Title:       "FBT Product",
-		Slug:        "fbt-product",
-		Price:       25000,
-		InStock:     true,
-		Rating:      4.6,
-		Thumbnail:   pgtype.Text{String: "fbt.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           fbtProductID,
+		Title:        "FBT Product",
+		Slug:         "fbt-product",
+		Price:        25000,
+		InStock:      true,
+		Rating:       4.6,
+		Thumbnail:    pgtype.Text{String: "fbt.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 8,
-		TotalStock:  7,
-		PairCount:   50,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  8,
+		TotalStock:   7,
+		PairCount:    50,
 	}
 
 	fbtSlugRow := dbgen.GetFrequentlyBoughtTogetherRow{
-		ID:          mustUUID(t, "77777777-7777-7777-7777-777777777777"),
-		Title:       "FBT by Slug",
-		Slug:        "fbt-by-slug",
-		Price:       30000,
-		InStock:     true,
-		Rating:      4.4,
-		Thumbnail:   pgtype.Text{String: "fbt2.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           mustUUID(t, "77777777-7777-7777-7777-777777777777"),
+		Title:        "FBT by Slug",
+		Slug:         "fbt-by-slug",
+		Price:        30000,
+		InStock:      true,
+		Rating:       4.4,
+		Thumbnail:    pgtype.Text{String: "fbt2.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 12,
-		TotalStock:  4,
-		PairCount:   30,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  12,
+		TotalStock:   4,
+		PairCount:    30,
 	}
 
 	cavRow := dbgen.GetCustomersAlsoViewedRow{
-		ID:          cavProductID,
-		Title:       "Also Viewed Product",
-		Slug:        "also-viewed",
-		Price:       18000,
-		InStock:     true,
-		Rating:      4.3,
-		Thumbnail:   pgtype.Text{String: "also.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           cavProductID,
+		Title:        "Also Viewed Product",
+		Slug:         "also-viewed",
+		Price:        18000,
+		InStock:      true,
+		Rating:       4.3,
+		Thumbnail:    pgtype.Text{String: "also.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 5,
-		TotalStock:  6,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  5,
+		TotalStock:   6,
 	}
 
 	cavSlugRow := dbgen.GetCustomersAlsoViewedRow{
-		ID:          mustUUID(t, "88888888-8888-8888-8888-888888888888"),
-		Title:       "CAV by Slug",
-		Slug:        "cav-by-slug",
-		Price:       22000,
-		InStock:     true,
-		Rating:      4.2,
-		Thumbnail:   pgtype.Text{String: "cav.jpg", Valid: true},
-		CategoryID:  pgtype.UUID{Valid: false},
+		ID:           mustUUID(t, "88888888-8888-8888-8888-888888888888"),
+		Title:        "CAV by Slug",
+		Slug:         "cav-by-slug",
+		Price:        22000,
+		InStock:      true,
+		Rating:       4.2,
+		Thumbnail:    pgtype.Text{String: "cav.jpg", Valid: true},
+		CategoryID:   pgtype.UUID{Valid: false},
 		CategoryName: pgtype.Text{Valid: false},
-		BrandID:     pgtype.UUID{Valid: false},
-		BrandName:   pgtype.Text{Valid: false},
-		CreatedAt:   now,
-		ReviewCount: 7,
-		TotalStock:  8,
+		BrandID:      pgtype.UUID{Valid: false},
+		BrandName:    pgtype.Text{Valid: false},
+		CreatedAt:    now,
+		ReviewCount:  7,
+		TotalStock:   8,
 	}
 
 	productByID := dbgen.GetProductForCartRow{
@@ -318,34 +319,30 @@ func newFakeRecommendationQueries(t *testing.T) *fakeRecommendationQueries {
 		personalized: []dbgen.GetPersonalizedRecommendationsRow{personalizedRow},
 		trending:     []dbgen.GetTrendingProductsRow{trendingRow},
 		fbtByUUID: map[string][]dbgen.GetFrequentlyBoughtTogetherRow{
-			uuidString(productID):          {fbtRow},
-			uuidString(fbtProductID):       {fbtSlugRow}, // slug-resolved product
+			uuidString(productID):    {fbtRow},
+			uuidString(fbtProductID): {fbtSlugRow}, // slug-resolved product
 		},
 		fbtBySlug: map[string][]dbgen.GetFrequentlyBoughtTogetherRow{
 			"test-product": {fbtSlugRow},
 		},
 		cavByUUID: map[string][]dbgen.GetCustomersAlsoViewedRow{
-			uuidString(productID):         {cavRow},
-			uuidString(cavProductID):      {cavSlugRow}, // slug-resolved product
+			uuidString(productID):    {cavRow},
+			uuidString(cavProductID): {cavSlugRow}, // slug-resolved product
 		},
 		cavBySlug: map[string][]dbgen.GetCustomersAlsoViewedRow{
 			"test-product": {cavSlugRow},
 		},
 		productByID: map[string]dbgen.GetProductForCartRow{
-			uuidString(productID):   productByID,
+			uuidString(productID):    productByID,
 			uuidString(fbtProductID): {ID: fbtProductID, Title: "FBT by Slug", Slug: "fbt-by-slug", Price: 30000, InStock: true},
 			uuidString(cavProductID): {ID: cavProductID, Title: "CAV by Slug", Slug: "cav-by-slug", Price: 22000, InStock: true},
 		},
 		productBySlug: map[string]dbgen.GetProductBySlugRow{
 			"test-product": productBySlug,
-			"fbt-by-slug": {ID: fbtProductID, Title: "FBT by Slug", Slug: "fbt-by-slug", Price: 30000, InStock: true, CreatedAt: now},
-			"cav-by-slug": {ID: cavProductID, Title: "CAV by Slug", Slug: "cav-by-slug", Price: 22000, InStock: true, CreatedAt: now},
+			"fbt-by-slug":  {ID: fbtProductID, Title: "FBT by Slug", Slug: "fbt-by-slug", Price: 30000, InStock: true, CreatedAt: now},
+			"cav-by-slug":  {ID: cavProductID, Title: "CAV by Slug", Slug: "cav-by-slug", Price: 22000, InStock: true, CreatedAt: now},
 		},
 	}
-}
-
-func (f *fakeRecommendationQueries) ListProductsPublic(ctx context.Context, arg dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error) {
-	return nil, nil
 }
 
 func (f *fakeRecommendationQueries) GetProductBySlug(ctx context.Context, arg dbgen.GetProductBySlugParams) (dbgen.GetProductBySlugRow, error) {

@@ -98,10 +98,18 @@ PUBLIC_BASE_URL=https://toko.example   # storefront origin used to build the lin
 `PUBLIC_BASE_URL` matters: without it the emailed links are relative and no mail
 client can follow them.
 
+When `APP_ENV=production`, startup rejects unsafe or incomplete configuration.
+Use a random `JWT_SECRET` of at least 32 bytes, set
+`REFRESH_COOKIE_SECURE=true`, provide HTTPS `PUBLIC_BASE_URL` and
+`CORS_ALLOWED_ORIGINS`, disable `PAYMENT_SANDBOX`, and configure the selected
+payment, shipping, and SMTP providers with real credentials. TLS verification
+must remain enabled.
+
 ### Deployment
 The image builds three entrypoints — `/app/api`, `/app/worker` and
-`/app/migrate`, and runs as an unprivileged user. Run migrations to completion
-before rolling out:
+`/app/migrate`, and runs as an unprivileged user. Build and push an immutable
+release tag, then replace `RELEASE_TAG` in the three Kubernetes manifests with
+that same tag. Run migrations to completion before rolling out:
 
 ```bash
 kubectl create -f deploy/k8s/migrate-job.yaml

@@ -12,13 +12,23 @@ spec:
       labels:
         app: backend-toko-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
-          image: ghcr.io/org/backend-toko:latest
+          # Replace RELEASE_TAG with the immutable tag of the image being released.
+          image: ghcr.io/noah-isme/toko-api:RELEASE_TAG
           imagePullPolicy: IfNotPresent
           # Schema changes are applied by deploy/k8s/migrate-job.yaml, which must
           # complete before this rollout starts.
           command: ["/app/api"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

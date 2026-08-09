@@ -325,14 +325,6 @@ func nullableText(t pgtype.Text) *string {
 	return &s
 }
 
-func nullableUUID(v pgtype.UUID) *string {
-	if !v.Valid {
-		return nil
-	}
-	s := cart.UUIDString(v)
-	return &s
-}
-
 func textOrEmpty(t pgtype.Text) string {
 	if !t.Valid {
 		return ""
