@@ -1,0 +1,183 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: toko-api-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+
+  deploy:
+    name: Build and Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build production binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          go build \
+            -trimpath \
+            -buildvcs=false \
+            -ldflags="-s -w" \
+            -o dist/api \
+            ./cmd/api
+
+          go build \
+            -trimpath \
+            -buildvcs=false \
+            -ldflags="-s -w" \
+            -o dist/worker \
+            ./cmd/worker
+
+          go build \
+            -trimpath \
+            -buildvcs=false \
+            -ldflags="-s -w" \
+            -o dist/migrate \
+            ./cmd/migrate
+
+          chmod +x dist/api dist/worker dist/migrate
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keyscan \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_HOST" \
+            >> ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Test SSH connection
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo 'SSH connection successful'"
+
+      - name: Upload release binaries
+        run: |
+          set -euo pipefail
+
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "$DEPLOY_PORT" \
+            dist/api \
+            "$DEPLOY_USER@$DEPLOY_HOST:/opt/toko-api/bin/api.new"
+
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "$DEPLOY_PORT" \
+            dist/worker \
+            "$DEPLOY_USER@$DEPLOY_HOST:/opt/toko-api/bin/worker.new"
+
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "$DEPLOY_PORT" \
+            dist/migrate \
+            "$DEPLOY_USER@$DEPLOY_HOST:/opt/toko-api/bin/migrate.new"
+
+      - name: Activate release
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" <<'EOF'
+              set -euo pipefail
+
+              cd /opt/toko-api
+
+              chmod +x \
+                bin/api.new \
+                bin/worker.new \
+                bin/migrate.new
+
+              # Run database migrations using the new release first.
+              set -a
+              source .env
+              set +a
+
+              ./bin/migrate.new up
+
+              # Replace binaries only after migrations succeed.
+              mv bin/api.new bin/api
+              mv bin/worker.new bin/worker
+              mv bin/migrate.new bin/migrate
+
+              sudo systemctl restart toko-api
+              sudo systemctl restart toko-worker
+
+              sudo systemctl is-active --quiet toko-api
+              sudo systemctl is-active --quiet toko-worker
+
+              echo "Deployment successful"
+          EOF
+
+      - name: Verify API service
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo systemctl is-active toko-api && sudo systemctl is-active toko-worker"
