@@ -7,3 +7,7 @@ node_modules/
 tmp/
 *.log
 __pycache__/
+graphify-out/
+.agents/
+.codex/
+.gitattributes
