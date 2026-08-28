@@ -86,8 +86,11 @@ func seedUsers(db *sql.DB) {
 	for _, u := range users {
 		_, err := db.Exec(`
 			INSERT INTO users (name, email, password_hash, roles)
-			VALUES ($1, $2, crypt('password123', gen_salt('bf')), ARRAY[$3])
-			ON CONFLICT (email) DO NOTHING;
+			VALUES ($1, $2, '$argon2id$v=19$m=65536,t=1,p=8$+mDMDRHMbSFiWfl2PbBX7g$ZpFCFV584H9pVGp8fX5JAiAXVkOz41BaVXNxv/ACR6I', ARRAY[$3])
+			ON CONFLICT (email) DO UPDATE SET
+				name = EXCLUDED.name,
+				password_hash = EXCLUDED.password_hash,
+				roles = EXCLUDED.roles;
 		`, u.Name, u.Email, u.Role)
 		if err != nil {
 			log.Printf("Failed to seed user %s: %v", u.Email, err)
