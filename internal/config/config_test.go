@@ -100,3 +100,52 @@ func TestLoadProductionRejectsSandboxPayment(t *testing.T) {
 		t.Fatalf("Load() error = %v, want PAYMENT_SANDBOX validation", err)
 	}
 }
+
+func TestDatabasePoolDefaultsAndWorkerOverrides(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/toko")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("JWT_SECRET", "development-secret")
+
+	// Default pool limits
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DBMaxOpenConns != 5 {
+		t.Fatalf("DBMaxOpenConns = %d, want 5", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 1 {
+		t.Fatalf("DBMaxIdleConns = %d, want 1", cfg.DBMaxIdleConns)
+	}
+	if cfg.WorkerDBMaxOpenConns != 2 {
+		t.Fatalf("WorkerDBMaxOpenConns = %d, want 2", cfg.WorkerDBMaxOpenConns)
+	}
+	if cfg.WorkerDBMaxIdleConns != 1 {
+		t.Fatalf("WorkerDBMaxIdleConns = %d, want 1", cfg.WorkerDBMaxIdleConns)
+	}
+
+	// Explicit overrides
+	t.Setenv("DB_MAX_OPEN_CONNS", "10")
+	t.Setenv("DB_MAX_IDLE_CONNS", "2")
+	t.Setenv("WORKER_DB_MAX_OPEN_CONNS", "3")
+	t.Setenv("WORKER_DB_MAX_IDLE_CONNS", "2")
+
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() with overrides error = %v", err)
+	}
+	if cfg.DBMaxOpenConns != 10 {
+		t.Fatalf("DBMaxOpenConns = %d, want 10", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 2 {
+		t.Fatalf("DBMaxIdleConns = %d, want 2", cfg.DBMaxIdleConns)
+	}
+	if cfg.WorkerDBMaxOpenConns != 3 {
+		t.Fatalf("WorkerDBMaxOpenConns = %d, want 3", cfg.WorkerDBMaxOpenConns)
+	}
+	if cfg.WorkerDBMaxIdleConns != 2 {
+		t.Fatalf("WorkerDBMaxIdleConns = %d, want 2", cfg.WorkerDBMaxIdleConns)
+	}
+}
+

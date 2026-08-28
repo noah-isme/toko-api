@@ -106,14 +106,34 @@ func mustInitDatabase(ctx context.Context, cfg *config.Config, logger zerolog.Lo
 		logger.Fatal().Err(err).Msg("parse database config")
 	}
 	poolConfig.ConnConfig.Tracer = obs.PGXTracer{}
+	if poolConfig.ConnConfig.RuntimeParams == nil {
+		poolConfig.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	poolConfig.ConnConfig.RuntimeParams["application_name"] = "toko-worker"
 	if cfg.DBStatementCacheCapacity >= 0 {
 		poolConfig.ConnConfig.StatementCacheCapacity = cfg.DBStatementCacheCapacity
 	}
-	if cfg.DBMaxOpenConns > 0 {
-		poolConfig.MaxConns = int32(cfg.DBMaxOpenConns)
+	if cfg.WorkerDBMaxOpenConns > 0 {
+		poolConfig.MaxConns = int32(cfg.WorkerDBMaxOpenConns)
 	}
-	if cfg.DBMaxIdleConns > 0 {
-		poolConfig.MinConns = int32(cfg.DBMaxIdleConns)
+	if cfg.WorkerDBMaxIdleConns > 0 {
+		idle := cfg.WorkerDBMaxIdleConns
+		if cfg.WorkerDBMaxOpenConns > 0 && idle > cfg.WorkerDBMaxOpenConns {
+			idle = cfg.WorkerDBMaxOpenConns
+		}
+		poolConfig.MinConns = int32(idle)
+		poolConfig.MinIdleConns = int32(idle)
+	}
+	if cfg.DBConnMaxLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.DBConnMaxLifetime
+		idle := cfg.DBConnMaxLifetime / 2
+		if idle <= 0 {
+			idle = cfg.DBConnMaxLifetime
+		}
+		poolConfig.MaxConnIdleTime = idle
+	}
+	if poolConfig.HealthCheckPeriod <= 0 {
+		poolConfig.HealthCheckPeriod = time.Minute
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {

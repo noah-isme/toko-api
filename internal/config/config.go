@@ -27,6 +27,8 @@ type Config struct {
 	QueueRedisPrefix           string
 	DBMaxOpenConns             int
 	DBMaxIdleConns             int
+	WorkerDBMaxOpenConns       int
+	WorkerDBMaxIdleConns       int
 	DBConnMaxLifetime          time.Duration
 	DBStatementCacheCapacity   int
 	HTTPMaxInFlight            int
@@ -164,8 +166,10 @@ func Load() (*Config, error) {
 		RedisURL:                 k.String("REDIS_URL"),
 		RedisCachePrefix:         strings.TrimSpace(valueOrDefault(k.String("REDIS_CACHE_PREFIX"), "cache")),
 		QueueRedisPrefix:         strings.TrimSpace(valueOrDefault(k.String("QUEUE_REDIS_PREFIX"), "q")),
-		DBMaxOpenConns:           parsePositiveIntAllowZero(k.String("DB_MAX_OPEN_CONNS"), 40),
-		DBMaxIdleConns:           parsePositiveIntAllowZero(k.String("DB_MAX_IDLE_CONNS"), 10),
+		DBMaxOpenConns:           parsePositiveIntAllowZero(k.String("DB_MAX_OPEN_CONNS"), 5),
+		DBMaxIdleConns:           parsePositiveIntAllowZero(k.String("DB_MAX_IDLE_CONNS"), 1),
+		WorkerDBMaxOpenConns:     parsePositiveIntAllowZero(k.String("WORKER_DB_MAX_OPEN_CONNS"), 2),
+		WorkerDBMaxIdleConns:     parsePositiveIntAllowZero(k.String("WORKER_DB_MAX_IDLE_CONNS"), 1),
 		DBConnMaxLifetime:        time.Duration(parsePositiveIntAllowZero(k.String("DB_CONN_MAX_LIFETIME_MIN"), 30)) * time.Minute,
 		DBStatementCacheCapacity: parsePositiveIntAllowZero(k.String("DB_STATEMENT_CACHE_CAPACITY"), 256),
 		HTTPMaxInFlight:          parsePositiveIntAllowZero(k.String("HTTP_MAX_INFLIGHT"), 400),
@@ -405,10 +409,23 @@ func Load() (*Config, error) {
 	}
 
 	if cfg.DBMaxOpenConns <= 0 {
-		cfg.DBMaxOpenConns = 40
+		cfg.DBMaxOpenConns = 5
 	}
-	if cfg.DBMaxIdleConns < 0 {
-		cfg.DBMaxIdleConns = 0
+	if cfg.DBMaxIdleConns <= 0 {
+		cfg.DBMaxIdleConns = 1
+	}
+	if cfg.DBMaxIdleConns > cfg.DBMaxOpenConns {
+		cfg.DBMaxIdleConns = cfg.DBMaxOpenConns
+	}
+
+	if cfg.WorkerDBMaxOpenConns <= 0 {
+		cfg.WorkerDBMaxOpenConns = 2
+	}
+	if cfg.WorkerDBMaxIdleConns <= 0 {
+		cfg.WorkerDBMaxIdleConns = 1
+	}
+	if cfg.WorkerDBMaxIdleConns > cfg.WorkerDBMaxOpenConns {
+		cfg.WorkerDBMaxIdleConns = cfg.WorkerDBMaxOpenConns
 	}
 	if cfg.DBConnMaxLifetime <= 0 {
 		cfg.DBConnMaxLifetime = 30 * time.Minute
