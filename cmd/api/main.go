@@ -70,6 +70,9 @@ func main() {
 	logFormat := envOrDefault("OBS_LOG_FORMAT", "json")
 	logLevel := envOrDefault("OBS_LOG_LEVEL", "info")
 	logger := obs.NewLogger(logFormat, logLevel).With().Str("env", cfg.AppEnv).Logger()
+	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "development") && cfg.ShippingProvider == "rajaongkir-mock" {
+		logger.Warn().Msg("shipping provider is using deterministic mock rates in development")
+	}
 
 	metricsNamespace := envOrDefault("OBS_METRICS_NAMESPACE", "toko")
 	metricsEnabled := envBool("OBS_ENABLE_PROMETHEUS", true)

@@ -50,6 +50,19 @@ Backend service powering catalogue, checkout, and webhook flows for Toko.
    air
    ```
 
+The example configuration uses deterministic mock shipping rates. In
+`development`, the API also falls back to `rajaongkir-mock` when
+`SHIPPING_PROVIDER=rajaongkir` has no `RAJAONGKIR_API_KEY`. To run the
+storefront's real-API E2E suite without changing `.env` or requiring external
+shipping credentials, start the API with:
+
+```bash
+make dev-e2e
+```
+
+This target overrides `SHIPPING_PROVIDER` for the API process only. Mock
+shipping providers are rejected when `APP_ENV=production`.
+
 ### Database Migrations
 Migrations are embedded into a dedicated binary (`cmd/migrate`, see `embed.go`),
 so no external CLI is required and a built image always carries exactly the

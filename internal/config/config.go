@@ -269,6 +269,7 @@ func Load() (*Config, error) {
 		EnableAPIEmbeddedWorkers:   parseBoolWithDefault(k.String("ENABLE_API_EMBEDDED_WORKERS"), false),
 		AdminDLQPageSize:           parsePositiveIntAllowZero(k.String("ADMIN_DLQ_PAGE_SIZE"), 50),
 	}
+	cfg.ShippingProvider = resolveShippingProvider(cfg.AppEnv, cfg.ShippingProvider, cfg.RajaOngkirAPIKey)
 
 	if cfg.VoucherMaxStack < 1 {
 		cfg.VoucherMaxStack = 1
@@ -442,6 +443,20 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveShippingProvider keeps local development independent of external
+// shipping credentials. The fallback is intentionally limited to development;
+// production validation rejects mock providers instead of silently using one.
+func resolveShippingProvider(appEnv, provider, apiKey string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "rajaongkir"
+	}
+	if strings.EqualFold(strings.TrimSpace(appEnv), "development") && provider == "rajaongkir" && strings.TrimSpace(apiKey) == "" {
+		return "rajaongkir-mock"
+	}
+	return provider
 }
 
 func validateProduction(cfg *Config) error {

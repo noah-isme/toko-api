@@ -1,5 +1,9 @@
 dev: ## run api in dev mode
 	go run github.com/air-verse/air@latest
+
+dev-e2e: ## run api with deterministic shipping for frontend real-API E2E
+	SHIPPING_PROVIDER=rajaongkir-mock go run ./cmd/api/main.go
+
 lint:
 	golangci-lint run
 test:

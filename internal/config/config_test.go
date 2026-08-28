@@ -37,6 +37,50 @@ func TestLoadProductionAcceptsExplicitSafeConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadDevelopmentFallsBackToMockShippingWithoutCredentials(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/toko")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("JWT_SECRET", "development-secret")
+	t.Setenv("SHIPPING_PROVIDER", "rajaongkir")
+	t.Setenv("RAJAONGKIR_API_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ShippingProvider != "rajaongkir-mock" {
+		t.Fatalf("ShippingProvider = %q, want rajaongkir-mock", cfg.ShippingProvider)
+	}
+}
+
+func TestLoadDevelopmentKeepsRajaOngkirWithCredentials(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/toko")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("JWT_SECRET", "development-secret")
+	t.Setenv("SHIPPING_PROVIDER", "rajaongkir")
+	t.Setenv("RAJAONGKIR_API_KEY", "shipping-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ShippingProvider != "rajaongkir" {
+		t.Fatalf("ShippingProvider = %q, want rajaongkir", cfg.ShippingProvider)
+	}
+}
+
+func TestLoadProductionRejectsMockShippingProvider(t *testing.T) {
+	setProductionEnv(t)
+	t.Setenv("SHIPPING_PROVIDER", "rajaongkir-mock")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "unsupported production shipping provider") {
+		t.Fatalf("Load() error = %v, want production mock-provider rejection", err)
+	}
+}
+
 func TestLoadProductionRejectsInsecureCookie(t *testing.T) {
 	setProductionEnv(t)
 	t.Setenv("REFRESH_COOKIE_SECURE", "false")
