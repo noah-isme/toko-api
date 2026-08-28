@@ -70,8 +70,14 @@ func (c RajaOngkirClient) Rates(ctx context.Context, r RateReq) ([]Rate, error) 
 	if err != nil {
 		return nil, fmt.Errorf("rajaongkir quote: %w", err)
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read rajaongkir quote response: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close rajaongkir quote response: %w", closeErr)
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("rajaongkir quote: status %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}

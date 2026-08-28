@@ -1,7 +1,7 @@
 # ADR-003: go-chi as HTTP Router
 
-**Status:** Accepted  
-**Date:** 2024-01  
+**Status:** Accepted
+**Date:** 2024-01
 
 ## Context
 

@@ -495,6 +495,12 @@ func main() {
 	}
 	csrfEnabled := envBool("SECURITY_CSRF_ENABLED", true)
 	csrfHeader := envOrDefault("SECURITY_CSRF_HEADER", "X-CSRF-Token")
+	csrfCookieSecure := envBool("SECURITY_CSRF_COOKIE_SECURE", !strings.EqualFold(cfg.AppEnv, "development"))
+	csrfCookieSameSite := csrfCookieSameSiteFromEnv("SECURITY_CSRF_COOKIE_SAMESITE", http.SameSiteLaxMode)
+	csrfCookieMaxAge := envInt("SECURITY_CSRF_COOKIE_MAX_AGE_SEC", 86400)
+	if csrfCookieMaxAge <= 0 {
+		csrfCookieMaxAge = 86400
+	}
 
 	rateLimitPrefix := envOrDefault("RATE_LIMIT_REDIS_PREFIX", "rl:")
 	limiter := ratelimit.Limiter{Client: redisClient, Prefix: rateLimitPrefix}
@@ -575,7 +581,6 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(obs.RoutePatternMiddleware)
 	r.Use(func(next http.Handler) http.Handler {
@@ -602,7 +607,14 @@ func main() {
 	}
 	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes)}.Middleware)
 	if csrfEnabled {
-		r.Use(security.CSRF{Header: csrfHeader}.Middleware)
+		r.Use(security.CSRF{
+			Header:         csrfHeader,
+			CookieDomain:   envOrDefault("SECURITY_CSRF_COOKIE_DOMAIN", ""),
+			CookiePath:     envOrDefault("SECURITY_CSRF_COOKIE_PATH", "/"),
+			CookieSecure:   csrfCookieSecure,
+			CookieSameSite: csrfCookieSameSite,
+			CookieMaxAge:   csrfCookieMaxAge,
+		}.Middleware)
 	}
 
 	if metricsEnabled {
@@ -1078,6 +1090,19 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func csrfCookieSameSiteFromEnv(key string, fallback http.SameSite) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	case "lax":
+		return http.SameSiteLaxMode
+	default:
+		return fallback
+	}
 }
 
 func envDurationMillis(key string, fallback int) time.Duration {

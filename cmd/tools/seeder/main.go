@@ -26,7 +26,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open DB: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("Failed to close DB: %v", closeErr)
+		}
+	}()
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping DB: %v", err)

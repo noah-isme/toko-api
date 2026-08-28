@@ -47,7 +47,9 @@ func (s *fakeSMTPServer) serve() {
 
 	reader := bufio.NewReader(conn)
 	write := func(format string, args ...any) {
-		fmt.Fprintf(conn, format+"\r\n", args...)
+		if _, err := fmt.Fprintf(conn, format+"\r\n", args...); err != nil {
+			return
+		}
 	}
 
 	write("220 fake ESMTP")

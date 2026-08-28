@@ -66,8 +66,10 @@ func (x Xendit) CreateIntent(ctx context.Context, req IntentRequest) (IntentResp
 	if err != nil {
 		return IntentResponse{}, fmt.Errorf("xendit create invoice: %w", err)
 	}
-	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if closeErr := response.Body.Close(); closeErr != nil {
+		return IntentResponse{}, fmt.Errorf("close xendit create invoice response: %w", closeErr)
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return IntentResponse{}, fmt.Errorf("xendit create invoice: status %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
 	}

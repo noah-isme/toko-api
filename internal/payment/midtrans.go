@@ -77,10 +77,13 @@ func (m Midtrans) CreateIntent(ctx context.Context, req IntentRequest) (IntentRe
 	if err != nil {
 		return IntentResponse{}, fmt.Errorf("midtrans create transaction: %w", err)
 	}
-	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	closeErr := response.Body.Close()
 	if err != nil {
 		return IntentResponse{}, err
+	}
+	if closeErr != nil {
+		return IntentResponse{}, fmt.Errorf("close midtrans response: %w", closeErr)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return IntentResponse{}, fmt.Errorf("midtrans create transaction: status %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
@@ -146,8 +149,10 @@ func (m Midtrans) Refund(ctx context.Context, orderID string, amount int64, reas
 	if err != nil {
 		return "", fmt.Errorf("midtrans refund: %w", err)
 	}
-	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if closeErr := response.Body.Close(); closeErr != nil {
+		return "", fmt.Errorf("close midtrans refund response: %w", closeErr)
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", fmt.Errorf("midtrans refund: status %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
 	}

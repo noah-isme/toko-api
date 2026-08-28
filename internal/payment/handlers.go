@@ -204,9 +204,9 @@ func (h *Handler) UploadProof(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 400, "BAD_REQUEST", "proof file is required", nil)
 		return
 	}
-	defer file.Close()
 	content, err := io.ReadAll(io.LimitReader(file, 5<<20+1))
-	if err != nil || len(content) > 5<<20 {
+	closeErr := file.Close()
+	if err != nil || closeErr != nil || len(content) > 5<<20 {
 		common.JSONError(w, 400, "BAD_REQUEST", "payment proof must be a file up to 5MB", nil)
 		return
 	}

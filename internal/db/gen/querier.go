@@ -12,7 +12,7 @@ import (
 
 type Querier interface {
 	AddFavorite(ctx context.Context, arg AddFavoriteParams) error
-	AdminCountCustomers(ctx context.Context) (int64, error)
+	AdminCountCustomers(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	// Admin order and voucher management queries. These power the admin dashboard
 	// list/detail views, which need cross-user visibility that the customer-facing
 	// order queries deliberately do not provide.
@@ -21,7 +21,7 @@ type Querier interface {
 	// categories,brands} endpoints and are intentionally separate from the public
 	// catalog queries, which are cached and shaped for storefront consumption.
 	AdminCountProducts(ctx context.Context, arg AdminCountProductsParams) (int64, error)
-	AdminCountProductsTotal(ctx context.Context) (int64, error)
+	AdminCountProductsTotal(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	AdminCountVouchers(ctx context.Context, arg AdminCountVouchersParams) (int64, error)
 	AdminCreateBrand(ctx context.Context, arg AdminCreateBrandParams) (AdminCreateBrandRow, error)
 	AdminCreateCategory(ctx context.Context, arg AdminCreateCategoryParams) (AdminCreateCategoryRow, error)
@@ -31,8 +31,8 @@ type Querier interface {
 	AdminDeleteProduct(ctx context.Context, arg AdminDeleteProductParams) (int64, error)
 	AdminDeleteProductSpecs(ctx context.Context, arg AdminDeleteProductSpecsParams) error
 	AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error)
-	AdminDeleteVoucher(ctx context.Context, code string) (int64, error)
-	AdminGetOrder(ctx context.Context, id pgtype.UUID) (AdminGetOrderRow, error)
+	AdminDeleteVoucher(ctx context.Context, arg AdminDeleteVoucherParams) (int64, error)
+	AdminGetOrder(ctx context.Context, arg AdminGetOrderParams) (AdminGetOrderRow, error)
 	AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimaryVariantParams) (ProductVariant, error)
 	AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error)
 	AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error)
@@ -52,7 +52,7 @@ type Querier interface {
 	AdminUpdateCategory(ctx context.Context, arg AdminUpdateCategoryParams) (AdminUpdateCategoryRow, error)
 	AdminUpdateProduct(ctx context.Context, arg AdminUpdateProductParams) (pgtype.UUID, error)
 	AdminUpdateProductVariant(ctx context.Context, arg AdminUpdateProductVariantParams) (ProductVariant, error)
-	AdminVoucherStats(ctx context.Context) (AdminVoucherStatsRow, error)
+	AdminVoucherStats(ctx context.Context, tenantID pgtype.UUID) (AdminVoucherStatsRow, error)
 	AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) (ProductQuestion, error)
 	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
 	CheckQuestionVote(ctx context.Context, arg CheckQuestionVoteParams) (pgtype.UUID, error)

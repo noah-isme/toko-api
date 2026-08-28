@@ -1,7 +1,7 @@
 # ADR-002: sqlc for Data Access
 
-**Status:** Accepted  
-**Date:** 2024-01  
+**Status:** Accepted
+**Date:** 2024-01
 
 ## Context
 
@@ -19,7 +19,7 @@ Workflow:
 ## Consequences
 
 - **Positive:** Queries are plain SQL — no DSL to learn, easy to optimise with `EXPLAIN`.
-- **Positive:** Generated code is type-safe; schema drift is caught at build time.
+- **Positive:** Generated code is type-safe; running sqlc regeneration against the current schema catches query/schema incompatibilities before the generated code is committed.
 - **Positive:** No runtime reflection; generated scanners are fast.
 - **Negative:** Every schema change requires regeneration and a commit of generated files.
 - **Negative:** Complex dynamic filters (e.g., optional WHERE clauses) require `sqlc.narg()` or manual query building.

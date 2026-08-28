@@ -72,22 +72,24 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	label, startAt := rangeWindow(r.URL.Query().Get("range"))
 
 	ctx := r.Context()
-	stats, err := h.Q.AdminOrderStats(ctx, dbgen.AdminOrderStatsParams{StartAt: startAt})
+	tenantID := tenantIDFromContext(ctx)
+	stats, err := h.Q.AdminOrderStats(ctx, dbgen.AdminOrderStatsParams{TenantID: tenantID, StartAt: startAt})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load order stats", nil)
 		return
 	}
-	customers, err := h.Q.AdminCountCustomers(ctx)
+	customers, err := h.Q.AdminCountCustomers(ctx, tenantID)
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count customers", nil)
 		return
 	}
-	products, err := h.Q.AdminCountProductsTotal(ctx)
+	products, err := h.Q.AdminCountProductsTotal(ctx, tenantID)
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count products", nil)
 		return
 	}
 	topRows, err := h.Q.AdminTopProductsByRevenue(ctx, dbgen.AdminTopProductsByRevenueParams{
+		TenantID:   tenantID,
 		StartAt:    startAt,
 		LimitValue: 5,
 	})

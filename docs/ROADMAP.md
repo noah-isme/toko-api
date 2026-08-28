@@ -1,6 +1,6 @@
 # Roadmap — Toko API
 
-> Last updated: 2024-08 · Priorities may shift based on merchant feedback.
+> Last reviewed: 2026-08 · Priorities may shift based on merchant feedback.
 
 ## Legend
 
@@ -21,7 +21,7 @@
 - ✅ Order management with status transitions
 - ✅ Shipping rate estimation + tracking (RajaOngkir)
 - ✅ Voucher engine with rules and per-user limits
-- ✅ Multi-tenancy with membership guard
+- ✅ Multi-tenancy with membership checks on protected workflows
 - ✅ Schema migrations (embedded in binary)
 
 ## Phase 2 — Engagement & Operations (✅ Complete)
@@ -41,7 +41,7 @@
 
 - ✅ Prometheus metrics + Grafana dashboards
 - ✅ OpenTelemetry distributed tracing
-- ✅ Circuit breakers on outbound calls
+- ✅ Circuit breaker, retry, and timeout wrapper for webhook delivery
 - ✅ Rate limiting (global, IP, user, login)
 - ✅ Dead-letter queue with admin replay
 - ✅ Graceful shutdown with readiness probe
@@ -55,7 +55,7 @@
 - 📋 **Image upload & CDN** — Product image upload API with S3-compatible storage and CDN-served URLs. Currently images are external URLs seeded in migrations.
 - 📋 **OpenAPI auto-generation** — Generate `openapi.yaml` from handler annotations or code. Current spec is maintained by hand.
 - 📋 **gRPC internal API** — Optional gRPC surface for service-to-service communication if the monolith is split.
-- 📋 **CI/CD pipeline** — GitHub Actions for lint, test, build, push, and deploy. Currently manual.
+- 📋 **CI/CD hardening** — GitHub Actions already run build/test checks, a Docker image verification job, the tenant guard, a pull-request k6 smoke test, and a production SSH/systemd deployment. Add or refine promotion and staging gates as environments require.
 
 ## Phase 5 — Advanced Features (💡 Under Consideration)
 
@@ -75,10 +75,10 @@
 |------|-------|----------|
 | Config | `cmd/api/main.go` is >1100 lines; wiring should move to `internal/app` | Medium |
 | Tests | Integration test coverage for checkout + payment webhook flow is thin | High |
-| Tenant guard | `tenant_guard` tool exists but isn't wired into CI | Medium |
+| Tenant guard | PR workflow runs `tenant_guard` with statement-level checks for required admin tables, but non-admin SQL, CTEs, inserts, and application-level isolation still need broader coverage | Medium |
 | Generated code | `internal/db/gen` is committed; could be generated in CI instead | Low |
 | Docs | OpenAPI spec may drift from implementation without automated checks | Medium |
-| Dependencies | `go.mod` carries transitive deps from sqlc/migrate that aren't used at runtime | Low |
+| Dependencies | `go.mod` includes sqlc generation tooling alongside the golang-migrate runtime used by `cmd/migrate`; keep tooling and runtime ownership clear | Low |
 
 ## Contributing
 

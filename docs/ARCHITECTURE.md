@@ -2,7 +2,7 @@
 
 ## High-Level Overview
 
-Toko API is a monolithic Go HTTP service backed by PostgreSQL and Redis. It follows a **modular-monolith** layout: each business domain lives in its own `internal/<domain>` package with handler, service, and data-access layers, but all domains compile into a single binary and share one database.
+Toko API is a Go modular monolith backed by PostgreSQL and Redis. The repository builds separate `api`, `worker`, and `migrate` binaries; the API and worker share the domain packages and database. Each business domain lives in its own `internal/<domain>` package with handler, service, and data-access layers.
 
 ```
 ┌──────────────┐      ┌──────────────────────────────────────────────────┐
@@ -30,7 +30,7 @@ Toko API is a monolithic Go HTTP service backed by PostgreSQL and Redis. It foll
 | Binary | Source | Purpose |
 |--------|--------|---------|
 | `api` | `cmd/api` | HTTP API server — all REST endpoints |
-| `worker` | `cmd/worker` | Background job consumer (webhooks, email, analytics) |
+| `worker` | `cmd/worker` | Background webhook-delivery consumer |
 | `migrate` | `cmd/migrate` | Schema migration runner (embeds SQL files) |
 | tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`) |
 
@@ -47,7 +47,7 @@ internal/
 ├── campaign/       # Flash-sale campaign management
 ├── cart/           # Cart lifecycle (create, items, voucher, merge, quotes)
 ├── catalog/        # Product catalog with Redis caching
-├── checkout/       # Atomic checkout (reservation → order → payment intent)
+├── checkout/       # Checkout transaction (order + inventory reservation), then payment intent
 ├── common/         # Shared utilities (auth context, JSON responses, email, idempotency)
 ├── config/         # Environment-driven configuration via koanf
 ├── db/
@@ -94,13 +94,15 @@ internal/
 
 | Use case | Key pattern |
 |----------|------------|
-| Catalog cache | `{prefix}:catalog:*` |
-| Analytics cache | `{prefix}:analytics:*` |
-| Idempotency guard | `idem:{key}` |
-| Webhook replay protection | `replay:webhook:{id}` |
-| Distributed locks | `lock:{resource}` |
-| Task queue | `{prefix}:queue:*` |
-| Rate limiting | `rl:{scope}:{key}` |
+| Catalog cache | `{REDIS_CACHE_PREFIX}:tenant:{tenant_id}:catalog:products:list:popular` and `...:detail:{slug}` (default prefix: `cache`) |
+| Analytics cache | `{REDIS_CACHE_PREFIX}:analytics:sales:{from}:{to}` and `...:top:{limit}:{offset}` (not tenant-keyed) |
+| Idempotency guard | `idem:{sha256(Idempotency-Key)}` |
+| Payment webhook replay | `wh:{provider}:{sha256(body)}` |
+| Shipping webhook replay | `shwh:{courier}:{sha256(body)}` |
+| Outbound webhook replay | `wh:{endpoint_uuid}:{event_uuid}` |
+| Distributed delivery locks | `lock:delivery:{delivery_uuid}` |
+| Task queue | `{QUEUE_REDIS_PREFIX}:queue:{kind}`, `{QUEUE_REDIS_PREFIX}:{kind}:processing`, and `{QUEUE_REDIS_PREFIX}:dedup:{kind}:{key}` (default prefix: `q`) |
+| Rate limiting | `{RATE_LIMIT_REDIS_PREFIX}{scope}:{key}` (default prefix: `rl:`) |
 
 ## Request Flow
 
@@ -114,8 +116,8 @@ sequenceDiagram
     participant Cache as Redis
 
     Client->>Middleware: HTTP Request
-    Note over Middleware: RequestID → RealIP → Recover<br/>→ Inflight guard → Tracing<br/>→ Metrics → Logger → Security<br/>→ CORS → BodyLimit → CSRF<br/>→ RateLimit → TenantResolve
-    Middleware->>Handler: Authenticated request
+    Note over Middleware: RequestID → Recover<br/>→ Inflight guard → Tracing<br/>→ Metrics → Logger → Security<br/>→ CORS → BodyLimit → CSRF<br/>→ RateLimit → TenantResolve
+    Middleware->>Handler: Route handler (auth and tenant membership where required)
     Handler->>Service: Business logic call
     Service->>Cache: Check cache
     alt Cache hit
@@ -129,35 +131,15 @@ sequenceDiagram
     Handler-->>Client: JSON response
 ```
 
+The API middleware stack is ordered as request ID, client IP, recovery, route pattern, in-flight limit, optional tracing and metrics, request logging, security headers, CORS, body limit, and CSRF. The `/api/v1` router then applies rate limits and tenant resolution; authentication and active-membership checks are route-specific, so public catalog and webhook routes remain unauthenticated.
+
 ## Deployment Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│              Kubernetes Cluster             │
-│                                             │
-│  ┌──────────────┐    ┌──────────────┐       │
-│  │  API Deploy  │    │ Worker Deploy│       │
-│  │  (replicas)  │    │  (replicas)  │       │
-│  └──────┬───────┘    └──────┬───────┘       │
-│         │                   │               │
-│  ┌──────▼───────────────────▼───────┐       │
-│  │   Migrate Job (runs first)       │       │
-│  └──────────────────────────────────┘       │
-│                                             │
-│  ┌──────────────┐    ┌──────────────┐       │
-│  │  PostgreSQL  │    │    Redis     │       │
-│  └──────────────┘    └──────────────┘       │
-│                                             │
-│  ┌──────────────┐    ┌──────────────┐       │
-│  │  Prometheus  │    │   Grafana    │       │
-│  └──────────────┘    └──────────────┘       │
-└─────────────────────────────────────────────┘
-```
+The active production workflow is `.github/workflows/deploy.yml`. On a push to `main`, it runs Go tests, builds Linux/amd64 `api`, `worker`, and `migrate` binaries, uploads them over SSH to `/opt/toko-api/bin/*.new`, runs `migrate.new up` using the host's `.env`, replaces the binaries after a successful migration, restarts the `toko-api` and `toko-worker` systemd services, and verifies both services are active.
 
-Deploy sequence:
-1. Build immutable image (API + Worker + Migrate binaries).
-2. Run `migrate-job.yaml` to completion.
-3. Roll out `deployment.yaml` (API) and `worker.yaml` (Worker).
+The repository also contains a separate Kubernetes deployment path under `deploy/k8s/`; it is not invoked by the production workflow and must be run manually. Build and publish an immutable image, substitute its tag in `migrate-job.yaml`, `deployment.yaml`, and `worker.yaml`, run the migration Job to completion, then apply the API and worker Deployments. The image embeds migrations and exposes `/app/api`, `/app/worker`, and `/app/migrate`.
+
+Both paths expect PostgreSQL and Redis configuration from the deployment environment. Choose one path for an environment and keep its migration and application artifacts on the same release.
 
 ## Key Integrations
 
@@ -174,11 +156,11 @@ Deploy sequence:
 
 | Concern | Implementation |
 |---------|---------------|
-| Authentication | JWT (access + refresh) via `lestrrat-go/jwx` |
+| Authentication | HS256 JWT access tokens plus PostgreSQL-backed refresh sessions via `lestrrat-go/jwx` |
 | Multi-tenancy | Header/subdomain resolver + membership middleware |
 | Rate limiting | Redis sliding-window (global, IP, user, login) |
 | Idempotency | Redis-backed `Idem` middleware |
-| Circuit breaking | `internal/resilience` with configurable thresholds |
-| Audit trail | Sampled HTTP recorder writing to `audit_logs` |
+| Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client; payment and shipping clients currently use their own HTTP clients |
+| Audit trail | Sampled HTTP recorder on selected auth/admin routes writing to `audit_logs` |
 | Observability | Prometheus counters/histograms, OTLP traces, zerolog |
 | Graceful shutdown | Readiness toggle → drain in-flight → close pools |

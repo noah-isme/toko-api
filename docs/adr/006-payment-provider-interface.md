@@ -1,7 +1,7 @@
 # ADR-006: Pluggable Payment Provider Interface
 
-**Status:** Accepted  
-**Date:** 2024-03  
+**Status:** Accepted
+**Date:** 2024-03
 
 ## Context
 

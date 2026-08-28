@@ -86,17 +86,20 @@ func (h *OrdersHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	search := queryText(r, "search")
 
 	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
 	total, err := h.Q.AdminCountOrders(ctx, dbgen.AdminCountOrdersParams{
-		Status:  status,
-		Search:  search,
-		StartAt: startAt,
-		EndAt:   endAt,
+		TenantID: tenantID,
+		Status:   status,
+		Search:   search,
+		StartAt:  startAt,
+		EndAt:    endAt,
 	})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count orders", nil)
 		return
 	}
 	rows, err := h.Q.AdminListOrders(ctx, dbgen.AdminListOrdersParams{
+		TenantID:    tenantID,
 		Status:      status,
 		Search:      search,
 		StartAt:     startAt,
@@ -147,7 +150,7 @@ func (h *OrdersHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	row, err := h.Q.AdminGetOrder(ctx, id)
+	row, err := h.Q.AdminGetOrder(ctx, dbgen.AdminGetOrderParams{ID: id, TenantID: tenantIDFromContext(ctx)})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
@@ -230,7 +233,7 @@ func (h *OrdersHandler) OrderStats(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	stats, err := h.Q.AdminOrderStats(r.Context(), dbgen.AdminOrderStatsParams{StartAt: startAt, EndAt: endAt})
+	stats, err := h.Q.AdminOrderStats(r.Context(), dbgen.AdminOrderStatsParams{TenantID: tenantIDFromContext(r.Context()), StartAt: startAt, EndAt: endAt})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load order stats", nil)
 		return
@@ -283,12 +286,14 @@ func (h *OrdersHandler) ListVouchers(w http.ResponseWriter, r *http.Request) {
 	search := queryText(r, "search")
 
 	ctx := r.Context()
-	total, err := h.Q.AdminCountVouchers(ctx, dbgen.AdminCountVouchersParams{Search: search, Kind: kind})
+	tenantID := tenantIDFromContext(ctx)
+	total, err := h.Q.AdminCountVouchers(ctx, dbgen.AdminCountVouchersParams{TenantID: tenantID, Search: search, Kind: kind})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count vouchers", nil)
 		return
 	}
 	rows, err := h.Q.AdminListVouchers(ctx, dbgen.AdminListVouchersParams{
+		TenantID:    tenantID,
 		Search:      search,
 		Kind:        kind,
 		OffsetValue: int32(offset),
@@ -336,7 +341,7 @@ func (h *OrdersHandler) VoucherStats(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "admin queries not configured", nil)
 		return
 	}
-	stats, err := h.Q.AdminVoucherStats(r.Context())
+	stats, err := h.Q.AdminVoucherStats(r.Context(), tenantIDFromContext(r.Context()))
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load voucher stats", nil)
 		return
@@ -359,7 +364,7 @@ func (h *OrdersHandler) DeleteVoucher(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "voucher code is required", nil)
 		return
 	}
-	affected, err := h.Q.AdminDeleteVoucher(r.Context(), code)
+	affected, err := h.Q.AdminDeleteVoucher(r.Context(), dbgen.AdminDeleteVoucherParams{Code: code, TenantID: tenantIDFromContext(r.Context())})
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			common.JSONError(w, http.StatusConflict, "CONFLICT", "voucher has been used and cannot be deleted", nil)

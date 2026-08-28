@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,7 +10,8 @@ import (
 	"strings"
 )
 
-// tenantGuard scans .sql query files and ensures SELECT/UPDATE/DELETE contain a tenant_id filter.
+// tenantGuard scans admin SQL query files and ensures SELECT/UPDATE/DELETE
+// against required tenant-bearing tables contain a tenant_id filter.
 // Exit code 0 = ok, 1 = violation, 2 = other error.
 func main() {
 	root := "internal/db/queries"
@@ -64,15 +65,24 @@ var exemptTables = map[string]bool{
 	"orders_settlement": true,
 }
 
-// Tables that MUST have tenant_id in all SELECT/UPDATE/DELETE queries
-// (currently empty - all tenant-scoped tables are in exemptTables as they use globally unique UUID PKs)
-var requiresTenantIDTables = map[string]bool{}
+// Tables that MUST have tenant_id in admin SELECT/UPDATE/DELETE queries. The
+// guard is intentionally limited to admin_*.sql: the remaining query files
+// include system jobs and parent-key-scoped operations that need a more
+// complete SQL parser and table inventory before they can be checked safely.
+var requiresTenantIDTables = map[string]bool{
+	"brands":     true,
+	"categories": true,
+	"carts":      true,
+	"orders":     true,
+	"products":   true,
+	"vouchers":   true,
+}
 
 var (
 	reSelect   = regexp.MustCompile(`(?i)^\s*select\b`)
 	reUpdate   = regexp.MustCompile(`(?i)^\s*update\b`)
 	reDelete   = regexp.MustCompile(`(?i)^\s*delete\b`)
-	reTenant   = regexp.MustCompile(`(?i)tenant_id\s*=\s*\$?[0-9a-z_]+`)
+	reTenant   = regexp.MustCompile(`(?i)\b(?:\w+\.)?tenant_id\s*=\s*(?:\$[0-9]+|sqlc\.(?:n?arg)\([^)]*\)|(?:\w+\.)?tenant_id|\w+)`)
 	reTableRef = regexp.MustCompile(`(?i)\b(from|update|delete\s+from|join)\s+(\w+)`)
 )
 
@@ -107,24 +117,47 @@ func checkFile(path string) (bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	s := bufio.NewScanner(f)
+	contents, err := io.ReadAll(f)
+	if err != nil {
+		return false, err
+	}
+	if !isAdminQueryFile(path) {
+		return true, nil
+	}
+
 	violations := 0
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" || strings.HasPrefix(line, "--") {
+	for _, rawStatement := range strings.Split(string(contents), ";") {
+		statement := stripSQLComments(rawStatement)
+		if statement == "" {
 			continue
 		}
-		if reSelect.MatchString(line) || reUpdate.MatchString(line) || reDelete.MatchString(line) {
+		if reSelect.MatchString(statement) || reUpdate.MatchString(statement) || reDelete.MatchString(statement) {
 			// Check if this query references a table that requires tenant_id
-			if requiresTenantID(line) && !hasTenantID(line) {
+			if requiresTenantID(statement) && !hasTenantID(statement) {
 				violations++
 			}
 		}
 	}
-	if err := s.Err(); err != nil {
-		return false, err
-	}
 	return violations == 0, nil
+}
+
+func isAdminQueryFile(path string) bool {
+	return strings.HasPrefix(strings.ToLower(filepath.Base(path)), "admin_")
+}
+
+// stripSQLComments removes line comments before statement matching. Query
+// files use comments for sqlc names and documentation; removing them lets a
+// query start on any line without weakening the statement boundary check.
+func stripSQLComments(sql string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(sql, "\n") {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // requiresTenantID checks if the query references a table that requires tenant_id filtering
@@ -133,13 +166,14 @@ func requiresTenantID(query string) bool {
 	for _, m := range matches {
 		if len(m) >= 3 {
 			table := strings.ToLower(m[2])
-			// Skip exempt tables
-			if exemptTables[table] {
-				continue
-			}
 			// Check if this table requires tenant_id
 			if requiresTenantIDTables[table] {
 				return true
+			}
+			// Skip tables that are globally scoped or reached through a
+			// tenant-bearing parent key.
+			if exemptTables[table] {
+				continue
 			}
 		}
 	}

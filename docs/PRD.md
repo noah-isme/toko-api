@@ -24,7 +24,7 @@ Indonesian SMBs and independent sellers need a modern, API-first commerce backen
 - Anonymous and authenticated carts; cart merge on login.
 - Voucher application with per-user limits, stackable rules, and campaign awareness.
 - Draft checkout with shipping quote (RajaOngkir) and tax calculation.
-- Atomic checkout: inventory reservation → order creation → payment intent — all in a single DB transaction.
+- Atomic checkout: inventory reservation and order creation run in a single DB transaction; the payment intent is created immediately after commit, with failure cleanup releasing the reservation and cancelling the order.
 
 ### 3. Payments
 - Pluggable provider interface; ships with **Midtrans** and **Xendit** adapters plus a stub for tests.
@@ -70,7 +70,7 @@ Indonesian SMBs and independent sellers need a modern, API-first commerce backen
 
 ### 10. Observability & Resilience
 - Prometheus metrics, OpenTelemetry tracing, structured JSON logging (zerolog).
-- Circuit breakers and jittered retries on outbound calls (payment, shipping, webhooks).
+- Circuit breakers and jittered retries for outbound webhook delivery; payment and shipping provider clients use bounded HTTP timeouts.
 - Concurrency guard, rate limiting (global / IP / user / login), body-size limit, CSRF, HSTS.
 - Graceful shutdown with readiness toggle.
 

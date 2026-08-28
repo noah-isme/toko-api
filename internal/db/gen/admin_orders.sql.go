@@ -12,11 +12,15 @@ import (
 )
 
 const adminCountCustomers = `-- name: AdminCountCustomers :one
-SELECT COUNT(*)::bigint FROM users WHERE NOT ('admin' = ANY(roles))
+SELECT COUNT(DISTINCT u.id)::bigint
+FROM users u
+JOIN tenant_memberships tm ON tm.user_id = u.id
+WHERE tm.tenant_id = $1
+  AND NOT ('admin' = ANY(u.roles))
 `
 
-func (q *Queries) AdminCountCustomers(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, adminCountCustomers)
+func (q *Queries) AdminCountCustomers(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, adminCountCustomers, tenantID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -27,20 +31,22 @@ const adminCountOrders = `-- name: AdminCountOrders :one
 SELECT COUNT(*)
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
-WHERE ($1::order_status IS NULL OR o.status = $1::order_status)
-  AND ($2::text IS NULL
-       OR o.order_number ILIKE '%' || $2::text || '%'
-       OR u.email ILIKE '%' || $2::text || '%'
-       OR u.name ILIKE '%' || $2::text || '%')
-  AND ($3::timestamptz IS NULL OR o.created_at >= $3::timestamptz)
-  AND ($4::timestamptz IS NULL OR o.created_at < $4::timestamptz)
+WHERE o.tenant_id = $1
+  AND ($2::order_status IS NULL OR o.status = $2::order_status)
+  AND ($3::text IS NULL
+       OR o.order_number ILIKE '%' || $3::text || '%'
+       OR u.email ILIKE '%' || $3::text || '%'
+       OR u.name ILIKE '%' || $3::text || '%')
+  AND ($4::timestamptz IS NULL OR o.created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR o.created_at < $5::timestamptz)
 `
 
 type AdminCountOrdersParams struct {
-	Status  NullOrderStatus    `json:"status"`
-	Search  pgtype.Text        `json:"search"`
-	StartAt pgtype.Timestamptz `json:"start_at"`
-	EndAt   pgtype.Timestamptz `json:"end_at"`
+	TenantID pgtype.UUID        `json:"tenant_id"`
+	Status   NullOrderStatus    `json:"status"`
+	Search   pgtype.Text        `json:"search"`
+	StartAt  pgtype.Timestamptz `json:"start_at"`
+	EndAt    pgtype.Timestamptz `json:"end_at"`
 }
 
 // Admin order and voucher management queries. These power the admin dashboard
@@ -48,6 +54,7 @@ type AdminCountOrdersParams struct {
 // order queries deliberately do not provide.
 func (q *Queries) AdminCountOrders(ctx context.Context, arg AdminCountOrdersParams) (int64, error) {
 	row := q.db.QueryRow(ctx, adminCountOrders,
+		arg.TenantID,
 		arg.Status,
 		arg.Search,
 		arg.StartAt,
@@ -59,11 +66,13 @@ func (q *Queries) AdminCountOrders(ctx context.Context, arg AdminCountOrdersPara
 }
 
 const adminCountProductsTotal = `-- name: AdminCountProductsTotal :one
-SELECT COUNT(*)::bigint FROM products
+SELECT COUNT(*)::bigint
+FROM products
+WHERE tenant_id = $1
 `
 
-func (q *Queries) AdminCountProductsTotal(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, adminCountProductsTotal)
+func (q *Queries) AdminCountProductsTotal(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, adminCountProductsTotal, tenantID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -72,28 +81,37 @@ func (q *Queries) AdminCountProductsTotal(ctx context.Context) (int64, error) {
 const adminCountVouchers = `-- name: AdminCountVouchers :one
 SELECT COUNT(*)
 FROM vouchers v
-WHERE ($1::text IS NULL OR v.code ILIKE '%' || $1::text || '%')
-  AND ($2::discount_kind IS NULL OR v.kind = $2::discount_kind)
+WHERE v.tenant_id = $1
+  AND ($2::text IS NULL OR v.code ILIKE '%' || $2::text || '%')
+  AND ($3::discount_kind IS NULL OR v.kind = $3::discount_kind)
 `
 
 type AdminCountVouchersParams struct {
-	Search pgtype.Text      `json:"search"`
-	Kind   NullDiscountKind `json:"kind"`
+	TenantID pgtype.UUID      `json:"tenant_id"`
+	Search   pgtype.Text      `json:"search"`
+	Kind     NullDiscountKind `json:"kind"`
 }
 
 func (q *Queries) AdminCountVouchers(ctx context.Context, arg AdminCountVouchersParams) (int64, error) {
-	row := q.db.QueryRow(ctx, adminCountVouchers, arg.Search, arg.Kind)
+	row := q.db.QueryRow(ctx, adminCountVouchers, arg.TenantID, arg.Search, arg.Kind)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const adminDeleteVoucher = `-- name: AdminDeleteVoucher :execrows
-DELETE FROM vouchers WHERE code = $1
+DELETE FROM vouchers
+WHERE code = $1
+  AND tenant_id = $2
 `
 
-func (q *Queries) AdminDeleteVoucher(ctx context.Context, code string) (int64, error) {
-	result, err := q.db.Exec(ctx, adminDeleteVoucher, code)
+type AdminDeleteVoucherParams struct {
+	Code     string      `json:"code"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) AdminDeleteVoucher(ctx context.Context, arg AdminDeleteVoucherParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adminDeleteVoucher, arg.Code, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -120,14 +138,20 @@ SELECT o.id,
        u.name  AS customer_name,
        u.email AS customer_email,
        COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id = o.id), 0)::int AS items_count,
-       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
-       (SELECT courier FROM shipments WHERE order_id = o.id LIMIT 1) AS courier,
-       (SELECT tracking_number FROM shipments WHERE order_id = o.id LIMIT 1) AS tracking_number
+       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id AND tenant_id = o.tenant_id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
+       (SELECT courier FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS courier,
+       (SELECT tracking_number FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS tracking_number
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
 WHERE o.id = $1
+  AND o.tenant_id = $2
 LIMIT 1
 `
+
+type AdminGetOrderParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
 
 type AdminGetOrderRow struct {
 	ID                 pgtype.UUID        `json:"id"`
@@ -154,8 +178,8 @@ type AdminGetOrderRow struct {
 	TrackingNumber     pgtype.Text        `json:"tracking_number"`
 }
 
-func (q *Queries) AdminGetOrder(ctx context.Context, id pgtype.UUID) (AdminGetOrderRow, error) {
-	row := q.db.QueryRow(ctx, adminGetOrder, id)
+func (q *Queries) AdminGetOrder(ctx context.Context, arg AdminGetOrderParams) (AdminGetOrderRow, error) {
+	row := q.db.QueryRow(ctx, adminGetOrder, arg.ID, arg.TenantID)
 	var i AdminGetOrderRow
 	err := row.Scan(
 		&i.ID,
@@ -201,23 +225,25 @@ SELECT o.id,
        u.name  AS customer_name,
        u.email AS customer_email,
        COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id = o.id), 0)::int AS items_count,
-       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
-       (SELECT courier FROM shipments WHERE order_id = o.id LIMIT 1) AS courier,
-       (SELECT tracking_number FROM shipments WHERE order_id = o.id LIMIT 1) AS tracking_number
+       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id AND tenant_id = o.tenant_id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
+       (SELECT courier FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS courier,
+       (SELECT tracking_number FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS tracking_number
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
-WHERE ($1::order_status IS NULL OR o.status = $1::order_status)
-  AND ($2::text IS NULL
-       OR o.order_number ILIKE '%' || $2::text || '%'
-       OR u.email ILIKE '%' || $2::text || '%'
-       OR u.name ILIKE '%' || $2::text || '%')
-  AND ($3::timestamptz IS NULL OR o.created_at >= $3::timestamptz)
-  AND ($4::timestamptz IS NULL OR o.created_at < $4::timestamptz)
+WHERE o.tenant_id = $1
+  AND ($2::order_status IS NULL OR o.status = $2::order_status)
+  AND ($3::text IS NULL
+       OR o.order_number ILIKE '%' || $3::text || '%'
+       OR u.email ILIKE '%' || $3::text || '%'
+       OR u.name ILIKE '%' || $3::text || '%')
+  AND ($4::timestamptz IS NULL OR o.created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR o.created_at < $5::timestamptz)
 ORDER BY o.created_at DESC, o.id
-LIMIT $6 OFFSET $5
+LIMIT $7 OFFSET $6
 `
 
 type AdminListOrdersParams struct {
+	TenantID    pgtype.UUID        `json:"tenant_id"`
 	Status      NullOrderStatus    `json:"status"`
 	Search      pgtype.Text        `json:"search"`
 	StartAt     pgtype.Timestamptz `json:"start_at"`
@@ -250,6 +276,7 @@ type AdminListOrdersRow struct {
 
 func (q *Queries) AdminListOrders(ctx context.Context, arg AdminListOrdersParams) ([]AdminListOrdersRow, error) {
 	rows, err := q.db.Query(ctx, adminListOrders,
+		arg.TenantID,
 		arg.Status,
 		arg.Search,
 		arg.StartAt,
@@ -315,13 +342,15 @@ SELECT v.id,
        v.created_at,
        v.updated_at
 FROM vouchers v
-WHERE ($1::text IS NULL OR v.code ILIKE '%' || $1::text || '%')
-  AND ($2::discount_kind IS NULL OR v.kind = $2::discount_kind)
+WHERE v.tenant_id = $1
+  AND ($2::text IS NULL OR v.code ILIKE '%' || $2::text || '%')
+  AND ($3::discount_kind IS NULL OR v.kind = $3::discount_kind)
 ORDER BY v.created_at DESC, v.id
-LIMIT $4 OFFSET $3
+LIMIT $5 OFFSET $4
 `
 
 type AdminListVouchersParams struct {
+	TenantID    pgtype.UUID      `json:"tenant_id"`
 	Search      pgtype.Text      `json:"search"`
 	Kind        NullDiscountKind `json:"kind"`
 	OffsetValue int32            `json:"offset_value"`
@@ -351,6 +380,7 @@ type AdminListVouchersRow struct {
 
 func (q *Queries) AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error) {
 	rows, err := q.db.Query(ctx, adminListVouchers,
+		arg.TenantID,
 		arg.Search,
 		arg.Kind,
 		arg.OffsetValue,
@@ -403,13 +433,15 @@ SELECT COUNT(*)::bigint                                                         
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
        COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
 FROM orders o
-WHERE ($1::timestamptz IS NULL OR o.created_at >= $1::timestamptz)
-  AND ($2::timestamptz IS NULL OR o.created_at < $2::timestamptz)
+WHERE o.tenant_id = $1
+  AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR o.created_at < $3::timestamptz)
 `
 
 type AdminOrderStatsParams struct {
-	StartAt pgtype.Timestamptz `json:"start_at"`
-	EndAt   pgtype.Timestamptz `json:"end_at"`
+	TenantID pgtype.UUID        `json:"tenant_id"`
+	StartAt  pgtype.Timestamptz `json:"start_at"`
+	EndAt    pgtype.Timestamptz `json:"end_at"`
 }
 
 type AdminOrderStatsRow struct {
@@ -424,7 +456,7 @@ type AdminOrderStatsRow struct {
 }
 
 func (q *Queries) AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams) (AdminOrderStatsRow, error) {
-	row := q.db.QueryRow(ctx, adminOrderStats, arg.StartAt, arg.EndAt)
+	row := q.db.QueryRow(ctx, adminOrderStats, arg.TenantID, arg.StartAt, arg.EndAt)
 	var i AdminOrderStatsRow
 	err := row.Scan(
 		&i.TotalOrders,
@@ -447,14 +479,16 @@ SELECT oi.product_id,
        SUM(oi.subtotal)::bigint       AS revenue
 FROM order_items oi
 JOIN orders o ON o.id = oi.order_id
-WHERE o.status <> 'CANCELLED'
-  AND ($1::timestamptz IS NULL OR o.created_at >= $1::timestamptz)
+WHERE o.tenant_id = $1
+  AND o.status <> 'CANCELLED'
+  AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
 GROUP BY oi.product_id
 ORDER BY revenue DESC
-LIMIT $2
+LIMIT $3
 `
 
 type AdminTopProductsByRevenueParams struct {
+	TenantID   pgtype.UUID        `json:"tenant_id"`
 	StartAt    pgtype.Timestamptz `json:"start_at"`
 	LimitValue int32              `json:"limit_value"`
 }
@@ -468,7 +502,7 @@ type AdminTopProductsByRevenueRow struct {
 }
 
 func (q *Queries) AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error) {
-	rows, err := q.db.Query(ctx, adminTopProductsByRevenue, arg.StartAt, arg.LimitValue)
+	rows, err := q.db.Query(ctx, adminTopProductsByRevenue, arg.TenantID, arg.StartAt, arg.LimitValue)
 	if err != nil {
 		return nil, err
 	}
@@ -502,6 +536,7 @@ SELECT COUNT(*)::bigint                                                         
        )::bigint                                                                            AS active_vouchers,
        COALESCE(SUM(used_count), 0)::bigint                                                 AS total_usage
 FROM vouchers
+WHERE tenant_id = $1
 `
 
 type AdminVoucherStatsRow struct {
@@ -510,8 +545,8 @@ type AdminVoucherStatsRow struct {
 	TotalUsage     int64 `json:"total_usage"`
 }
 
-func (q *Queries) AdminVoucherStats(ctx context.Context) (AdminVoucherStatsRow, error) {
-	row := q.db.QueryRow(ctx, adminVoucherStats)
+func (q *Queries) AdminVoucherStats(ctx context.Context, tenantID pgtype.UUID) (AdminVoucherStatsRow, error) {
+	row := q.db.QueryRow(ctx, adminVoucherStats, tenantID)
 	var i AdminVoucherStatsRow
 	err := row.Scan(&i.TotalVouchers, &i.ActiveVouchers, &i.TotalUsage)
 	return i, err

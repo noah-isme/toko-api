@@ -1,7 +1,7 @@
 # ADR-010: Prometheus + OpenTelemetry + zerolog
 
-**Status:** Accepted  
-**Date:** 2024-03  
+**Status:** Accepted
+**Date:** 2024-03
 
 ## Context
 
@@ -9,18 +9,18 @@ Observability requires three pillars: metrics, traces, and logs. We needed a sta
 
 ## Decision
 
-- **Metrics:** Prometheus client library (`prometheus/client_golang`). Custom histograms for HTTP latency (`toko_http_request_duration_ms`) and counters for requests, errors, and domain events. Exposed on `/metrics`.
-- **Tracing:** OpenTelemetry SDK with OTLP exporter. `obs.TracingMiddleware` creates spans for every HTTP request; `obs.PGXTracer` traces database queries. Configurable sampling ratio.
-- **Logging:** zerolog for structured JSON logs. `obs.RequestLogger` middleware logs method, path, status, duration, and request ID on every response. Log level and format are configurable.
+- **Metrics:** Prometheus client library (`prometheus/client_golang`). With the default `OBS_METRICS_NAMESPACE=toko`, HTTP metrics include `toko_http_request_duration_ms`, `toko_http_requests_total`, and `toko_http_in_flight_requests`, alongside domain, queue, and breaker collectors. They are exposed on `/metrics` when `OBS_ENABLE_PROMETHEUS` is enabled.
+- **Tracing:** OpenTelemetry SDK with an OTLP/HTTP exporter. When `OBS_ENABLE_TRACING` is enabled and initialisation succeeds, `obs.TracingMiddleware` creates spans for incoming HTTP requests and `obs.PGXTracer` traces database queries. `OBS_TRACING_SAMPLING_RATIO` controls sampling (default 1.0).
+- **Logging:** zerolog for structured logs (JSON by default; console/text is configurable). `obs.RequestLogger` middleware logs method, path, status, duration, and request ID on every response. Log level and format are configurable.
 
-Grafana dashboards (`deploy/grafana/dashboards/`) provide pre-built views for HTTP, database, Redis, and webhooks.
+Grafana dashboard JSON definitions (`deploy/grafana/dashboards/`) provide views for HTTP, database, Redis, webhooks, and queue/breaker metrics; importing and wiring them to a Prometheus datasource is an operator step.
 
-Prometheus alert rules (`deploy/prometheus/alerts.yml`) fire on SLO breaches.
+Prometheus alert rule files (`deploy/prometheus/alerts.yml` and `deploy/prometheus/alerts_queue_breaker.yml`) provide SLO and queue/breaker rules; loading them into a Prometheus installation is an operator step.
 
 ## Consequences
 
 - **Positive:** All three pillars are covered with industry-standard, well-supported tools.
-- **Positive:** Metrics, traces, and logs correlate via request ID.
-- **Positive:** Grafana dashboards and alerts ship with the repo — no manual setup.
+- **Positive:** Request logs include request and trace identifiers, while OpenTelemetry propagates trace context across instrumented calls; systems can correlate records when those identifiers are retained.
+- **Positive:** Dashboard JSON and alert rule files ship with the repo, providing repeatable configuration for operators.
 - **Negative:** Prometheus requires a scrape target; OTLP requires a collector endpoint.
 - **Negative:** High cardinality labels (e.g., per-route metrics) need care to avoid metric explosion.

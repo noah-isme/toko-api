@@ -6,7 +6,8 @@
 SELECT COUNT(*)
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
-WHERE (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.arg(status)::order_status)
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.arg(status)::order_status)
   AND (sqlc.narg(search)::text IS NULL
        OR o.order_number ILIKE '%' || sqlc.arg(search)::text || '%'
        OR u.email ILIKE '%' || sqlc.arg(search)::text || '%'
@@ -31,12 +32,13 @@ SELECT o.id,
        u.name  AS customer_name,
        u.email AS customer_email,
        COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id = o.id), 0)::int AS items_count,
-       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
-       (SELECT courier FROM shipments WHERE order_id = o.id LIMIT 1) AS courier,
-       (SELECT tracking_number FROM shipments WHERE order_id = o.id LIMIT 1) AS tracking_number
+       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id AND tenant_id = o.tenant_id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
+       (SELECT courier FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS courier,
+       (SELECT tracking_number FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS tracking_number
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
-WHERE (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.arg(status)::order_status)
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.arg(status)::order_status)
   AND (sqlc.narg(search)::text IS NULL
        OR o.order_number ILIKE '%' || sqlc.arg(search)::text || '%'
        OR u.email ILIKE '%' || sqlc.arg(search)::text || '%'
@@ -66,12 +68,13 @@ SELECT o.id,
        u.name  AS customer_name,
        u.email AS customer_email,
        COALESCE((SELECT SUM(qty) FROM order_items WHERE order_id = o.id), 0)::int AS items_count,
-       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
-       (SELECT courier FROM shipments WHERE order_id = o.id LIMIT 1) AS courier,
-       (SELECT tracking_number FROM shipments WHERE order_id = o.id LIMIT 1) AS tracking_number
+       COALESCE((SELECT status::text FROM payments WHERE order_id = o.id AND tenant_id = o.tenant_id ORDER BY created_at DESC LIMIT 1), '')::text AS payment_status,
+       (SELECT courier FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS courier,
+       (SELECT tracking_number FROM shipments WHERE order_id = o.id AND tenant_id = o.tenant_id LIMIT 1) AS tracking_number
 FROM orders o
 LEFT JOIN users u ON u.id = o.user_id
 WHERE o.id = sqlc.arg(id)
+  AND o.tenant_id = sqlc.arg(tenant_id)
 LIMIT 1;
 
 -- name: AdminOrderStats :one
@@ -84,14 +87,21 @@ SELECT COUNT(*)::bigint                                                         
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
        COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
 FROM orders o
-WHERE (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
   AND (sqlc.narg(end_at)::timestamptz IS NULL OR o.created_at < sqlc.arg(end_at)::timestamptz);
 
 -- name: AdminCountCustomers :one
-SELECT COUNT(*)::bigint FROM users WHERE NOT ('admin' = ANY(roles));
+SELECT COUNT(DISTINCT u.id)::bigint
+FROM users u
+JOIN tenant_memberships tm ON tm.user_id = u.id
+WHERE tm.tenant_id = sqlc.arg(tenant_id)
+  AND NOT ('admin' = ANY(u.roles));
 
 -- name: AdminCountProductsTotal :one
-SELECT COUNT(*)::bigint FROM products;
+SELECT COUNT(*)::bigint
+FROM products
+WHERE tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminTopProductsByRevenue :many
 SELECT oi.product_id,
@@ -101,7 +111,8 @@ SELECT oi.product_id,
        SUM(oi.subtotal)::bigint       AS revenue
 FROM order_items oi
 JOIN orders o ON o.id = oi.order_id
-WHERE o.status <> 'CANCELLED'
+WHERE o.tenant_id = sqlc.arg(tenant_id)
+  AND o.status <> 'CANCELLED'
   AND (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
 GROUP BY oi.product_id
 ORDER BY revenue DESC
@@ -127,7 +138,8 @@ SELECT v.id,
        v.created_at,
        v.updated_at
 FROM vouchers v
-WHERE (sqlc.narg(search)::text IS NULL OR v.code ILIKE '%' || sqlc.arg(search)::text || '%')
+WHERE v.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(search)::text IS NULL OR v.code ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.narg(kind)::discount_kind IS NULL OR v.kind = sqlc.arg(kind)::discount_kind)
 ORDER BY v.created_at DESC, v.id
 LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
@@ -135,7 +147,8 @@ LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
 -- name: AdminCountVouchers :one
 SELECT COUNT(*)
 FROM vouchers v
-WHERE (sqlc.narg(search)::text IS NULL OR v.code ILIKE '%' || sqlc.arg(search)::text || '%')
+WHERE v.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(search)::text IS NULL OR v.code ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.narg(kind)::discount_kind IS NULL OR v.kind = sqlc.arg(kind)::discount_kind);
 
 -- name: AdminVoucherStats :one
@@ -146,7 +159,10 @@ SELECT COUNT(*)::bigint                                                         
              AND (usage_limit IS NULL OR used_count < usage_limit)
        )::bigint                                                                            AS active_vouchers,
        COALESCE(SUM(used_count), 0)::bigint                                                 AS total_usage
-FROM vouchers;
+FROM vouchers
+WHERE tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminDeleteVoucher :execrows
-DELETE FROM vouchers WHERE code = sqlc.arg(code);
+DELETE FROM vouchers
+WHERE code = sqlc.arg(code)
+  AND tenant_id = sqlc.arg(tenant_id);

@@ -15,16 +15,16 @@ func TestClientIP(t *testing.T) {
 		want       string
 	}{
 		{
-			name:       "forwarded",
+			name:       "forwarded header is ignored",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.1, 70.41.3.18"},
 			remoteAddr: "192.0.2.1:1234",
-			want:       "203.0.113.1",
+			want:       "192.0.2.1",
 		},
 		{
-			name:       "real ip",
+			name:       "real ip header is ignored",
 			headers:    map[string]string{"X-Real-IP": "198.51.100.2"},
 			remoteAddr: "192.0.2.1:1234",
-			want:       "198.51.100.2",
+			want:       "192.0.2.1",
 		},
 		{
 			name:       "remote addr fallback",
