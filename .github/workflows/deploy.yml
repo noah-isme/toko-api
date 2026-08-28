@@ -154,10 +154,6 @@ jobs:
                 bin/migrate.new
 
               # Run database migrations using the new release first.
-              set -a
-              source .env
-              set +a
-
               ./bin/migrate.new up
 
               # Replace binaries only after migrations succeed.

@@ -22,11 +22,13 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/joho/godotenv"
 
 	toko "github.com/noah-isme/backend-toko"
 )
 
 func main() {
+	_ = godotenv.Load()
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
 		os.Exit(1)
