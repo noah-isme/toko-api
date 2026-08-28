@@ -73,7 +73,7 @@ func AllowCORS(originsCSV string) func(http.Handler) http.Handler {
 				}
 				if allowOrigin {
 					w.Header().Add("Vary", "Origin")
-					w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-CSRF-Token, X-Request-ID, X-Idempotency-Key")
+					w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-CSRF-Token, X-Request-ID, X-Idempotency-Key, X-Tenant-ID")
 					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 					w.Header().Set("Access-Control-Expose-Headers", "Link, X-Request-ID")
 				}

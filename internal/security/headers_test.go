@@ -56,6 +56,9 @@ func TestAllowCORS(t *testing.T) {
 	if rr.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
 		t.Fatalf("unexpected CORS origin header: %q", rr.Header().Get("Access-Control-Allow-Origin"))
 	}
+	if got := rr.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type, Accept, X-CSRF-Token, X-Request-ID, X-Idempotency-Key, X-Tenant-ID" {
+		t.Fatalf("unexpected CORS allow headers: %q", got)
+	}
 
 	badReq := httptest.NewRequest(http.MethodOptions, "http://localhost/resource", nil)
 	badReq.Header.Set("Origin", "https://malicious.example")
