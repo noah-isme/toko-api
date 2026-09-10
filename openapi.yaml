@@ -2084,6 +2084,44 @@ paths:
     get:
       summary: List scheduled and active flash-sale campaigns
       responses: { '200': { description: Flash-sale campaigns and server-calculated prices } }
+  /api/v1/newsletter/subscribe:
+    post:
+      summary: Subscribe to the store newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Subscribed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message: { type: string }
+                      email: { type: string }
+                      status: { type: string }
+        '400':
+          description: Invalid email format or missing body
+  /api/v1/admin/newsletter/subscribers:
+    get:
+      summary: List newsletter subscribers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: List of subscribers
   /api/v1/admin/flash-sales:
     post:
       summary: Create a flash-sale campaign

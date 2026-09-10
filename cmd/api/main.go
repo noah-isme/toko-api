@@ -41,6 +41,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/favorites"
 	"github.com/noah-isme/backend-toko/internal/health"
 	"github.com/noah-isme/backend-toko/internal/loyalty"
+	"github.com/noah-isme/backend-toko/internal/newsletter"
 	"github.com/noah-isme/backend-toko/internal/notifications"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
@@ -460,6 +461,9 @@ func main() {
 	favoritesSvc := &favorites.Service{Q: queries}
 	favoritesHandler := &favorites.Handler{Svc: favoritesSvc}
 
+	newsletterSvc := newsletter.NewService(queries, mailer, cfg.PublicBaseURL, logger)
+	newsletterHandler := newsletter.NewHandler(newsletterSvc)
+
 	auditSample := envFloat("AUDIT_SAMPLING_RATE", 1.0)
 	if auditSample < 0 {
 		auditSample = 0
@@ -651,6 +655,7 @@ func main() {
 		v.Get("/products/{slug}/related", catalogHandler.Related)
 		v.Get("/vouchers", voucherHandler.PublicList)
 		v.Get("/flash-sales", campaignHandler.Public)
+		v.Post("/newsletter/subscribe", newsletterHandler.Subscribe)
 
 		// Recommendations
 		v.Get("/recommendations/personalized", recommendationsHandler.Personalized)
@@ -847,6 +852,8 @@ func main() {
 			admin.Get("/vouchers", adminOrders.ListVouchers)
 			admin.Get("/vouchers/stats", adminOrders.VoucherStats)
 			admin.Delete("/vouchers/{code}", adminOrders.DeleteVoucher)
+
+			admin.Get("/newsletter/subscribers", newsletterHandler.AdminList)
 
 			admin.Get("/analytics/overview", adminAnalytics.Overview)
 		})
