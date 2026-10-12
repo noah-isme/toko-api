@@ -30,6 +30,7 @@
 - Use Go’s `testing` package (with `testify` where helpful).
 - Test files end with `*_test.go`, colocated with the package.
 - Prefer table-driven tests for handlers/services; keep mocks in `_test.go`.
+- Postgres-backed integration tests (for example `internal/campaign/handlers_integration_test.go`) are opt-in: set `TEST_DATABASE_URL` to a migrated database (`make migrate-up` first) and run `go test ./internal/campaign/ -run Integration`; they skip when it is unset.
 - Run `make test` before PRs; use `./verify_all.sh` for end-to-end sanity checks.
 
 ## Commit & Pull Request Guidelines
