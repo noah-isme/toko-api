@@ -574,7 +574,8 @@ func applyItemChanges(ctx context.Context, tx pgx.Tx, campaignID, tenantID pgtyp
 	}
 	inserts := make([]itemInput, 0, len(plan.Insert))
 	for _, in := range plan.Insert {
-		inserts = append(inserts, itemInput{ProductID: in.ProductID, SalePrice: in.SalePrice, StockLimit: in.StockLimit})
+		// New items: absent and null both mean unlimited (Value is nil).
+		inserts = append(inserts, itemInput{ProductID: in.ProductID, SalePrice: in.SalePrice, StockLimit: in.StockLimit.Value})
 	}
 	return insertItems(ctx, tx, campaignID, inserts)
 }
@@ -665,10 +666,32 @@ type campaignUpdateInput struct {
 }
 
 type updateItemInput struct {
-	ID         *string `json:"id"`
-	ProductID  string  `json:"productId"`
-	SalePrice  int64   `json:"salePrice"`
-	StockLimit *int32  `json:"stockLimit"`
+	ID         *string       `json:"id"`
+	ProductID  string        `json:"productId"`
+	SalePrice  int64         `json:"salePrice"`
+	StockLimit optionalInt32 `json:"stockLimit"`
+}
+
+// optionalInt32 distinguishes an absent JSON key (Set=false) from an explicit
+// null (Set=true, Value=nil) and a number (Set=true, Value set).
+type optionalInt32 struct {
+	Set   bool
+	Value *int32
+}
+
+// UnmarshalJSON runs only when the key is present.
+func (o *optionalInt32) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	o.Value = nil
+	if string(data) == "null" {
+		return nil
+	}
+	var v int32
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
 }
 
 type existingItem struct {
@@ -813,7 +836,7 @@ func planItemChanges(existing []existingItem, requested []updateItemInput) (item
 		if req.SalePrice < 0 {
 			return plan, &validationError{Message: "salePrice cannot be negative", Field: "salePrice", ProductID: pid}
 		}
-		if req.StockLimit != nil && *req.StockLimit < 1 {
+		if req.StockLimit.Set && req.StockLimit.Value != nil && *req.StockLimit.Value < 1 {
 			return plan, &validationError{Message: "stockLimit must be at least 1 or null", Field: "stockLimit", ProductID: pid}
 		}
 		if req.ID == nil {
@@ -833,13 +856,18 @@ func planItemChanges(existing []existingItem, requested []updateItemInput) (item
 		if !ok {
 			return plan, &validationError{Message: fmt.Sprintf("item %s does not belong to this campaign", iid), Field: "id", ItemID: iid}
 		}
-		if req.StockLimit != nil && *req.StockLimit < cur.SoldCount {
-			return plan, &validationError{Message: "stockLimit cannot be below soldCount", Field: "stockLimit", ItemID: iid, ProductID: pid}
+		// Absent key keeps the current limit and is not re-validated.
+		stockLimit := nullableInt4(cur.StockLimit)
+		if req.StockLimit.Set {
+			stockLimit = req.StockLimit.Value
+			if stockLimit != nil && *stockLimit < cur.SoldCount {
+				return plan, &validationError{Message: "stockLimit cannot be below soldCount", Field: "stockLimit", ItemID: iid, ProductID: pid}
+			}
 		}
 		if cur.SoldCount > 0 && productID.Bytes != cur.ProductID.Bytes {
 			return plan, &validationError{Message: "cannot change the product of an item that already has sales", Field: "productId", ItemID: iid, ProductID: pid}
 		}
-		plan.Update = append(plan.Update, plannedUpdate{ItemID: itemID, CurrentProductID: cur.ProductID, ProductID: productID, SalePrice: req.SalePrice, StockLimit: req.StockLimit})
+		plan.Update = append(plan.Update, plannedUpdate{ItemID: itemID, CurrentProductID: cur.ProductID, ProductID: productID, SalePrice: req.SalePrice, StockLimit: stockLimit})
 	}
 	for _, it := range existing {
 		if seenIDs[it.ID.Bytes] {

@@ -188,12 +188,25 @@ func TestPlanItemChanges(t *testing.T) {
 	item := func(n, product int, sold int32) existingItem {
 		return existingItem{ID: puid(t, n), ProductID: puid(t, product), SalePrice: 100, SoldCount: sold}
 	}
+	// req sends the stockLimit key explicitly (nil = explicit null).
 	req := func(id, product int, price int64, limit *int32) updateItemInput {
-		in := updateItemInput{ProductID: uid(product), SalePrice: price, StockLimit: limit}
+		in := updateItemInput{ProductID: uid(product), SalePrice: price, StockLimit: optionalInt32{Set: true, Value: limit}}
 		if id != 0 {
 			in.ID = strp(uid(id))
 		}
 		return in
+	}
+	// reqOmit leaves the stockLimit key absent.
+	reqOmit := func(id, product int, price int64) updateItemInput {
+		in := updateItemInput{ProductID: uid(product), SalePrice: price}
+		if id != 0 {
+			in.ID = strp(uid(id))
+		}
+		return in
+	}
+	withLimit := func(it existingItem, limit int32) existingItem {
+		it.StockLimit = pgtype.Int4{Int32: limit, Valid: true}
+		return it
 	}
 	names := map[string]string{uid(101): "A", uid(102): "B", uid(103): "C", uid(104): "D"}
 
@@ -316,6 +329,36 @@ func TestPlanItemChanges(t *testing.T) {
 		require.Equal(t, puid(t, 102), plan.Delete[0].ID)
 		require.Equal(t, []string{"A"}, updateOrder(t, plan, names))
 		require.Equal(t, puid(t, 2), plan.Update[0].ProductID)
+	})
+
+	t.Run("absent stockLimit keeps the current limit", func(t *testing.T) {
+		plan, err := planItemChanges([]existingItem{withLimit(item(101, 1, 0), 5)}, []updateItemInput{reqOmit(101, 1, 10)})
+		require.NoError(t, err)
+		require.Len(t, plan.Update, 1)
+		require.NotNil(t, plan.Update[0].StockLimit)
+		require.Equal(t, int32(5), *plan.Update[0].StockLimit)
+	})
+
+	t.Run("explicit null stockLimit clears the limit", func(t *testing.T) {
+		plan, err := planItemChanges([]existingItem{withLimit(item(101, 1, 0), 5)}, []updateItemInput{req(101, 1, 10, nil)})
+		require.NoError(t, err)
+		require.Len(t, plan.Update, 1)
+		require.Nil(t, plan.Update[0].StockLimit)
+	})
+
+	t.Run("absent stockLimit on a new item is unlimited", func(t *testing.T) {
+		plan, err := planItemChanges(nil, []updateItemInput{reqOmit(0, 1, 10)})
+		require.NoError(t, err)
+		require.Len(t, plan.Insert, 1)
+		require.False(t, plan.Insert[0].StockLimit.Set)
+		require.Nil(t, plan.Insert[0].StockLimit.Value)
+	})
+
+	t.Run("absent stockLimit is not re-validated against soldCount", func(t *testing.T) {
+		plan, err := planItemChanges([]existingItem{withLimit(item(101, 1, 3), 2)}, []updateItemInput{reqOmit(101, 1, 10)})
+		require.NoError(t, err)
+		require.Len(t, plan.Update, 1)
+		require.Equal(t, int32(2), *plan.Update[0].StockLimit)
 	})
 
 	t.Run("insert onto product vacated by an update", func(t *testing.T) {
@@ -502,4 +545,53 @@ func TestInternalErrorLogs(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Equal(t, "INTERNAL", body.Error.Code)
 	require.Equal(t, "failed to update campaign", body.Error.Message)
+}
+
+func TestOptionalInt32Decode(t *testing.T) {
+	decode := func(t *testing.T, body string) (updateItemInput, error) {
+		t.Helper()
+		var in updateItemInput
+		err := json.Unmarshal([]byte(body), &in)
+		return in, err
+	}
+	base := `"id":"` + uid(101) + `","productId":"` + uid(1) + `","salePrice":10`
+
+	t.Run("absent", func(t *testing.T) {
+		in, err := decode(t, `{`+base+`}`)
+		require.NoError(t, err)
+		require.False(t, in.StockLimit.Set)
+		require.Nil(t, in.StockLimit.Value)
+	})
+	t.Run("null", func(t *testing.T) {
+		in, err := decode(t, `{`+base+`,"stockLimit":null}`)
+		require.NoError(t, err)
+		require.True(t, in.StockLimit.Set)
+		require.Nil(t, in.StockLimit.Value)
+	})
+	t.Run("zero is rejected by planItemChanges", func(t *testing.T) {
+		in, err := decode(t, `{`+base+`,"stockLimit":0}`)
+		require.NoError(t, err)
+		require.True(t, in.StockLimit.Set)
+		require.NotNil(t, in.StockLimit.Value)
+		require.Equal(t, int32(0), *in.StockLimit.Value)
+		existing := []existingItem{{ID: puid(t, 101), ProductID: puid(t, 1), SalePrice: 100}}
+		_, err = planItemChanges(existing, []updateItemInput{in})
+		var verr *validationError
+		require.ErrorAs(t, err, &verr)
+		require.Equal(t, "stockLimit must be at least 1 or null", verr.Message)
+		rec := httptest.NewRecorder()
+		writeCampaignError(context.Background(), rec, err, "failed to update campaign")
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+	t.Run("five", func(t *testing.T) {
+		in, err := decode(t, `{`+base+`,"stockLimit":5}`)
+		require.NoError(t, err)
+		require.True(t, in.StockLimit.Set)
+		require.Equal(t, int32(5), *in.StockLimit.Value)
+	})
+	t.Run("string is invalid payload", func(t *testing.T) {
+		_, err := decode(t, `{`+base+`,"stockLimit":"5"}`)
+		require.Error(t, err)
+		require.Equal(t, "invalid payload", decodeError(err))
+	})
 }
