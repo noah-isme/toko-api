@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -59,12 +60,15 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 
 	var lastErr error
 	target := cl.targetLabel()
-	logger := cl.logger(ctx)
-	traceID := traceIDFromContext(ctx)
+	logger, traceID := cl.logger(ctx)
+	host := ""
+	if req.URL != nil {
+		host = req.URL.Host
+	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if !breaker.Allow(ctx) {
 			lastErr = ErrOpenCircuit
-			evt := logger.Warn().Str("target", target).Int("attempt", attempt)
+			evt := logger.Warn().Str("target", target).Str("host", host).Int("attempt", attempt)
 			if traceID != "" {
 				evt = evt.Str("trace_id", traceID)
 			}
@@ -76,7 +80,7 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 			breaker.Report(ctx, false)
 			return nil, err
 		}
-		evt := logger.Info().Str("target", target).Int("attempt", attempt)
+		evt := logger.Debug().Str("target", target).Str("host", host).Int("attempt", attempt)
 		if traceID != "" {
 			evt = evt.Str("trace_id", traceID)
 		}
@@ -84,7 +88,7 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 		resp, err := cl.doOnce(ctx, attemptReq)
 		if err == nil && resp.StatusCode < 500 {
 			breaker.Report(ctx, true)
-			successEvt := logger.Info().Str("target", target).Int("attempt", attempt).Int("status", resp.StatusCode)
+			successEvt := logger.Debug().Str("target", target).Str("host", host).Int("attempt", attempt).Int("status", resp.StatusCode)
 			if traceID != "" {
 				successEvt = successEvt.Str("trace_id", traceID)
 			}
@@ -98,7 +102,7 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 			lastErr = err
 		}
 		breaker.Report(ctx, false)
-		failureEvt := logger.Warn().Str("target", target).Int("attempt", attempt).Err(lastErr)
+		failureEvt := logger.Warn().Str("target", target).Str("host", host).Int("attempt", attempt).Err(redactURLError(lastErr))
 		if traceID != "" {
 			failureEvt = failureEvt.Str("trace_id", traceID)
 		}
@@ -121,7 +125,7 @@ func (cl HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 		return cl.Fallback(ctx, req, lastErr)
 	}
 	if lastErr != nil {
-		evt := logger.Error().Str("target", target).Err(lastErr)
+		evt := logger.Error().Str("target", target).Str("host", host).Err(redactURLError(lastErr))
 		if traceID != "" {
 			evt = evt.Str("trace_id", traceID)
 		}
@@ -198,13 +202,25 @@ func (cl HTTPClient) targetLabel() string {
 	return trimmed
 }
 
-func (cl HTTPClient) logger(ctx context.Context) *zerolog.Logger {
-	if ctxLogger := zerolog.Ctx(ctx); ctxLogger != nil {
-		logger := ctxLogger.With().Logger()
-		return &logger
+// logger returns the logger for ctx and the trace id to add manually. The
+// trace id is empty when a request-scoped logger is attached to ctx, because
+// that logger already carries trace_id/span_id.
+func (cl HTTPClient) logger(ctx context.Context) (*zerolog.Logger, string) {
+	return resolveLogger(ctx, cl.Logger)
+}
+
+// redactURLError returns a copy of a *url.Error whose URL is reduced to
+// scheme://host, so paths, queries and userinfo (which may carry webhook
+// secrets) never reach the logs. Other errors are returned unchanged. The
+// original error is never mutated.
+func redactURLError(err error) error {
+	ue, ok := err.(*url.Error)
+	if !ok || ue == nil {
+		return err
 	}
-	if cl.Logger == nil {
-		return &breakerNopLogger
+	redacted := "redacted"
+	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+		redacted = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 	}
-	return cl.Logger
+	return &url.Error{Op: ue.Op, URL: redacted, Err: ue.Err}
 }

@@ -42,7 +42,15 @@ func (l RequestLogger) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := NewStatusRecorder(w)
 		start := time.Now()
-		next.ServeHTTP(recorder, r)
+
+		// Attach a request-scoped logger so handlers and downstream clients can
+		// log via zerolog.Ctx with the request/trace ids already set.
+		reqCtx := l.Logger.With().Str("request_id", middleware.GetReqID(r.Context()))
+		if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+			reqCtx = reqCtx.Str("trace_id", sc.TraceID().String()).Str("span_id", sc.SpanID().String())
+		}
+		reqLogger := reqCtx.Logger()
+		next.ServeHTTP(recorder, r.WithContext(reqLogger.WithContext(r.Context())))
 
 		duration := time.Since(start)
 		route := RoutePatternFromContext(r.Context())
