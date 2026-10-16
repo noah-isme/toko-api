@@ -56,7 +56,7 @@ type publicItem struct {
 
 func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Pool == nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "campaign service not configured", nil)
+		notConfigured(r.Context(), w)
 		return
 	}
 	tenantID, ok := tenantUUID(r)
@@ -76,7 +76,7 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 		  AND c.starts_at <= now() + interval '90 days' AND c.ends_at > now()
 		ORDER BY c.starts_at ASC, i.created_at ASC`, tenantID)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list flash sales", nil)
+		internalError(r.Context(), w, err, "failed to list flash sales")
 		return
 	}
 	defer rows.Close()
@@ -92,7 +92,7 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 		var thumbnail pgtype.Text
 		var discount int32
 		if err := rows.Scan(&campaignID, &name, &slug, &status, &startsAt, &endsAt, &itemID, &productID, &title, &productSlug, &original, &sale, &stockLimit, &sold, &thumbnail, &discount); err != nil {
-			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+			internalError(r.Context(), w, err, "failed to read flash sales")
 			return
 		}
 		key := cart.UUIDString(campaignID)
@@ -118,7 +118,7 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 		(*current)["items"] = items
 	}
 	if err := rows.Err(); err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+		internalError(r.Context(), w, err, "failed to read flash sales")
 		return
 	}
 	result := make([]map[string]any, 0, len(ordered))
@@ -130,7 +130,7 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Pool == nil {
-		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		notConfigured(r.Context(), w)
 		return
 	}
 	tenantID, ok := tenantUUID(r)
@@ -149,7 +149,7 @@ func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sale", nil)
+		internalError(r.Context(), w, err, "failed to read flash sale")
 		return
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": campaign})
@@ -273,7 +273,7 @@ func (h *Handler) catalogStock(ctx context.Context, productID, tenantID pgtype.U
 
 func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Pool == nil {
-		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		notConfigured(r.Context(), w)
 		return
 	}
 	tenantID, ok := tenantUUID(r)
@@ -304,7 +304,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 	var total int64
 	err := h.Pool.QueryRow(r.Context(), `SELECT COUNT(*) FROM flash_sale_campaigns WHERE tenant_id=$1`, tenantID).Scan(&total)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count flash sales", nil)
+		internalError(r.Context(), w, err, "failed to count flash sales")
 		return
 	}
 
@@ -321,7 +321,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 		ORDER BY c.created_at DESC, i.created_at ASC
 		LIMIT $2 OFFSET $3`, tenantID, limit, offset)
 	if err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list flash sales", nil)
+		internalError(r.Context(), w, err, "failed to list flash sales")
 		return
 	}
 	defer rows.Close()
@@ -334,7 +334,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 		var startsAt, endsAt, createdAt, updatedAt time.Time
 		var row itemRow
 		if err := rows.Scan(append([]any{&cID, &name, &slug, &status, &startsAt, &endsAt, &createdAt, &updatedAt}, row.targets()...)...); err != nil {
-			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+			internalError(r.Context(), w, err, "failed to read flash sales")
 			return
 		}
 		key := cart.UUIDString(cID)
@@ -356,7 +356,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to read flash sales", nil)
+		internalError(r.Context(), w, err, "failed to read flash sales")
 		return
 	}
 	result := make([]map[string]any, 0, len(ordered))
@@ -371,7 +371,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Pool == nil {
-		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		notConfigured(r.Context(), w)
 		return
 	}
 	tenantID, ok := tenantUUID(r)
@@ -391,7 +391,7 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
-		common.JSONError(w, 500, "INTERNAL", "failed to begin campaign", nil)
+		internalError(r.Context(), w, err, "failed to begin campaign")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -401,21 +401,21 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 		checks = append(checks, productPrice{ProductID: productID, SalePrice: item.SalePrice})
 	}
 	if err := validateItemProducts(ctx, tx, tenantID, checks); err != nil {
-		writeCampaignError(w, err, "failed to save campaign")
+		writeCampaignError(ctx, w, err, "failed to save campaign")
 		return
 	}
 	var campaignID pgtype.UUID
 	err = tx.QueryRow(ctx, `INSERT INTO flash_sale_campaigns(tenant_id,name,slug,status,starts_at,ends_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, tenantID, strings.TrimSpace(input.Name), strings.TrimSpace(input.Slug), normalizedStatus(input.Status), input.StartsAt, input.EndsAt).Scan(&campaignID)
 	if err != nil {
-		writeCampaignError(w, err, "failed to save campaign")
+		writeCampaignError(ctx, w, err, "failed to save campaign")
 		return
 	}
 	if err := insertItems(ctx, tx, campaignID, input.Items); err != nil {
-		writeCampaignError(w, err, "failed to save campaign")
+		writeCampaignError(ctx, w, err, "failed to save campaign")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		common.JSONError(w, 500, "INTERNAL", "failed to save campaign", nil)
+		internalError(r.Context(), w, err, "failed to save campaign")
 		return
 	}
 	common.JSON(w, http.StatusCreated, map[string]any{"data": map[string]any{"id": cart.UUIDString(campaignID)}})
@@ -426,7 +426,7 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 // keyed by item id. A bare `{"status": ...}` body remains valid.
 func (h *Handler) AdminUpdate(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Pool == nil {
-		common.JSONError(w, 500, "INTERNAL", "campaign service not configured", nil)
+		notConfigured(r.Context(), w)
 		return
 	}
 	tenantID, ok := tenantUUID(r)
@@ -447,7 +447,7 @@ func (h *Handler) AdminUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	updated, err := h.applyUpdate(ctx, campaignID, tenantID, input)
 	if err != nil {
-		writeCampaignError(w, err, "failed to update campaign")
+		writeCampaignError(ctx, w, err, "failed to update campaign")
 		return
 	}
 	campaign, err := h.loadCampaign(ctx, campaignID, tenantID)
@@ -574,7 +574,8 @@ func applyItemChanges(ctx context.Context, tx pgx.Tx, campaignID, tenantID pgtyp
 	}
 	inserts := make([]itemInput, 0, len(plan.Insert))
 	for _, in := range plan.Insert {
-		inserts = append(inserts, itemInput{ProductID: in.ProductID, SalePrice: in.SalePrice, StockLimit: in.StockLimit})
+		// New items: absent and null both mean unlimited (Value is nil).
+		inserts = append(inserts, itemInput{ProductID: in.ProductID, SalePrice: in.SalePrice, StockLimit: in.StockLimit.Value})
 	}
 	return insertItems(ctx, tx, campaignID, inserts)
 }
@@ -589,7 +590,7 @@ func decodeError(err error) string {
 
 // writeCampaignError maps errors from create/update to HTTP responses. Raw
 // database messages are never sent to the client.
-func writeCampaignError(w http.ResponseWriter, err error, fallback string) {
+func writeCampaignError(ctx context.Context, w http.ResponseWriter, err error, fallback string) {
 	if errors.Is(err, errCampaignNotFound) {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "campaign not found", nil)
 		return
@@ -605,7 +606,29 @@ func writeCampaignError(w http.ResponseWriter, err error, fallback string) {
 		return
 	}
 	status, code, message := mapDBError(err, fallback)
+	if status >= http.StatusInternalServerError {
+		internalError(ctx, w, err, message)
+		return
+	}
 	common.JSONError(w, status, code, message, nil)
+}
+
+// internalError logs a 5xx with its cause on the request logger and writes a
+// generic body. err is logged, never sent to the client.
+func internalError(ctx context.Context, w http.ResponseWriter, err error, message string) {
+	evt := zerolog.Ctx(ctx).Error()
+	if err != nil {
+		evt = evt.Err(err)
+	}
+	evt.Str("response_message", message).Msg("campaign request failed")
+	common.JSONError(w, http.StatusInternalServerError, "INTERNAL", message, nil)
+}
+
+// notConfigured reports a handler without a database pool, so a misconfigured
+// deploy shows up in the logs.
+func notConfigured(ctx context.Context, w http.ResponseWriter) {
+	logger := zerolog.Ctx(ctx).With().Str("reason", "pool not configured").Logger()
+	internalError(logger.WithContext(ctx), w, nil, "campaign service not configured")
 }
 
 // mapDBError maps Postgres errors by constraint name first, then by SQLSTATE.
@@ -643,10 +666,32 @@ type campaignUpdateInput struct {
 }
 
 type updateItemInput struct {
-	ID         *string `json:"id"`
-	ProductID  string  `json:"productId"`
-	SalePrice  int64   `json:"salePrice"`
-	StockLimit *int32  `json:"stockLimit"`
+	ID         *string       `json:"id"`
+	ProductID  string        `json:"productId"`
+	SalePrice  int64         `json:"salePrice"`
+	StockLimit optionalInt32 `json:"stockLimit"`
+}
+
+// optionalInt32 distinguishes an absent JSON key (Set=false) from an explicit
+// null (Set=true, Value=nil) and a number (Set=true, Value set).
+type optionalInt32 struct {
+	Set   bool
+	Value *int32
+}
+
+// UnmarshalJSON runs only when the key is present.
+func (o *optionalInt32) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	o.Value = nil
+	if string(data) == "null" {
+		return nil
+	}
+	var v int32
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
 }
 
 type existingItem struct {
@@ -791,7 +836,7 @@ func planItemChanges(existing []existingItem, requested []updateItemInput) (item
 		if req.SalePrice < 0 {
 			return plan, &validationError{Message: "salePrice cannot be negative", Field: "salePrice", ProductID: pid}
 		}
-		if req.StockLimit != nil && *req.StockLimit < 1 {
+		if req.StockLimit.Set && req.StockLimit.Value != nil && *req.StockLimit.Value < 1 {
 			return plan, &validationError{Message: "stockLimit must be at least 1 or null", Field: "stockLimit", ProductID: pid}
 		}
 		if req.ID == nil {
@@ -811,13 +856,18 @@ func planItemChanges(existing []existingItem, requested []updateItemInput) (item
 		if !ok {
 			return plan, &validationError{Message: fmt.Sprintf("item %s does not belong to this campaign", iid), Field: "id", ItemID: iid}
 		}
-		if req.StockLimit != nil && *req.StockLimit < cur.SoldCount {
-			return plan, &validationError{Message: "stockLimit cannot be below soldCount", Field: "stockLimit", ItemID: iid, ProductID: pid}
+		// Absent key keeps the current limit and is not re-validated.
+		stockLimit := nullableInt4(cur.StockLimit)
+		if req.StockLimit.Set {
+			stockLimit = req.StockLimit.Value
+			if stockLimit != nil && *stockLimit < cur.SoldCount {
+				return plan, &validationError{Message: "stockLimit cannot be below soldCount", Field: "stockLimit", ItemID: iid, ProductID: pid}
+			}
 		}
 		if cur.SoldCount > 0 && productID.Bytes != cur.ProductID.Bytes {
 			return plan, &validationError{Message: "cannot change the product of an item that already has sales", Field: "productId", ItemID: iid, ProductID: pid}
 		}
-		plan.Update = append(plan.Update, plannedUpdate{ItemID: itemID, CurrentProductID: cur.ProductID, ProductID: productID, SalePrice: req.SalePrice, StockLimit: req.StockLimit})
+		plan.Update = append(plan.Update, plannedUpdate{ItemID: itemID, CurrentProductID: cur.ProductID, ProductID: productID, SalePrice: req.SalePrice, StockLimit: stockLimit})
 	}
 	for _, it := range existing {
 		if seenIDs[it.ID.Bytes] {

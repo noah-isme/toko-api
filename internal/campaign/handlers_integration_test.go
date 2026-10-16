@@ -367,6 +367,42 @@ func TestIntegrationAdminUpdateStatusOnly(t *testing.T) {
 }
 
 // Case group 3: full body with update, add and remove.
+func TestIntegrationAdminUpdateStockLimitAbsentKeepsValue(t *testing.T) {
+	e := newITest(t)
+	id, items := e.seedCampaign(e.tenA, e.products[0])
+	itemA := items[0]
+
+	findItem := func(r resp) map[string]any {
+		t.Helper()
+		for _, it := range r.items() {
+			if it["id"] == itemA.ID {
+				return it
+			}
+		}
+		t.Fatalf("item %s missing from %s", itemA.ID, r.Raw)
+		return nil
+	}
+	patchItems := func(item map[string]any) {
+		t.Helper()
+		r := e.patch(id, e.tenA, map[string]any{"items": []map[string]any{item}})
+		require.Equal(t, http.StatusOK, r.Status, r.Raw)
+	}
+
+	patchItems(itemBody(&itemA.ID, e.products[0], 30000, 7))
+	require.EqualValues(t, 7, findItem(e.get(id, e.tenA))["stockLimit"])
+
+	omitted := itemBody(&itemA.ID, e.products[0], 31000, nil)
+	delete(omitted, "stockLimit")
+	patchItems(omitted)
+	got := findItem(e.get(id, e.tenA))
+	require.EqualValues(t, 7, got["stockLimit"], "absent stockLimit must keep the current limit")
+	require.EqualValues(t, 31000, got["salePrice"])
+
+	patchItems(itemBody(&itemA.ID, e.products[0], 31000, nil))
+	got = findItem(e.get(id, e.tenA))
+	require.NotContains(t, got, "stockLimit", "explicit null must clear the limit")
+}
+
 func TestIntegrationAdminUpdateFullBody(t *testing.T) {
 	e := newITest(t)
 	id, items := e.seedCampaign(e.tenA, e.products[0], e.products[1])

@@ -160,7 +160,7 @@ Creates a new flash sale campaign with product items.
 - `items` — required array of product items
   - `productId` — required, product UUID
   - `salePrice` — required, sale price in IDR
-  - `stockLimit` — optional, per-campaign stock cap (uses product variant stock if omitted)
+  - `stockLimit` — optional, per-campaign stock cap, integer >= 1; `null` or absent means unlimited (product variant stock applies). `0` is rejected with `400`.
 
 **Response:** `201 Created`
 
@@ -226,7 +226,7 @@ Rules:
   - existing items missing from the list are removed.
   - At least one item is required (`items: []` is rejected). `productId` values must be unique within the request and must belong to the caller's tenant.
 - `salePrice` — integer >= 0 and **lower than the product's current price**.
-- `stockLimit` — integer >= 1, or `null`/absent for unlimited. It cannot be lower than the item's `soldCount`.
+- `stockLimit` — `null` = unlimited; for an entry with `id`, an absent key keeps the item's current limit; for a new entry absent = unlimited. An integer must be >= 1 and >= the item's `soldCount`; `0` is rejected with `400`.
 - Items with sales (`soldCount > 0`) cannot be removed (`409`) or re-pointed to another product (`400`). Their `salePrice` can change, which affects future carts only.
 - Products cannot be swapped between two existing items in one request (`400`); remove one item and add it again. Moving an item to a product freed by another item in the same request is allowed.
 - Removing an item without sales also discards its released reservation history (`RELEASED` rows of abandoned checkouts). Items with active (`RESERVED`) or committed reservations cannot be removed.
