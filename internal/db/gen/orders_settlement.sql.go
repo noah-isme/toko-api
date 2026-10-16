@@ -246,8 +246,7 @@ func (q *Queries) ReleaseVariantStock(ctx context.Context, arg ReleaseVariantSto
 const reserveFlashSaleItem = `-- name: ReserveFlashSaleItem :one
 WITH updated AS (
   UPDATE flash_sale_items i
-  SET sold_count = i.sold_count + $2,
-      updated_at = now()
+  SET sold_count = i.sold_count + $2
   FROM flash_sale_campaigns c
   WHERE i.campaign_id = $3
     AND i.product_id = $4
