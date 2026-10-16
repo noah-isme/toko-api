@@ -1,6 +1,8 @@
 package campaign
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/noah-isme/backend-toko/internal/cart"
@@ -414,10 +417,17 @@ func TestWriteCampaignError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			ctx := zerolog.New(&buf).WithContext(context.Background())
 			rec := httptest.NewRecorder()
-			writeCampaignError(rec, tt.err, "failed to update campaign")
+			writeCampaignError(ctx, rec, tt.err, "failed to update campaign")
 			require.Equal(t, tt.wantStatus, rec.Code)
 			require.NotContains(t, rec.Body.String(), "secret_internal")
+			if tt.wantStatus >= 500 {
+				require.Contains(t, buf.String(), "secret_internal")
+			} else {
+				require.Empty(t, buf.String())
+			}
 			var body struct {
 				Error struct {
 					Code    string         `json:"code"`
@@ -435,9 +445,61 @@ func TestWriteCampaignError(t *testing.T) {
 	}
 }
 
+// parseLogLine decodes the single JSON log line written to buf.
+func parseLogLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.Len(t, lines, 1, "expected exactly one log line, got %q", buf.String())
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &m))
+	return m
+}
+
 func TestAdminUpdateWithoutPool(t *testing.T) {
+	var buf bytes.Buffer
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/admin/flash-sales/"+uid(1), strings.NewReader(`{"status":"ACTIVE"}`))
+	req = req.WithContext(zerolog.New(&buf).WithContext(req.Context()))
 	(&Handler{}).AdminUpdate(rec, req)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	line := parseLogLine(t, &buf)
+	require.Equal(t, "error", line["level"])
+	require.Equal(t, "pool not configured", line["reason"])
+}
+
+func TestAdminCreateWithoutPool(t *testing.T) {
+	var buf bytes.Buffer
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/flash-sales", strings.NewReader(`{}`))
+	req = req.WithContext(zerolog.New(&buf).WithContext(req.Context()))
+	(&Handler{}).AdminCreate(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	line := parseLogLine(t, &buf)
+	require.Equal(t, "error", line["level"])
+	require.Equal(t, "pool not configured", line["reason"])
+}
+
+func TestInternalErrorLogs(t *testing.T) {
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+	rec := httptest.NewRecorder()
+	internalError(ctx, rec, errors.New("pg: secret_internal broke"), "failed to update campaign")
+
+	line := parseLogLine(t, &buf)
+	require.Equal(t, "error", line["level"])
+	require.Equal(t, "pg: secret_internal broke", line["error"])
+	require.Equal(t, "failed to update campaign", line["response_message"])
+	require.Equal(t, "campaign request failed", line["message"])
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.NotContains(t, rec.Body.String(), "secret_internal")
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "INTERNAL", body.Error.Code)
+	require.Equal(t, "failed to update campaign", body.Error.Message)
 }
