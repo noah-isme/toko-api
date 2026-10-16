@@ -27,8 +27,7 @@ WHERE id = sqlc.arg(id);
 -- name: ReserveFlashSaleItem :one
 WITH updated AS (
   UPDATE flash_sale_items i
-  SET sold_count = i.sold_count + sqlc.arg(qty),
-      updated_at = now()
+  SET sold_count = i.sold_count + sqlc.arg(qty)
   FROM flash_sale_campaigns c
   WHERE i.campaign_id = sqlc.arg(campaign_id)
     AND i.product_id = sqlc.arg(product_id)
