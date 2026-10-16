@@ -88,7 +88,7 @@ jobs:
           k6 run perf/k6/read_heavy.js --summary-export perf/smoke.json
       - name: Budget check
         run: |
-          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('perf/smoke.json','utf8')); const p95=data.metrics['http_req_duration'].percentiles['95']; const p99=data.metrics['http_req_duration'].percentiles['99']; const errorRate=data.metrics['http_req_failed'].rate; if(p95>250 || p99>400 || errorRate>0.01){console.error('perf budget exceeded', {p95, p99, errorRate}); process.exit(1);}"
+          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('perf/smoke.json','utf8')); const p95=data.metrics['http_req_duration']['p(95)']; const p99=data.metrics['http_req_duration']['p(99)']; const errorRate=data.metrics['http_req_failed'].value; if(p95>250 || p99>400 || errorRate>0.01){console.error('perf budget exceeded', {p95, p99, errorRate}); process.exit(1);}"
       - name: Stop API server
         if: always()
         run: |
