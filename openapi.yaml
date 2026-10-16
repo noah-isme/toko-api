@@ -2147,7 +2147,7 @@ paths:
                     properties:
                       productId: { type: string, format: uuid }
                       salePrice: { type: integer, minimum: 0 }
-                      stockLimit: { type: integer, minimum: 1, nullable: true }
+                      stockLimit: { type: integer, minimum: 1, nullable: true, description: 'null or absent means unlimited; 0 is rejected with 400' }
       responses: { '201': { description: Campaign created } }
   /api/v1/admin/flash-sales/{id}:
     patch:
@@ -3215,7 +3215,9 @@ components:
         items missing from the list are removed. At least one item is required (`items: []` is
         rejected). `salePrice` must be lower than the product's current price. An item with
         sales (`soldCount > 0`) cannot be removed (409) or moved to another product (400), and its
-        `stockLimit` cannot drop below `soldCount`. Removing an item without sales also discards
+        `stockLimit` cannot drop below `soldCount`. `stockLimit` is tri-state: `null` means
+        unlimited; for an entry with `id`, an absent key keeps the item's current limit; for a new
+        entry, absent means unlimited. `0` is rejected with 400. Removing an item without sales also discards
         its released reservation history (`RELEASED` order rows).
       properties:
         name: { type: string, minLength: 1 }
@@ -3233,7 +3235,7 @@ components:
               id: { type: string, format: uuid, description: 'Existing item id; omit to add a new item' }
               productId: { type: string, format: uuid }
               salePrice: { type: integer, minimum: 0, description: Must be lower than the product price }
-              stockLimit: { type: [integer, 'null'], minimum: 1, description: 'null or absent means unlimited' }
+              stockLimit: { type: [integer, 'null'], minimum: 1, description: "`null` = unlimited; for an entry with `id`, an absent key keeps the item's current limit; for a new entry absent = unlimited; integer must be >= 1 and >= `soldCount`; `0` is rejected with 400" }
     FlashSaleItem:
       type: object
       required: [id, productId, title, slug, originalPrice, salePrice, discountBps, stock, soldCount]
