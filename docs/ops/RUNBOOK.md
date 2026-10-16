@@ -106,3 +106,9 @@
 
 ## Drain & Rolling Update
 - Set readiness=false, tunggu job selesai, deploy, verifikasi health & alerts clear.
+
+## Migration 000040 lock timeout
+Migration `000040_flash_sale_order_items_item_index` builds `idx_flash_sale_order_items_item` with a plain `CREATE INDEX` under `SET LOCAL lock_timeout = '5s'`. `deploy.yml` runs it while the old api/worker still serve checkout traffic, so a long settlement transaction on `flash_sale_order_items` can make it time out.
+- Symptom: the deploy job fails with `schema is dirty at version 40`; the restart steps do not run, so the old binaries keep serving. No index is left behind (the whole file runs in one implicit transaction).
+- Recovery on the host: `./bin/migrate.new force 39` (or `./bin/migrate force 39`; both work), then re-run the deploy workflow off-peak, or run `./bin/migrate.new up`.
+- Do **not** use `./bin/migrate up`: `deploy.yml` renames `migrate.new` to `migrate` only after a successful migration, so after a failed deploy `bin/migrate` is the old binary, which embeds migrations only up to 39, and `up` is a silent no-op.
