@@ -192,39 +192,84 @@ Content-Type: application/json
 Authorization: Bearer <admin_token>
 ```
 
-Updates a flash sale campaign. Can update status, dates, and items.
+Updates a flash sale campaign. All fields are optional (absent = unchanged, at least one is required), so a bare `{ "status": "ENDED" }` body still works. The update is applied in a single transaction, scoped to the caller's tenant.
 
 **Request:**
 
 ```json
 {
   "name": "Updated Summer Sale",
+  "slug": "updated-summer-sale",
   "status": "ACTIVE",
   "startsAt": "2025-12-01T00:00:00Z",
-  "endsAt": "2025-12-10T23:59:59Z",
+  "endsAt": "2025-12-10T23:59:59+07:00",
   "items": [
     {
       "id": "existing-item-uuid",
       "productId": "product-uuid",
       "salePrice": 19000000,
       "stockLimit": 15
-    }
+    },
+    { "productId": "new-product-uuid", "salePrice": 9000000, "stockLimit": null }
   ]
 }
 ```
 
-- `status` — optional, one of `DRAFT`, `SCHEDULED`, `ACTIVE`, `ENDED`
-- `items` — optional, full replacement of items. Include `id` for existing items to update; omit `id` for new items.
+Rules:
 
-**Response:** `200 OK`
+- `name`, `slug` — optional, non-empty when present.
+- `status` — optional, one of `DRAFT`, `SCHEDULED`, `ACTIVE`, `ENDED` (any transition is allowed; an empty string is rejected). `SCHEDULED` and `ACTIVE` require the resulting `endsAt` to be in the future. `ENDED` campaigns can still be edited and rescheduled.
+- `startsAt`, `endsAt` — optional, **RFC 3339 with a timezone** (e.g. `2025-12-01T00:00:00Z`, `2025-12-10T23:59:59+07:00`). Values without a timezone (e.g. `2025-12-01T00:00`) are rejected with `400`. The resulting `endsAt` must be after `startsAt`.
+- `items` — optional; when present it is a **full replacement** keyed by item `id`:
+  - an entry with `id` updates that existing item (the `id` must belong to this campaign);
+  - an entry without `id` adds a new item;
+  - existing items missing from the list are removed.
+  - At least one item is required (`items: []` is rejected). `productId` values must be unique within the request and must belong to the caller's tenant.
+- `salePrice` — integer >= 0 and **lower than the product's current price**.
+- `stockLimit` — integer >= 1, or `null`/absent for unlimited. It cannot be lower than the item's `soldCount`.
+- Items with sales (`soldCount > 0`) cannot be removed (`409`) or re-pointed to another product (`400`). Their `salePrice` can change, which affects future carts only.
+- Products cannot be swapped between two existing items in one request (`400`); remove one item and add it again. Moving an item to a product freed by another item in the same request is allowed.
+- Removing an item without sales also discards its released reservation history (`RELEASED` rows of abandoned checkouts). Items with active (`RESERVED`) or committed reservations cannot be removed.
+- Editing items of an active campaign affects carts that hold a removed or changed product: checkout reports that the flash sale is no longer active for that line.
+
+**Response:** `200 OK` with the full campaign (same shape as `GET /api/v1/admin/flash-sales/{id}`); `items` is `[]` when the campaign has none.
 
 ```json
 {
-  "data": { ...campaign object... }
+  "data": {
+    "id": "campaign-uuid",
+    "name": "Updated Summer Sale",
+    "slug": "updated-summer-sale",
+    "status": "ACTIVE",
+    "startsAt": "2025-12-01T00:00:00Z",
+    "endsAt": "2025-12-10T16:59:59Z",
+    "createdAt": "2025-11-01T08:00:00Z",
+    "updatedAt": "2025-11-20T10:00:00Z",
+    "items": [
+      {
+        "id": "item-uuid",
+        "productId": "product-uuid",
+        "title": "Product title",
+        "slug": "product-slug",
+        "originalPrice": 25000000,
+        "salePrice": 19000000,
+        "discountBps": 2400,
+        "stock": 15,
+        "stockLimit": 15,
+        "soldCount": 0,
+        "thumbnail": "https://..."
+      }
+    ]
+  }
 }
 ```
 
-Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`.
+**Errors:**
+
+- `400 BAD_REQUEST` — invalid payload, non-RFC 3339 timestamps, no updatable fields, invalid status, bad date range, empty `items`, duplicate `productId`/`id`, unknown item `id`, product not found in this tenant, `salePrice` not lower than the product price, `stockLimit` below 1 or `soldCount`, product change on an item with sales, product swap.
+- `404 NOT_FOUND` — campaign does not exist for this tenant.
+- `409 CONFLICT` — slug already used in this tenant; product already in this campaign; removing an item that has sales or active reservations (`details.itemId`); campaign busy (lock timeout or deadlock), retry.
+- Also `UNAUTHORIZED`, `FORBIDDEN`, `INTERNAL`.
 
 ---
 
