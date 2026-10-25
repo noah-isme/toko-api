@@ -108,10 +108,15 @@ return `{ "data": AlertSubscription }`.
 | 404    | `NOT_FOUND`        | Product not in this tenant, or `variantId` is not a variant of `productId`. |
 | 409    | `ALREADY_IN_STOCK` | `BACK_IN_STOCK` requested while the target can already be bought. Hide the "notify me" button when the product or variant is sellable. |
 
-"Sellable" uses the same rule as cart/checkout. A variant is sellable when the
-product's `inStock` flag is on and the variant `stock > 0`. A product is
-sellable when `inStock` is on and it either has no variants or at least one
-variant with `stock > 0`. `PRICE_DROP` can be created at any time.
+"Sellable" is exactly the rule the cart uses when adding a line. A variant is
+sellable when its `stock > 0` (the product's `inStock` flag is not consulted
+for variant lines). A product-level target is sellable when the product's
+`inStock` flag is on. `PRICE_DROP` can be created at any time.
+
+If the target becomes sellable (or, for `PRICE_DROP`, cheaper than
+`priceAtSubscribe`) while the request is in flight, the subscription is still
+created and the alert fires within the normal delay: the API re-checks the
+target after saving the subscription and queues it for the drainer.
 
 ---
 
@@ -144,7 +149,11 @@ Errors: `400 BAD_REQUEST` (invalid id), `404 NOT_FOUND` (no such subscription fo
   database, including with several API replicas.
 - Timing: a background drainer in the API processes changes every 15s, and
   immediately after admin stock/price edits and order cancels. Expect the
-  notification within about 15s.
+  in-app notification within about 15s. The work is shared fairly: each pass
+  splits its claim budget (200 subscriptions) across all pending changes, and
+  a product with more subscribers than its share is continued in later passes
+  behind newer changes, so a very popular product delays its own subscribers
+  but not other products or other tenants.
 - Preferences: if the user's push preferences have `enabled = false` or
   `types.stock_updates = false` (`PATCH /api/v1/push/preferences`), the
   subscription is still consumed (`status: notified`) but **no** in-app
@@ -174,16 +183,20 @@ Errors: `400 BAD_REQUEST` (invalid id), `404 NOT_FOUND` (no such subscription fo
    `alert.back_in_stock` and `alert.price_drop`. Subjects are `Stok kembali tersedia` and `Harga turun`,
    and the body includes the message above. Each topic can be switched off with
    `NOTIFY_EMAIL_TOPIC_ALERT_BACK_IN_STOCK=false` and
-   `NOTIFY_EMAIL_TOPIC_ALERT_PRICE_DROP=false`. The domain event row is written
-   in the same transaction as the in-app notification. Its payload is
+   `NOTIFY_EMAIL_TOPIC_ALERT_PRICE_DROP=false`. The domain event row and an
+   email delivery row are written in the same transaction as the in-app
+   notification; a separate background sender delivers the email shortly
+   after (usually within seconds) and retries failures. Its payload is
    `{ subscriptionId, userId, email, tenantId, productId, variantId, productSlug, productTitle, price, previousPrice?, message }`.
 
 3. **Webhooks:** `alert.*` topics are **not** delivered to webhook endpoints,
    including catch-all endpoints with an empty `topics` list. Do not offer them in
    webhook topic pickers.
 
-Delivery semantics: the in-app notification, the `notified` state and the
-domain event commit atomically. Email is sent after commit with a per-message
-timeout. If the API process stops mid-send, the email for that alert can be
-lost, but the in-app notification and the domain event row remain, and the
-user is never notified twice.
+Delivery semantics: the in-app notification, the `notified` state, the domain
+event and the queued email commit atomically, and the in-app notification is
+created exactly once. Email is durable and at-least-once: a failed send is
+retried with exponential backoff (1 min doubling, capped at 1 h, 6 attempts
+in total) and survives API restarts. In rare cases (a crash right after a
+successful send, or a send slower than its lease) the same email can be sent
+twice; after 6 failed attempts it is abandoned and logged.

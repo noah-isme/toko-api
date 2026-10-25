@@ -23,11 +23,12 @@ type Flusher interface {
 	Flush(ctx context.Context) (Result, error)
 }
 
-// Runner drains the alert outbox in the background: on a ticker and on Kick.
-// One run is in flight at a time per process; a run loops Flush while more
-// work remains and progress is being made, bounded by Timeout. Multiple API
-// replicas may each run one; the Dispatcher's row locks keep them from
-// double-notifying.
+// Runner repeats a Flusher in the background: on a ticker and on Kick. It
+// drives both the Dispatcher (claims) and the Mailer (emails), as two
+// independent instances. One run is in flight at a time per instance; a run
+// loops Flush while more work remains and progress is being made, bounded by
+// Timeout. Multiple API replicas may each run one; row locks (Dispatcher) and
+// leases (Mailer) keep them from double-processing.
 type Runner struct {
 	Flusher  Flusher
 	Interval time.Duration
@@ -106,8 +107,8 @@ func (r *Runner) Start(ctx context.Context) {
 	}()
 }
 
-// Stop ends the loop and waits for an in-flight run (including the
-// post-commit deliveries of its current Flush) until ctx expires. A run stops
+// Stop ends the loop and waits for an in-flight run (including the sends of
+// a Mailer pass) until ctx expires. A run stops
 // starting new Flushes as soon as Stop is called. It returns ctx.Err() when
 // the wait was cut short.
 func (r *Runner) Stop(ctx context.Context) error {
@@ -154,8 +155,9 @@ func (r *Runner) runOnce(loopCtx context.Context) {
 		if r.Log != nil && (res.Progress() || res.More) {
 			r.Log(res)
 		}
-		// Stop when drained, when nothing moved (e.g. the claim budget for
-		// the remaining time is zero), or when shutting down.
+		// Stop when drained, when nothing moved (e.g. every remaining
+		// subscription is locked by another replica), when the run deadline
+		// passed, or when shutting down.
 		if !res.More || !res.Progress() || loopCtx.Err() != nil || fctx.Err() != nil {
 			return
 		}

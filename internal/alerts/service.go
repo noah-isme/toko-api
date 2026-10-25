@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -37,6 +38,7 @@ type Store interface {
 	ListAlertSubscriptionsForUser(ctx context.Context, arg dbgen.ListAlertSubscriptionsForUserParams) ([]dbgen.ListAlertSubscriptionsForUserRow, error)
 	CountAlertSubscriptionsForUser(ctx context.Context, arg dbgen.CountAlertSubscriptionsForUserParams) (int64, error)
 	DeleteAlertSubscription(ctx context.Context, arg dbgen.DeleteAlertSubscriptionParams) (int64, error)
+	EnqueueAlertEvent(ctx context.Context, arg dbgen.EnqueueAlertEventParams) error
 }
 
 // SubscribeInput is a validated subscribe request. VariantID is invalid
@@ -80,6 +82,8 @@ type Subscription struct {
 // Service implements the subscription API.
 type Service struct {
 	Q Store
+	// Alerts, when set, is kicked after Subscribe enqueues a re-check event.
+	Alerts Kicker
 }
 
 // ValidType reports whether t is a supported alert type.
@@ -87,21 +91,15 @@ func ValidType(t string) bool {
 	return t == TypeBackInStock || t == TypePriceDrop
 }
 
-// Sellable mirrors the cart/checkout rules (internal/cart/service.go):
-// a variant is sellable when the product is in stock and the variant has
-// stock; a product is sellable when it is in stock and either has no variants
-// or at least one variant with stock.
-func Sellable(inStock bool, variantCount int32, totalStock int64, hasVariant bool, variantStock int32) bool {
-	if !inStock {
-		return false
-	}
+// Sellable is exactly the cart AddItem rule (internal/cart/service.go): a
+// variant line is accepted when the variant has stock (products.in_stock is
+// not consulted); a product-level line is accepted when products.in_stock is
+// true. ListPendingBackInStockSubscriptions uses the same predicate.
+func Sellable(inStock bool, hasVariant bool, variantStock int32) bool {
 	if hasVariant {
 		return variantStock > 0
 	}
-	if variantCount == 0 {
-		return true
-	}
-	return totalStock > 0
+	return inStock
 }
 
 // Subscribe creates (created=true) or re-arms (created=false) the caller's
@@ -129,7 +127,7 @@ func (s *Service) Subscribe(ctx context.Context, userID, tenantID pgtype.UUID, i
 	var price pgtype.Int8
 	switch in.Type {
 	case TypeBackInStock:
-		if Sellable(target.InStock, target.VariantCount, target.TotalStock, hasVariant, target.VariantStock.Int32) {
+		if Sellable(target.InStock, hasVariant, target.VariantStock.Int32) {
 			return Subscription{}, false, ErrAlreadyInStock
 		}
 	case TypePriceDrop:
@@ -153,6 +151,10 @@ func (s *Service) Subscribe(ctx context.Context, userID, tenantID pgtype.UUID, i
 	// A fresh insert takes both timestamps from the same now(); a re-arm
 	// bumps updated_at only.
 	created := row.CreatedAt.Time.Equal(row.UpdatedAt.Time)
+
+	if err := s.recheck(ctx, tenantID, in, row.PriceAtSubscribe); err != nil {
+		return Subscription{}, false, err
+	}
 
 	sub := Subscription{
 		ID:               row.ID,
@@ -181,6 +183,54 @@ func (s *Service) Subscribe(ctx context.Context, userID, tenantID pgtype.UUID, i
 	return sub, created, nil
 }
 
+// recheck closes the race between the eligibility check and the commit of
+// the subscription: if a restock (or price drop) committed and its outbox
+// event was drained before this subscription became visible, the drainer
+// never saw it. Re-reading the target after commit and enqueueing a fresh
+// event when it is already actionable guarantees the drainer evaluates the
+// subscription at least once more; a restock committed after this read
+// produces its own event, which will see the subscription.
+func (s *Service) recheck(ctx context.Context, tenantID pgtype.UUID, in SubscribeInput, priceAtSubscribe pgtype.Int8) error {
+	target, err := s.Q.GetAlertTarget(ctx, dbgen.GetAlertTargetParams{
+		VariantID: in.VariantID,
+		ProductID: in.ProductID,
+		TenantID:  tenantID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // product deleted meanwhile; the subscription cascades
+		}
+		return fmt.Errorf("recheck alert target: %w", err)
+	}
+	hasVariant := in.VariantID.Valid
+	actionable := false
+	switch in.Type {
+	case TypeBackInStock:
+		actionable = Sellable(target.InStock, hasVariant, target.VariantStock.Int32)
+	case TypePriceDrop:
+		current := target.Price
+		if hasVariant {
+			current = target.VariantPrice.Int64
+		}
+		actionable = priceAtSubscribe.Valid && current < priceAtSubscribe.Int64
+	}
+	if !actionable {
+		return nil
+	}
+	if err := s.Q.EnqueueAlertEvent(ctx, dbgen.EnqueueAlertEventParams{
+		TenantID:  tenantID,
+		ProductID: in.ProductID,
+		VariantID: in.VariantID,
+		AlertType: in.Type,
+	}); err != nil {
+		return fmt.Errorf("enqueue alert recheck: %w", err)
+	}
+	if s.Alerts != nil {
+		s.Alerts.Kick()
+	}
+	return nil
+}
+
 // List returns a page of the caller's subscriptions (newest first) and the
 // total count. productID may be invalid to list all products.
 func (s *Service) List(ctx context.Context, userID, tenantID, productID pgtype.UUID, page, limit int32) ([]Subscription, int64, error) {
@@ -192,6 +242,10 @@ func (s *Service) List(ctx context.Context, userID, tenantID, productID pgtype.U
 	}
 	if limit > 100 {
 		limit = 100
+	}
+	// Keep (page-1)*limit inside int32; pages past the end are empty anyway.
+	if maxPage := int32(math.MaxInt32 / limit); page > maxPage {
+		page = maxPage
 	}
 	rows, err := s.Q.ListAlertSubscriptionsForUser(ctx, dbgen.ListAlertSubscriptionsForUserParams{
 		TenantID:  tenantID,

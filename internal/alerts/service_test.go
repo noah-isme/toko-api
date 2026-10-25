@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -16,18 +17,32 @@ import (
 type stubStore struct {
 	target    dbgen.GetAlertTargetRow
 	targetErr error
-	upsertArg dbgen.UpsertAlertSubscriptionParams
-	upsertRow dbgen.ProductAlertSubscription
-	upserted  bool
-	listArg   dbgen.ListAlertSubscriptionsForUserParams
-	listRows  []dbgen.ListAlertSubscriptionsForUserRow
-	total     int64
-	deleted   int64
-	deleteArg dbgen.DeleteAlertSubscriptionParams
+	// recheckTarget, when set, is returned from the second GetAlertTarget
+	// call (the post-commit recheck) instead of target.
+	recheckTarget *dbgen.GetAlertTargetRow
+	targetCalls   int
+	enqueued      []dbgen.EnqueueAlertEventParams
+	upsertArg     dbgen.UpsertAlertSubscriptionParams
+	upsertRow     dbgen.ProductAlertSubscription
+	upserted      bool
+	listArg       dbgen.ListAlertSubscriptionsForUserParams
+	listRows      []dbgen.ListAlertSubscriptionsForUserRow
+	total         int64
+	deleted       int64
+	deleteArg     dbgen.DeleteAlertSubscriptionParams
 }
 
 func (s *stubStore) GetAlertTarget(_ context.Context, _ dbgen.GetAlertTargetParams) (dbgen.GetAlertTargetRow, error) {
+	s.targetCalls++
+	if s.targetCalls > 1 && s.recheckTarget != nil {
+		return *s.recheckTarget, s.targetErr
+	}
 	return s.target, s.targetErr
+}
+
+func (s *stubStore) EnqueueAlertEvent(_ context.Context, arg dbgen.EnqueueAlertEventParams) error {
+	s.enqueued = append(s.enqueued, arg)
+	return nil
 }
 
 func (s *stubStore) UpsertAlertSubscription(_ context.Context, arg dbgen.UpsertAlertSubscriptionParams) (dbgen.ProductAlertSubscription, error) {
@@ -60,27 +75,25 @@ func newID() pgtype.UUID { return pgtype.UUID{Bytes: uuid.New(), Valid: true} }
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func TestSellable(t *testing.T) {
+	// Exactly the cart AddItem rule: variant lines look at variant stock only,
+	// product-level lines at products.in_stock only.
 	cases := []struct {
 		name         string
 		inStock      bool
-		variantCount int32
-		totalStock   int64
 		hasVariant   bool
 		variantStock int32
 		want         bool
 	}{
-		{"product flag off", false, 0, 0, false, 0, false},
-		{"flag off even with stock", false, 2, 10, false, 0, false},
-		{"no variants, in stock", true, 0, 0, false, 0, true},
-		{"variants all zero", true, 2, 0, false, 0, false},
-		{"some variant stock", true, 2, 3, false, 0, true},
-		{"chosen variant zero", true, 2, 3, true, 0, false},
-		{"chosen variant has stock", true, 2, 3, true, 3, true},
-		{"chosen variant stock but flag off", false, 2, 3, true, 3, false},
+		{"product flag off", false, false, 0, false},
+		{"product flag on", true, false, 0, true},
+		{"chosen variant zero", true, true, 0, false},
+		{"chosen variant has stock", true, true, 3, true},
+		{"chosen variant stock but flag off", false, true, 3, true},
+		{"chosen variant negative", true, true, -1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Sellable(tc.inStock, tc.variantCount, tc.totalStock, tc.hasVariant, tc.variantStock); got != tc.want {
+			if got := Sellable(tc.inStock, tc.hasVariant, tc.variantStock); got != tc.want {
 				t.Fatalf("Sellable = %v, want %v", got, tc.want)
 			}
 		})
@@ -88,7 +101,7 @@ func TestSellable(t *testing.T) {
 }
 
 func TestSubscribeBackInStockWhileSellableConflicts(t *testing.T) {
-	st := &stubStore{target: dbgen.GetAlertTargetRow{ProductID: newID(), InStock: true, VariantCount: 0, Price: 1000}}
+	st := &stubStore{target: dbgen.GetAlertTargetRow{ProductID: newID(), InStock: true, Price: 1000}}
 	svc := &Service{Q: st}
 	_, _, err := svc.Subscribe(context.Background(), newID(), newID(), SubscribeInput{ProductID: newID(), Type: TypeBackInStock})
 	if !errors.Is(err, ErrAlreadyInStock) {
@@ -198,5 +211,81 @@ func TestListClampsPagination(t *testing.T) {
 	}
 	if st.listArg.RowLimit != 100 || st.listArg.RowOffset != 200 {
 		t.Fatalf("limit=%d offset=%d", st.listArg.RowLimit, st.listArg.RowOffset)
+	}
+}
+
+type kickCounter struct{ n int }
+
+func (k *kickCounter) Kick() { k.n++ }
+
+func TestSubscribeRecheckEnqueuesWhenRestockedMeanwhile(t *testing.T) {
+	now := time.Now()
+	vid := newID()
+	sellable := dbgen.GetAlertTargetRow{ProductID: newID(), VariantID: vid, VariantStock: pgtype.Int4{Int32: 2, Valid: true}}
+	st := &stubStore{
+		target:        dbgen.GetAlertTargetRow{ProductID: newID(), VariantID: vid, VariantStock: pgtype.Int4{Int32: 0, Valid: true}},
+		recheckTarget: &sellable,
+		upsertRow:     dbgen.ProductAlertSubscription{ID: newID(), CreatedAt: ts(now), UpdatedAt: ts(now)},
+	}
+	kick := &kickCounter{}
+	pid, tid := newID(), newID()
+	if _, _, err := (&Service{Q: st, Alerts: kick}).Subscribe(context.Background(), newID(), tid, SubscribeInput{ProductID: pid, VariantID: vid, Type: TypeBackInStock}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.enqueued) != 1 || kick.n != 1 {
+		t.Fatalf("enqueued=%d kicks=%d, want 1/1", len(st.enqueued), kick.n)
+	}
+	got := st.enqueued[0]
+	if got.TenantID != tid || got.ProductID != pid || got.VariantID != vid || got.AlertType != TypeBackInStock {
+		t.Fatalf("enqueued = %+v", got)
+	}
+}
+
+func TestSubscribeRecheckNoopWhenStillUnavailable(t *testing.T) {
+	now := time.Now()
+	st := &stubStore{
+		target:    dbgen.GetAlertTargetRow{ProductID: newID(), InStock: false, Price: 1000},
+		upsertRow: dbgen.ProductAlertSubscription{ID: newID(), CreatedAt: ts(now), UpdatedAt: ts(now)},
+	}
+	if _, _, err := (&Service{Q: st}).Subscribe(context.Background(), newID(), newID(), SubscribeInput{ProductID: newID(), Type: TypeBackInStock}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := (&Service{Q: st}).Subscribe(context.Background(), newID(), newID(), SubscribeInput{ProductID: newID(), Type: TypePriceDrop}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.enqueued) != 0 {
+		t.Fatalf("enqueued = %+v, want none", st.enqueued)
+	}
+}
+
+func TestSubscribeRecheckPriceDroppedMeanwhile(t *testing.T) {
+	now := time.Now()
+	cheaper := dbgen.GetAlertTargetRow{ProductID: newID(), InStock: true, Price: 900}
+	st := &stubStore{
+		target:        dbgen.GetAlertTargetRow{ProductID: newID(), InStock: true, Price: 1000},
+		recheckTarget: &cheaper,
+		upsertRow:     dbgen.ProductAlertSubscription{ID: newID(), CreatedAt: ts(now), UpdatedAt: ts(now)},
+	}
+	if _, _, err := (&Service{Q: st}).Subscribe(context.Background(), newID(), newID(), SubscribeInput{ProductID: newID(), Type: TypePriceDrop}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.enqueued) != 1 || st.enqueued[0].AlertType != TypePriceDrop {
+		t.Fatalf("enqueued = %+v", st.enqueued)
+	}
+}
+
+func TestListHugePageDoesNotOverflow(t *testing.T) {
+	st := &stubStore{}
+	if _, _, err := (&Service{Q: st}).List(context.Background(), newID(), newID(), pgtype.UUID{}, math.MaxInt32, 100); err != nil {
+		t.Fatal(err)
+	}
+	if st.listArg.RowOffset < 0 {
+		t.Fatalf("offset overflowed: %d", st.listArg.RowOffset)
+	}
+	if _, _, err := (&Service{Q: st}).List(context.Background(), newID(), newID(), pgtype.UUID{}, math.MaxInt32, 1); err != nil {
+		t.Fatal(err)
+	}
+	if st.listArg.RowOffset < 0 {
+		t.Fatalf("offset overflowed with limit 1: %d", st.listArg.RowOffset)
 	}
 }

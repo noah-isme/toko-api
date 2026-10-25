@@ -106,6 +106,9 @@ type Querier interface {
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
+	// Used by Subscribe when the target became sellable (or cheaper) between the
+	// subscription check and its commit, so the drainer re-evaluates it.
+	EnqueueAlertEvent(ctx context.Context, arg EnqueueAlertEventParams) error
 	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
 	GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error)
@@ -176,6 +179,8 @@ type Querier interface {
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementInvoiceCounter(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
+	// Queues the email for one alert domain event (same transaction as the claim).
+	InsertAlertDelivery(ctx context.Context, arg InsertAlertDeliveryParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)
 	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error)
 	InsertOrderInvoice(ctx context.Context, arg InsertOrderInvoiceParams) (InsertOrderInvoiceRow, error)
@@ -183,6 +188,11 @@ type Querier interface {
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
 	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
+	// System-level mailer (cross-tenant on purpose; each row carries tenant_id
+	// and follow-up writes filter by it). Leases a bounded batch of due rows by
+	// pushing next_attempt_at to lease_until, so a crashed or slow sender's rows
+	// become due again only after the lease expires.
+	LeaseDueAlertDeliveries(ctx context.Context, arg LeaseDueAlertDeliveriesParams) ([]LeaseDueAlertDeliveriesRow, error)
 	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAlertSubscriptionsForUser(ctx context.Context, arg ListAlertSubscriptionsForUserParams) ([]ListAlertSubscriptionsForUserRow, error)
@@ -211,12 +221,16 @@ type Querier interface {
 	ListOrdersForUser(ctx context.Context, arg ListOrdersForUserParams) ([]Order, error)
 	// System-level drainer: claims unprocessed outbox rows across all tenants.
 	// Every row carries its tenant_id and all follow-up queries are filtered by it.
+	// Events never attempted come first, then the ones whose last pass left them
+	// pending longest ago, so one popular product cannot starve other events.
 	ListPendingAlertEvents(ctx context.Context, batchSize int32) ([]ListPendingAlertEventsRow, error)
 	// Returns ONLY actionable rows (target sellable right now), so LIMIT and the
-	// row lock never spend budget on subscriptions that cannot fire. Sellability
-	// mirrors internal/cart: variant-level = product in_stock AND variant stock > 0;
-	// product-level = in_stock AND (no variants OR any variant with stock > 0).
-	// Correlated EXISTS is used because FOR UPDATE forbids aggregates.
+	// row lock never spend budget on subscriptions that cannot fire. The caller
+	// asks for one row more than it will claim to detect overflow; that probe row
+	// is locked for the rest of the transaction but not claimed. Sellability is
+	// exactly the cart rule (internal/cart AddItem): a variant line needs variant
+	// stock > 0 (products.in_stock is not consulted); a product-level line needs
+	// products.in_stock.
 	ListPendingBackInStockSubscriptions(ctx context.Context, arg ListPendingBackInStockSubscriptionsParams) ([]ListPendingBackInStockSubscriptionsRow, error)
 	// Returns ONLY actionable rows (current effective price below the price at
 	// subscribe time); see ListPendingBackInStockSubscriptions for why.
@@ -234,6 +248,12 @@ type Querier interface {
 	// Upserts the tenant's counter row and takes its row lock, serializing invoice
 	// number assignment per tenant for the rest of the transaction.
 	LockInvoiceCounter(ctx context.Context, tenantID pgtype.UUID) (int64, error)
+	MarkAlertDeliveryDelivered(ctx context.Context, arg MarkAlertDeliveryDeliveredParams) error
+	// Schedules a retry at next_attempt_at, or gives up when give_up is true.
+	MarkAlertDeliveryFailed(ctx context.Context, arg MarkAlertDeliveryFailedParams) error
+	// Rotates events that still have claimable subscriptions to the back of the
+	// pending order.
+	MarkAlertEventsAttempted(ctx context.Context, ids []int64) error
 	MarkAlertEventsProcessed(ctx context.Context, ids []int64) error
 	MarkAlertSubscriptionNotified(ctx context.Context, arg MarkAlertSubscriptionNotifiedParams) (int64, error)
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
@@ -244,6 +264,12 @@ type Querier interface {
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
 	MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (MarkUserEmailVerifiedRow, error)
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
+	// System-level retention job: deletes a bounded batch of delivered or
+	// abandoned rows older than the cutoff.
+	PruneFinishedAlertDeliveries(ctx context.Context, arg PruneFinishedAlertDeliveriesParams) (int64, error)
+	// System-level retention job (cross-tenant on purpose): deletes a bounded
+	// batch of events processed before the cutoff.
+	PruneProcessedAlertEvents(ctx context.Context, arg PruneProcessedAlertEventsParams) (int64, error)
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
 	// Release quota reserved by an unpaid, expired, or cancelled order.

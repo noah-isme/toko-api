@@ -676,14 +676,26 @@ type Product struct {
 	SearchVector interface{}        `json:"search_vector"`
 }
 
+type ProductAlertDelivery struct {
+	EventID       pgtype.UUID        `json:"event_id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	FailedAt      pgtype.Timestamptz `json:"failed_at"`
+	LastError     pgtype.Text        `json:"last_error"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProductAlertEvent struct {
-	ID          int64              `json:"id"`
-	TenantID    pgtype.UUID        `json:"tenant_id"`
-	ProductID   pgtype.UUID        `json:"product_id"`
-	VariantID   pgtype.UUID        `json:"variant_id"`
-	AlertType   string             `json:"alert_type"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
+	ID            int64              `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	ProductID     pgtype.UUID        `json:"product_id"`
+	VariantID     pgtype.UUID        `json:"variant_id"`
+	AlertType     string             `json:"alert_type"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ProcessedAt   pgtype.Timestamptz `json:"processed_at"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
 }
 
 type ProductAlertSubscription struct {

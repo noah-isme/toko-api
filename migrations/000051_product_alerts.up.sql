@@ -43,12 +43,44 @@ CREATE TABLE IF NOT EXISTS product_alert_events (
     variant_id UUID NULL,
     alert_type TEXT NOT NULL CHECK (alert_type IN ('BACK_IN_STOCK', 'PRICE_DROP')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    processed_at TIMESTAMPTZ NULL
+    processed_at TIMESTAMPTZ NULL,
+    -- Set when a drain pass left the event pending because it had more
+    -- claimable subscriptions than that pass's per-event share. Pending events
+    -- are drained in (last_attempt_at NULLS FIRST, id) order, so a popular
+    -- product rotates to the back instead of starving every later event.
+    last_attempt_at TIMESTAMPTZ NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_product_alert_events_pending
-    ON product_alert_events (id)
+    ON product_alert_events (last_attempt_at NULLS FIRST, id)
     WHERE processed_at IS NULL;
+
+-- Retention: processed rows are pruned by the drainer after a grace period.
+CREATE INDEX IF NOT EXISTS idx_product_alert_events_processed
+    ON product_alert_events (processed_at)
+    WHERE processed_at IS NOT NULL;
+
+-- Durable email outbox for alerts. The drainer inserts one row per alert
+-- domain_events row in the same transaction that claims the subscription;
+-- the alerts mailer leases due rows, hands the domain event to the existing
+-- notifiers (Bus.Deliver), and records the outcome with retry/backoff.
+CREATE TABLE IF NOT EXISTS product_alert_deliveries (
+    event_id UUID PRIMARY KEY REFERENCES domain_events(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at TIMESTAMPTZ NULL,
+    failed_at TIMESTAMPTZ NULL,
+    last_error TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_alert_deliveries_due
+    ON product_alert_deliveries (next_attempt_at, event_id)
+    WHERE delivered_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_product_alert_deliveries_tenant
+    ON product_alert_deliveries (tenant_id);
 
 CREATE OR REPLACE FUNCTION product_alert_variant_changed() RETURNS trigger
 LANGUAGE plpgsql AS $$

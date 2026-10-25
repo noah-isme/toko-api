@@ -19,8 +19,6 @@ SELECT p.id AS product_id,
        p.thumbnail,
        p.price,
        p.in_stock,
-       (SELECT COUNT(*) FROM product_variants cv WHERE cv.product_id = p.id)::int AS variant_count,
-       (SELECT COALESCE(SUM(GREATEST(sv.stock, 0)), 0) FROM product_variants sv WHERE sv.product_id = p.id)::bigint AS total_stock,
        v.id AS variant_id,
        v.sku AS variant_sku,
        v.price AS variant_price,
@@ -75,10 +73,39 @@ WHERE id = sqlc.arg(id)
 -- Every row carries its tenant_id and all follow-up queries are filtered by it.
 SELECT id, tenant_id, product_id, variant_id, alert_type, created_at
 FROM product_alert_events
+-- Events never attempted come first, then the ones whose last pass left them
+-- pending longest ago, so one popular product cannot starve other events.
 WHERE processed_at IS NULL
-ORDER BY id
+ORDER BY last_attempt_at NULLS FIRST, id
 LIMIT sqlc.arg(batch_size)
 FOR UPDATE SKIP LOCKED;
+
+-- name: MarkAlertEventsAttempted :exec
+-- Rotates events that still have claimable subscriptions to the back of the
+-- pending order.
+UPDATE product_alert_events
+SET last_attempt_at = now()
+WHERE id = ANY(sqlc.arg(ids)::bigint[])
+  AND processed_at IS NULL;
+
+-- name: EnqueueAlertEvent :exec
+-- Used by Subscribe when the target became sellable (or cheaper) between the
+-- subscription check and its commit, so the drainer re-evaluates it.
+INSERT INTO product_alert_events (tenant_id, product_id, variant_id, alert_type)
+VALUES (sqlc.arg(tenant_id), sqlc.arg(product_id), sqlc.narg(variant_id), sqlc.arg(alert_type));
+
+-- name: PruneProcessedAlertEvents :execrows
+-- System-level retention job (cross-tenant on purpose): deletes a bounded
+-- batch of events processed before the cutoff.
+DELETE FROM product_alert_events
+WHERE id IN (
+    SELECT pe.id
+    FROM product_alert_events pe
+    WHERE pe.processed_at IS NOT NULL
+      AND pe.processed_at < sqlc.arg(cutoff)
+    ORDER BY pe.processed_at
+    LIMIT sqlc.arg(max_rows)
+);
 
 -- name: MarkAlertEventsProcessed :exec
 UPDATE product_alert_events
@@ -88,10 +115,12 @@ WHERE id = ANY(sqlc.arg(ids)::bigint[])
 
 -- name: ListPendingBackInStockSubscriptions :many
 -- Returns ONLY actionable rows (target sellable right now), so LIMIT and the
--- row lock never spend budget on subscriptions that cannot fire. Sellability
--- mirrors internal/cart: variant-level = product in_stock AND variant stock > 0;
--- product-level = in_stock AND (no variants OR any variant with stock > 0).
--- Correlated EXISTS is used because FOR UPDATE forbids aggregates.
+-- row lock never spend budget on subscriptions that cannot fire. The caller
+-- asks for one row more than it will claim to detect overflow; that probe row
+-- is locked for the rest of the transaction but not claimed. Sellability is
+-- exactly the cart rule (internal/cart AddItem): a variant line needs variant
+-- stock > 0 (products.in_stock is not consulted); a product-level line needs
+-- products.in_stock.
 SELECT s.id,
        s.tenant_id,
        s.user_id,
@@ -110,13 +139,9 @@ WHERE s.tenant_id = sqlc.arg(tenant_id)
   AND s.product_id = sqlc.arg(product_id)
   AND s.alert_type = 'BACK_IN_STOCK'
   AND s.notified_at IS NULL
-  AND p.in_stock
   AND (
         (s.variant_id IS NOT NULL AND v.stock > 0)
-     OR (s.variant_id IS NULL AND (
-            NOT EXISTS (SELECT 1 FROM product_variants nv WHERE nv.product_id = p.id)
-         OR EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.stock > 0)
-        ))
+     OR (s.variant_id IS NULL AND p.in_stock)
   )
 ORDER BY s.created_at, s.id
 LIMIT sqlc.arg(max_rows)
@@ -157,3 +182,60 @@ SET notified_at = now(),
 WHERE id = sqlc.arg(id)
   AND tenant_id = sqlc.arg(tenant_id)
   AND notified_at IS NULL;
+
+-- name: InsertAlertDelivery :exec
+-- Queues the email for one alert domain event (same transaction as the claim).
+INSERT INTO product_alert_deliveries (event_id, tenant_id)
+VALUES (sqlc.arg(event_id), sqlc.arg(tenant_id));
+
+-- name: LeaseDueAlertDeliveries :many
+-- System-level mailer (cross-tenant on purpose; each row carries tenant_id
+-- and follow-up writes filter by it). Leases a bounded batch of due rows by
+-- pushing next_attempt_at to lease_until, so a crashed or slow sender's rows
+-- become due again only after the lease expires.
+WITH due AS (
+    SELECT pd.event_id
+    FROM product_alert_deliveries pd
+    WHERE pd.delivered_at IS NULL
+      AND pd.failed_at IS NULL
+      AND pd.next_attempt_at <= now()
+    ORDER BY pd.next_attempt_at, pd.event_id
+    LIMIT sqlc.arg(max_rows)
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE product_alert_deliveries d
+SET attempts = d.attempts + 1,
+    next_attempt_at = sqlc.arg(lease_until)
+FROM due, domain_events e
+WHERE d.event_id = due.event_id
+  AND e.id = d.event_id
+RETURNING d.event_id, d.tenant_id, d.attempts, e.topic, e.aggregate_id, e.payload, e.occurred_at;
+
+-- name: MarkAlertDeliveryDelivered :exec
+UPDATE product_alert_deliveries
+SET delivered_at = now(),
+    last_error = NULL
+WHERE event_id = sqlc.arg(event_id)
+  AND tenant_id = sqlc.arg(tenant_id);
+
+-- name: MarkAlertDeliveryFailed :exec
+-- Schedules a retry at next_attempt_at, or gives up when give_up is true.
+UPDATE product_alert_deliveries
+SET next_attempt_at = sqlc.arg(next_attempt_at),
+    last_error = sqlc.arg(last_error),
+    failed_at = CASE WHEN sqlc.arg(give_up)::boolean THEN now() ELSE NULL END
+WHERE event_id = sqlc.arg(event_id)
+  AND tenant_id = sqlc.arg(tenant_id)
+  AND delivered_at IS NULL;
+
+-- name: PruneFinishedAlertDeliveries :execrows
+-- System-level retention job: deletes a bounded batch of delivered or
+-- abandoned rows older than the cutoff.
+DELETE FROM product_alert_deliveries
+WHERE event_id IN (
+    SELECT pd.event_id
+    FROM product_alert_deliveries pd
+    WHERE (pd.delivered_at IS NOT NULL AND pd.delivered_at < sqlc.arg(cutoff))
+       OR (pd.failed_at IS NOT NULL AND pd.failed_at < sqlc.arg(cutoff))
+    LIMIT sqlc.arg(max_rows)
+);

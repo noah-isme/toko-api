@@ -54,6 +54,30 @@ func (q *Queries) DeleteAlertSubscription(ctx context.Context, arg DeleteAlertSu
 	return result.RowsAffected(), nil
 }
 
+const enqueueAlertEvent = `-- name: EnqueueAlertEvent :exec
+INSERT INTO product_alert_events (tenant_id, product_id, variant_id, alert_type)
+VALUES ($1, $2, $3, $4)
+`
+
+type EnqueueAlertEventParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	ProductID pgtype.UUID `json:"product_id"`
+	VariantID pgtype.UUID `json:"variant_id"`
+	AlertType string      `json:"alert_type"`
+}
+
+// Used by Subscribe when the target became sellable (or cheaper) between the
+// subscription check and its commit, so the drainer re-evaluates it.
+func (q *Queries) EnqueueAlertEvent(ctx context.Context, arg EnqueueAlertEventParams) error {
+	_, err := q.db.Exec(ctx, enqueueAlertEvent,
+		arg.TenantID,
+		arg.ProductID,
+		arg.VariantID,
+		arg.AlertType,
+	)
+	return err
+}
+
 const getAlertTarget = `-- name: GetAlertTarget :one
 SELECT p.id AS product_id,
        p.title,
@@ -61,8 +85,6 @@ SELECT p.id AS product_id,
        p.thumbnail,
        p.price,
        p.in_stock,
-       (SELECT COUNT(*) FROM product_variants cv WHERE cv.product_id = p.id)::int AS variant_count,
-       (SELECT COALESCE(SUM(GREATEST(sv.stock, 0)), 0) FROM product_variants sv WHERE sv.product_id = p.id)::bigint AS total_stock,
        v.id AS variant_id,
        v.sku AS variant_sku,
        v.price AS variant_price,
@@ -86,8 +108,6 @@ type GetAlertTargetRow struct {
 	Thumbnail    pgtype.Text `json:"thumbnail"`
 	Price        int64       `json:"price"`
 	InStock      bool        `json:"in_stock"`
-	VariantCount int32       `json:"variant_count"`
-	TotalStock   int64       `json:"total_stock"`
 	VariantID    pgtype.UUID `json:"variant_id"`
 	VariantSku   pgtype.Text `json:"variant_sku"`
 	VariantPrice pgtype.Int8 `json:"variant_price"`
@@ -106,14 +126,95 @@ func (q *Queries) GetAlertTarget(ctx context.Context, arg GetAlertTargetParams) 
 		&i.Thumbnail,
 		&i.Price,
 		&i.InStock,
-		&i.VariantCount,
-		&i.TotalStock,
 		&i.VariantID,
 		&i.VariantSku,
 		&i.VariantPrice,
 		&i.VariantStock,
 	)
 	return i, err
+}
+
+const insertAlertDelivery = `-- name: InsertAlertDelivery :exec
+INSERT INTO product_alert_deliveries (event_id, tenant_id)
+VALUES ($1, $2)
+`
+
+type InsertAlertDeliveryParams struct {
+	EventID  pgtype.UUID `json:"event_id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+// Queues the email for one alert domain event (same transaction as the claim).
+func (q *Queries) InsertAlertDelivery(ctx context.Context, arg InsertAlertDeliveryParams) error {
+	_, err := q.db.Exec(ctx, insertAlertDelivery, arg.EventID, arg.TenantID)
+	return err
+}
+
+const leaseDueAlertDeliveries = `-- name: LeaseDueAlertDeliveries :many
+WITH due AS (
+    SELECT pd.event_id
+    FROM product_alert_deliveries pd
+    WHERE pd.delivered_at IS NULL
+      AND pd.failed_at IS NULL
+      AND pd.next_attempt_at <= now()
+    ORDER BY pd.next_attempt_at, pd.event_id
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE product_alert_deliveries d
+SET attempts = d.attempts + 1,
+    next_attempt_at = $1
+FROM due, domain_events e
+WHERE d.event_id = due.event_id
+  AND e.id = d.event_id
+RETURNING d.event_id, d.tenant_id, d.attempts, e.topic, e.aggregate_id, e.payload, e.occurred_at
+`
+
+type LeaseDueAlertDeliveriesParams struct {
+	LeaseUntil pgtype.Timestamptz `json:"lease_until"`
+	MaxRows    int32              `json:"max_rows"`
+}
+
+type LeaseDueAlertDeliveriesRow struct {
+	EventID     pgtype.UUID        `json:"event_id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	Attempts    int32              `json:"attempts"`
+	Topic       string             `json:"topic"`
+	AggregateID pgtype.UUID        `json:"aggregate_id"`
+	Payload     []byte             `json:"payload"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+}
+
+// System-level mailer (cross-tenant on purpose; each row carries tenant_id
+// and follow-up writes filter by it). Leases a bounded batch of due rows by
+// pushing next_attempt_at to lease_until, so a crashed or slow sender's rows
+// become due again only after the lease expires.
+func (q *Queries) LeaseDueAlertDeliveries(ctx context.Context, arg LeaseDueAlertDeliveriesParams) ([]LeaseDueAlertDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, leaseDueAlertDeliveries, arg.LeaseUntil, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LeaseDueAlertDeliveriesRow
+	for rows.Next() {
+		var i LeaseDueAlertDeliveriesRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.TenantID,
+			&i.Attempts,
+			&i.Topic,
+			&i.AggregateID,
+			&i.Payload,
+			&i.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAlertSubscriptionsForUser = `-- name: ListAlertSubscriptionsForUser :many
@@ -217,7 +318,7 @@ const listPendingAlertEvents = `-- name: ListPendingAlertEvents :many
 SELECT id, tenant_id, product_id, variant_id, alert_type, created_at
 FROM product_alert_events
 WHERE processed_at IS NULL
-ORDER BY id
+ORDER BY last_attempt_at NULLS FIRST, id
 LIMIT $1
 FOR UPDATE SKIP LOCKED
 `
@@ -233,6 +334,8 @@ type ListPendingAlertEventsRow struct {
 
 // System-level drainer: claims unprocessed outbox rows across all tenants.
 // Every row carries its tenant_id and all follow-up queries are filtered by it.
+// Events never attempted come first, then the ones whose last pass left them
+// pending longest ago, so one popular product cannot starve other events.
 func (q *Queries) ListPendingAlertEvents(ctx context.Context, batchSize int32) ([]ListPendingAlertEventsRow, error) {
 	rows, err := q.db.Query(ctx, listPendingAlertEvents, batchSize)
 	if err != nil {
@@ -279,13 +382,9 @@ WHERE s.tenant_id = $1
   AND s.product_id = $2
   AND s.alert_type = 'BACK_IN_STOCK'
   AND s.notified_at IS NULL
-  AND p.in_stock
   AND (
         (s.variant_id IS NOT NULL AND v.stock > 0)
-     OR (s.variant_id IS NULL AND (
-            NOT EXISTS (SELECT 1 FROM product_variants nv WHERE nv.product_id = p.id)
-         OR EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.stock > 0)
-        ))
+     OR (s.variant_id IS NULL AND p.in_stock)
   )
 ORDER BY s.created_at, s.id
 LIMIT $3
@@ -312,10 +411,12 @@ type ListPendingBackInStockSubscriptionsRow struct {
 }
 
 // Returns ONLY actionable rows (target sellable right now), so LIMIT and the
-// row lock never spend budget on subscriptions that cannot fire. Sellability
-// mirrors internal/cart: variant-level = product in_stock AND variant stock > 0;
-// product-level = in_stock AND (no variants OR any variant with stock > 0).
-// Correlated EXISTS is used because FOR UPDATE forbids aggregates.
+// row lock never spend budget on subscriptions that cannot fire. The caller
+// asks for one row more than it will claim to detect overflow; that probe row
+// is locked for the rest of the transaction but not claimed. Sellability is
+// exactly the cart rule (internal/cart AddItem): a variant line needs variant
+// stock > 0 (products.in_stock is not consulted); a product-level line needs
+// products.in_stock.
 func (q *Queries) ListPendingBackInStockSubscriptions(ctx context.Context, arg ListPendingBackInStockSubscriptionsParams) ([]ListPendingBackInStockSubscriptionsRow, error) {
 	rows, err := q.db.Query(ctx, listPendingBackInStockSubscriptions, arg.TenantID, arg.ProductID, arg.MaxRows)
 	if err != nil {
@@ -428,6 +529,68 @@ func (q *Queries) ListPendingPriceDropSubscriptions(ctx context.Context, arg Lis
 	return items, nil
 }
 
+const markAlertDeliveryDelivered = `-- name: MarkAlertDeliveryDelivered :exec
+UPDATE product_alert_deliveries
+SET delivered_at = now(),
+    last_error = NULL
+WHERE event_id = $1
+  AND tenant_id = $2
+`
+
+type MarkAlertDeliveryDeliveredParams struct {
+	EventID  pgtype.UUID `json:"event_id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) MarkAlertDeliveryDelivered(ctx context.Context, arg MarkAlertDeliveryDeliveredParams) error {
+	_, err := q.db.Exec(ctx, markAlertDeliveryDelivered, arg.EventID, arg.TenantID)
+	return err
+}
+
+const markAlertDeliveryFailed = `-- name: MarkAlertDeliveryFailed :exec
+UPDATE product_alert_deliveries
+SET next_attempt_at = $1,
+    last_error = $2,
+    failed_at = CASE WHEN $3::boolean THEN now() ELSE NULL END
+WHERE event_id = $4
+  AND tenant_id = $5
+  AND delivered_at IS NULL
+`
+
+type MarkAlertDeliveryFailedParams struct {
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError     pgtype.Text        `json:"last_error"`
+	GiveUp        bool               `json:"give_up"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+}
+
+// Schedules a retry at next_attempt_at, or gives up when give_up is true.
+func (q *Queries) MarkAlertDeliveryFailed(ctx context.Context, arg MarkAlertDeliveryFailedParams) error {
+	_, err := q.db.Exec(ctx, markAlertDeliveryFailed,
+		arg.NextAttemptAt,
+		arg.LastError,
+		arg.GiveUp,
+		arg.EventID,
+		arg.TenantID,
+	)
+	return err
+}
+
+const markAlertEventsAttempted = `-- name: MarkAlertEventsAttempted :exec
+UPDATE product_alert_events
+SET last_attempt_at = now()
+WHERE id = ANY($1::bigint[])
+  AND processed_at IS NULL
+`
+
+// Rotates events that still have claimable subscriptions to the back of the
+// pending order.
+func (q *Queries) MarkAlertEventsAttempted(ctx context.Context, ids []int64) error {
+	_, err := q.db.Exec(ctx, markAlertEventsAttempted, ids)
+	return err
+}
+
 const markAlertEventsProcessed = `-- name: MarkAlertEventsProcessed :exec
 UPDATE product_alert_events
 SET processed_at = now()
@@ -456,6 +619,59 @@ type MarkAlertSubscriptionNotifiedParams struct {
 
 func (q *Queries) MarkAlertSubscriptionNotified(ctx context.Context, arg MarkAlertSubscriptionNotifiedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markAlertSubscriptionNotified, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const pruneFinishedAlertDeliveries = `-- name: PruneFinishedAlertDeliveries :execrows
+DELETE FROM product_alert_deliveries
+WHERE event_id IN (
+    SELECT pd.event_id
+    FROM product_alert_deliveries pd
+    WHERE (pd.delivered_at IS NOT NULL AND pd.delivered_at < $1)
+       OR (pd.failed_at IS NOT NULL AND pd.failed_at < $1)
+    LIMIT $2
+)
+`
+
+type PruneFinishedAlertDeliveriesParams struct {
+	Cutoff  pgtype.Timestamptz `json:"cutoff"`
+	MaxRows int32              `json:"max_rows"`
+}
+
+// System-level retention job: deletes a bounded batch of delivered or
+// abandoned rows older than the cutoff.
+func (q *Queries) PruneFinishedAlertDeliveries(ctx context.Context, arg PruneFinishedAlertDeliveriesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneFinishedAlertDeliveries, arg.Cutoff, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const pruneProcessedAlertEvents = `-- name: PruneProcessedAlertEvents :execrows
+DELETE FROM product_alert_events
+WHERE id IN (
+    SELECT pe.id
+    FROM product_alert_events pe
+    WHERE pe.processed_at IS NOT NULL
+      AND pe.processed_at < $1
+    ORDER BY pe.processed_at
+    LIMIT $2
+)
+`
+
+type PruneProcessedAlertEventsParams struct {
+	Cutoff  pgtype.Timestamptz `json:"cutoff"`
+	MaxRows int32              `json:"max_rows"`
+}
+
+// System-level retention job (cross-tenant on purpose): deletes a bounded
+// batch of events processed before the cutoff.
+func (q *Queries) PruneProcessedAlertEvents(ctx context.Context, arg PruneProcessedAlertEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneProcessedAlertEvents, arg.Cutoff, arg.MaxRows)
 	if err != nil {
 		return 0, err
 	}

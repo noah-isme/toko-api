@@ -357,13 +357,36 @@ func main() {
 	// customer PII. The in-app row is written by the dispatcher itself, so the
 	// notifications notifier is not attached either.
 	alertsBus := &events.Bus{Store: queries, Notifiers: []events.Notifier{emailNotifier}}
+	// Alert emails go through a durable outbox (product_alert_deliveries)
+	// drained by its own runner, so claiming subscriptions never waits on
+	// SMTP. EmailNotifier ignores ctx; SMTPSender is bounded by a dial timeout
+	// plus one conversation deadline (each SMTP_TIMEOUT_SEC), so the per-send
+	// bound and lease are sized from that.
+	alertsMailer := &alerts.Mailer{
+		Q:           queries,
+		Events:      alertsBus,
+		SendTimeout: 2*cfg.SMTPTimeout + 5*time.Second,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("deliver product alert email")
+		},
+	}
+	alertsMailRunner := &alerts.Runner{
+		Flusher: alertsMailer,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("drain product alert emails")
+		},
+		Log: func(res alerts.Result) {
+			logger.Debug().Int("attempted", res.Attempted).Int("delivered", res.Delivered).
+				Bool("more", res.More).Msg("product alert emails sent")
+		},
+	}
 	alertsDispatcher := &alerts.Dispatcher{
 		Pool:     pool,
 		Q:        queries,
-		Events:   alertsBus,
+		Mailer:   alertsMailRunner,
 		Currency: cfg.CurrencyCode,
 		OnError: func(err error) {
-			logger.Error().Err(err).Msg("deliver product alert")
+			logger.Error().Err(err).Msg("product alerts maintenance")
 		},
 	}
 	alertsRunner := &alerts.Runner{
@@ -372,11 +395,11 @@ func main() {
 			logger.Error().Err(err).Msg("drain product alerts")
 		},
 		Log: func(res alerts.Result) {
-			logger.Info().Int("events", res.Events).Int("claimed", res.Claimed).Int("notified", res.Notified).
-				Int("delivered", res.Delivered).Bool("more", res.More).Msg("product alerts drained")
+			logger.Debug().Int("events", res.Events).Int("claimed", res.Claimed).Int("notified", res.Notified).
+				Int("queued", res.Queued).Bool("more", res.More).Msg("product alerts drained")
 		},
 	}
-	alertsHandler := &alerts.Handler{Svc: &alerts.Service{Q: queries}}
+	alertsHandler := &alerts.Handler{Svc: &alerts.Service{Q: queries, Alerts: alertsRunner}}
 	invoiceHandler := &invoice.Handler{Svc: &invoice.Service{Q: queries, Pool: pool, Renderer: invoice.NewRenderer()}}
 
 	orderHandler := &order.Handler{Q: queries, Alerts: alertsRunner}
@@ -930,6 +953,7 @@ func main() {
 	}
 
 	alertsRunner.Start(context.Background())
+	alertsMailRunner.Start(context.Background())
 
 	health.SetReady(true)
 	logger.Info().Str("addr", srv.Addr).Msg("server starting")
@@ -949,17 +973,21 @@ func main() {
 	}
 	shutdownTimeout, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 	defer cancel()
-	// Stop starting new alert flushes and wait, within the same grace period
-	// and in parallel with the HTTP drain, for the in-flight one to commit and
-	// deliver. Alerts committed but not yet emailed when the grace period ends
-	// keep their notification and domain_events rows.
-	alertsStopped := make(chan error, 1)
+	// Stop starting new alert passes and wait, within the same grace period
+	// and in parallel with the HTTP drain, for the in-flight ones. Emails not
+	// sent when the grace period ends stay in product_alert_deliveries (leased
+	// rows become due again when their lease expires) and are sent by the next
+	// process.
+	alertsStopped := make(chan error, 2)
 	go func() { alertsStopped <- alertsRunner.Stop(shutdownTimeout) }()
+	go func() { alertsStopped <- alertsMailRunner.Stop(shutdownTimeout) }()
 	if err := srv.Shutdown(shutdownTimeout); err != nil {
 		logger.Error().Err(err).Msg("server shutdown")
 	}
-	if err := <-alertsStopped; err != nil {
-		logger.Warn().Err(err).Msg("alerts runner did not finish before shutdown grace elapsed")
+	for i := 0; i < 2; i++ {
+		if err := <-alertsStopped; err != nil {
+			logger.Warn().Err(err).Msg("alerts runner did not finish before shutdown grace elapsed")
+		}
 	}
 }
 

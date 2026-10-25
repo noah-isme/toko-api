@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -114,93 +112,19 @@ func TestWantsStockUpdates(t *testing.T) {
 	}
 }
 
-func TestClaimBudget(t *testing.T) {
-	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	d := &Dispatcher{EmitTimeout: 20 * time.Second, Now: func() time.Time { return now }}
-	if got := d.claimBudget(context.Background()); got != defaultMaxSubscriptions {
-		t.Fatalf("no deadline: %d", got)
+func TestPerEventShare(t *testing.T) {
+	cases := []struct{ budget, events, want int }{
+		{200, 1, 200},
+		{200, 2, 100},
+		{2, 2, 1},
+		{2, 5, 1}, // rounds up to at least one claim per event
+		{5, 2, 3}, // ceil
+		{200, 0, 200},
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), now.Add(60*time.Second))
-	defer cancel()
-	if got := d.claimBudget(ctx); got != 3 {
-		t.Fatalf("60s/20s: %d, want 3", got)
-	}
-	d.MaxSubscriptions = 2
-	if got := d.claimBudget(ctx); got != 2 {
-		t.Fatalf("max wins: %d, want 2", got)
-	}
-	short, cancel2 := context.WithDeadline(context.Background(), now.Add(19*time.Second))
-	defer cancel2()
-	if got := d.claimBudget(short); got != 0 {
-		t.Fatalf("19s/20s: %d, want 0", got)
-	}
-	past, cancel3 := context.WithDeadline(context.Background(), now.Add(-time.Second))
-	defer cancel3()
-	if got := d.claimBudget(past); got != 0 {
-		t.Fatalf("past deadline: %d, want 0", got)
-	}
-}
-
-// slowDeliverer simulates a slow SMTP relay: each delivery takes `delay` and
-// fails if its context is already done.
-type slowDeliverer struct {
-	delay time.Duration
-	mu    sync.Mutex
-	got   []pgtype.UUID
-}
-
-func (s *slowDeliverer) Deliver(ctx context.Context, ev dbgen.DomainEvent) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	select {
-	case <-time.After(s.delay):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	s.mu.Lock()
-	s.got = append(s.got, ev.ID)
-	s.mu.Unlock()
-	return nil
-}
-
-func TestDeliverIgnoresRunDeadline(t *testing.T) {
-	slow := &slowDeliverer{delay: 20 * time.Millisecond}
-	var errs []error
-	d := &Dispatcher{Events: slow, EmitTimeout: time.Second, OnError: func(err error) { errs = append(errs, err) }}
-
-	// The run deadline expires after ~2 deliveries; all 6 queued events must
-	// still be delivered.
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Millisecond)
-	defer cancel()
-	queued := make([]dbgen.DomainEvent, 6)
-	for i := range queued {
-		queued[i] = dbgen.DomainEvent{ID: newID(), Topic: events.TopicAlertBackInStock, AggregateID: newID()}
-	}
-	delivered := d.deliver(ctx, queued)
-	if delivered != len(queued) || len(slow.got) != len(queued) {
-		t.Fatalf("delivered=%d got=%v errs=%v", delivered, slow.got, errs)
-	}
-	if ctx.Err() == nil {
-		t.Fatal("test precondition: run deadline should have expired during delivery")
-	}
-
-	// Even a context that is already cancelled must not drop payloads.
-	cancelled, cancelNow := context.WithCancel(context.Background())
-	cancelNow()
-	slow.got = nil
-	if n := d.deliver(cancelled, queued[:2]); n != 2 {
-		t.Fatalf("cancelled parent: delivered=%d, want 2 (errs=%v)", n, errs)
-	}
-}
-
-func TestDeliverPerEmitTimeoutBoundsEachSend(t *testing.T) {
-	slow := &slowDeliverer{delay: 200 * time.Millisecond}
-	var errs []error
-	d := &Dispatcher{Events: slow, EmitTimeout: 10 * time.Millisecond, OnError: func(err error) { errs = append(errs, err) }}
-	n := d.deliver(context.Background(), []dbgen.DomainEvent{{ID: newID(), AggregateID: newID()}, {ID: newID(), AggregateID: newID()}})
-	if n != 0 || len(errs) != 2 {
-		t.Fatalf("delivered=%d errs=%d; a hung send must time out individually and be reported", n, len(errs))
+	for _, tc := range cases {
+		if got := perEventShare(tc.budget, tc.events); got != tc.want {
+			t.Errorf("perEventShare(%d,%d) = %d, want %d", tc.budget, tc.events, got, tc.want)
+		}
 	}
 }
 

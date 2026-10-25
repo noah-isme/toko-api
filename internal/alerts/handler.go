@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -78,6 +79,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		productID = id
 	}
 	page, perPage := common.ParsePagination(r, 20)
+	if page > math.MaxInt32 {
+		page = math.MaxInt32
+	}
 	if perPage > 100 {
 		perPage = 100
 	}

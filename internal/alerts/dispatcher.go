@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,18 +26,11 @@ const (
 const (
 	defaultBatchSize        = 100
 	defaultMaxSubscriptions = 200
-	// defaultEmitTimeout is the worst-case cost of delivering one alert after
-	// commit. The email notifier sends synchronously through SMTPSender, whose
-	// dial and conversation each have a 10s bound, so 20s covers one message.
-	defaultEmitTimeout = 20 * time.Second
-	defaultCurrency    = "IDR"
+	defaultCurrency         = "IDR"
+	defaultRetention        = 7 * 24 * time.Hour
+	defaultPruneEvery       = time.Hour
+	pruneBatch              = 1000
 )
-
-// EventDeliverer fans an already-persisted domain event out to notifiers.
-// *events.Bus satisfies it (Bus.Deliver).
-type EventDeliverer interface {
-	Deliver(ctx context.Context, ev dbgen.DomainEvent) error
-}
 
 // TxBeginner starts a database transaction. *pgxpool.Pool satisfies it.
 type TxBeginner interface {
@@ -46,34 +40,44 @@ type TxBeginner interface {
 // Dispatcher drains the product_alert_events outbox.
 //
 // Delivery model: inside ONE transaction a Flush claims subscriptions
-// (notified_at), writes the in-app Notification row AND the domain_events row
-// for each hit, and marks the outbox events processed. Only after commit are
-// the persisted domain events handed to the notifiers (email), each with its
-// own timeout detached from the caller's deadline, so a run deadline can never
-// drop a committed alert's email. The number of claims per Flush is capped so
-// that, even at EmitTimeout per delivery, the deliveries fit in the time left
-// on the caller's context.
+// (notified_at), writes the in-app Notification row, the domain_events row and
+// a product_alert_deliveries row for each hit, and marks the outbox events
+// processed. Email is NOT sent here: the Mailer drains
+// product_alert_deliveries asynchronously with retries, so how many
+// subscriptions a Flush claims never depends on SMTP latency, and a committed
+// alert's email survives restarts and relay outages.
+//
+// Fairness: pending events are read in (last_attempt_at NULLS FIRST, id)
+// order and each event in a pass may claim at most its share of the budget
+// (ceil(MaxSubscriptions / events in the batch)). An event with more claimable
+// subscriptions than its share stays pending and gets last_attempt_at = now(),
+// which moves it behind every event that has not been attempted yet, so one
+// popular product (in any tenant) cannot starve the others.
 type Dispatcher struct {
-	Pool   TxBeginner
-	Q      *dbgen.Queries
-	Events EventDeliverer
-	// OnError receives non-fatal errors (delivery failures).
+	Pool TxBeginner
+	Q    *dbgen.Queries
+	// Mailer, when set, is kicked after a Flush commits queued emails.
+	Mailer Kicker
+	// OnError receives non-fatal errors (retention pruning failures).
 	OnError func(error)
 	// BatchSize caps outbox events per Flush (default 100).
 	BatchSize int
 	// MaxSubscriptions caps subscription claims per Flush (default 200).
 	MaxSubscriptions int
-	// EmitTimeout is the per-delivery timeout and the worst-case cost used to
-	// size the claim budget (default 20s).
-	EmitTimeout time.Duration
 	// Currency formats prices in notification copy (default IDR). Product
 	// prices are whole currency units.
 	Currency string
-	// Now is used for the claim budget; defaults to time.Now.
+	// Retention is how long processed outbox events are kept (default 7d).
+	// A negative value disables pruning.
+	Retention time.Duration
+	// Now is used for pruning; defaults to time.Now.
 	Now func() time.Time
+
+	pruneMu   sync.Mutex
+	lastPrune time.Time
 }
 
-// Result summarizes one Flush.
+// Result summarizes one Flush (Dispatcher) or one delivery pass (Mailer).
 type Result struct {
 	// Events is the number of outbox events marked processed.
 	Events int
@@ -81,14 +85,18 @@ type Result struct {
 	Claimed int
 	// Notified is the number of in-app notifications written.
 	Notified int
-	// Delivered is the number of post-commit deliveries that succeeded.
+	// Queued is the number of emails queued in product_alert_deliveries.
+	Queued int
+	// Attempted is the number of email deliveries the Mailer tried.
+	Attempted int
+	// Delivered is the number of email deliveries that succeeded.
 	Delivered int
 	// More reports that pending work remains (budget or batch exhausted).
 	More bool
 }
 
-// Progress reports whether the Flush changed any state.
-func (r Result) Progress() bool { return r.Events > 0 || r.Claimed > 0 }
+// Progress reports whether the pass changed any state.
+func (r Result) Progress() bool { return r.Events > 0 || r.Claimed > 0 || r.Attempted > 0 }
 
 // hit is one claimable subscription row, normalized across alert types.
 type hit struct {
@@ -121,11 +129,11 @@ func (d *Dispatcher) batchSize() int {
 	return defaultBatchSize
 }
 
-func (d *Dispatcher) emitTimeout() time.Duration {
-	if d.EmitTimeout > 0 {
-		return d.EmitTimeout
+func (d *Dispatcher) maxSubscriptions() int {
+	if d.MaxSubscriptions > 0 {
+		return d.MaxSubscriptions
 	}
-	return defaultEmitTimeout
+	return defaultMaxSubscriptions
 }
 
 func (d *Dispatcher) currency() string {
@@ -142,25 +150,17 @@ func (d *Dispatcher) now() time.Time {
 	return time.Now()
 }
 
-// claimBudget returns how many subscriptions this Flush may claim: at most
-// MaxSubscriptions and, when ctx has a deadline, no more than the number of
-// worst-case deliveries that fit in the remaining time.
-func (d *Dispatcher) claimBudget(ctx context.Context) int {
-	budget := d.MaxSubscriptions
-	if budget <= 0 {
-		budget = defaultMaxSubscriptions
+// perEventShare splits the claim budget evenly across the pending events of
+// a pass (rounded up, at least 1).
+func perEventShare(budget, events int) int {
+	if events <= 0 || budget <= 0 {
+		return budget
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := deadline.Sub(d.now())
-		byTime := int(remaining / d.emitTimeout())
-		if byTime < budget {
-			budget = byTime
-		}
+	share := (budget + events - 1) / events
+	if share < 1 {
+		share = 1
 	}
-	if budget < 0 {
-		budget = 0
-	}
-	return budget
+	return share
 }
 
 func (d *Dispatcher) reportError(err error) {
@@ -169,16 +169,38 @@ func (d *Dispatcher) reportError(err error) {
 	}
 }
 
+// pruneIfDue deletes one bounded batch of old processed outbox events at most
+// once per hour per process. Failures are reported, never fatal.
+func (d *Dispatcher) pruneIfDue(ctx context.Context) {
+	retention := d.Retention
+	if retention < 0 {
+		return
+	}
+	if retention == 0 {
+		retention = defaultRetention
+	}
+	now := d.now()
+	d.pruneMu.Lock()
+	if !d.lastPrune.IsZero() && now.Sub(d.lastPrune) < defaultPruneEvery {
+		d.pruneMu.Unlock()
+		return
+	}
+	d.lastPrune = now
+	d.pruneMu.Unlock()
+	if _, err := d.Q.PruneProcessedAlertEvents(ctx, dbgen.PruneProcessedAlertEventsParams{
+		Cutoff:  pgtype.Timestamptz{Time: now.Add(-retention), Valid: true},
+		MaxRows: pruneBatch,
+	}); err != nil {
+		d.reportError(fmt.Errorf("alerts: prune processed events: %w", err))
+	}
+}
+
 // Flush processes one batch of outbox events. It is nil-safe.
 func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 	if d == nil || d.Pool == nil || d.Q == nil {
 		return Result{}, nil
 	}
-	budget := d.claimBudget(ctx)
-	if budget == 0 {
-		// Not enough time left to deliver even one alert; claim nothing.
-		return Result{More: true}, nil
-	}
+	d.pruneIfDue(ctx)
 
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
@@ -193,19 +215,31 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("alerts: list pending events: %w", err)
 	}
 
+	budget := d.maxSubscriptions()
+	share := perEventShare(budget, len(pending))
 	var res Result
 	processed := make([]int64, 0, len(pending))
-	queued := make([]dbgen.DomainEvent, 0)
+	rotated := make([]int64, 0)
 	notifier := &notifications.Service{Q: qtx}
 
-	for i, ev := range pending {
+	for _, ev := range pending {
+		if budget == 0 {
+			// Not attempted this pass: keeps its place (last_attempt_at
+			// unchanged) for the next pass.
+			res.More = true
+			continue
+		}
+		limit := share
+		if limit > budget {
+			limit = budget
+		}
 		var hits []hit
 		switch ev.AlertType {
 		case TypeBackInStock:
 			rows, err := qtx.ListPendingBackInStockSubscriptions(ctx, dbgen.ListPendingBackInStockSubscriptionsParams{
 				TenantID:  ev.TenantID,
 				ProductID: ev.ProductID,
-				MaxRows:   int32(budget + 1),
+				MaxRows:   int32(limit + 1),
 			})
 			if err != nil {
 				return Result{}, fmt.Errorf("alerts: list back-in-stock subscriptions: %w", err)
@@ -215,7 +249,7 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 			rows, err := qtx.ListPendingPriceDropSubscriptions(ctx, dbgen.ListPendingPriceDropSubscriptionsParams{
 				TenantID:  ev.TenantID,
 				ProductID: ev.ProductID,
-				MaxRows:   int32(budget + 1),
+				MaxRows:   int32(limit + 1),
 			})
 			if err != nil {
 				return Result{}, fmt.Errorf("alerts: list price-drop subscriptions: %w", err)
@@ -223,7 +257,7 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 			hits = priceDropHits(rows)
 		}
 
-		selected, overflow := selectHits(hits, budget)
+		selected, overflow := selectHits(hits, limit)
 		for _, h := range selected {
 			n, err := qtx.MarkAlertSubscriptionNotified(ctx, dbgen.MarkAlertSubscriptionNotifiedParams{
 				ID:       h.SubscriptionID,
@@ -254,8 +288,8 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 				return Result{}, fmt.Errorf("alerts: create notification: %w", err)
 			}
 			res.Notified++
-			// Persist the domain event in the same transaction so the record
-			// commits atomically with notified_at.
+			// The domain event and its email delivery row commit atomically
+			// with notified_at; the Mailer sends it later.
 			row, err := qtx.InsertDomainEvent(ctx, dbgen.InsertDomainEventParams{
 				Topic:       msg.Topic,
 				AggregateID: h.SubscriptionID,
@@ -264,26 +298,22 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 			if err != nil {
 				return Result{}, fmt.Errorf("alerts: persist domain event: %w", err)
 			}
-			queued = append(queued, dbgen.DomainEvent{
-				ID:          row.ID,
-				Topic:       row.Topic,
-				AggregateID: row.AggregateID,
-				Payload:     row.Payload,
-				OccurredAt:  row.OccurredAt,
-			})
+			if err := qtx.InsertAlertDelivery(ctx, dbgen.InsertAlertDeliveryParams{
+				EventID:  row.ID,
+				TenantID: h.TenantID,
+			}); err != nil {
+				return Result{}, fmt.Errorf("alerts: queue email delivery: %w", err)
+			}
+			res.Queued++
 		}
 
 		if overflow {
-			// Claimable subscriptions remain for this event; keep it pending.
+			// Claimable subscriptions remain: keep the event pending and
+			// rotate it behind events that have not been attempted yet.
+			rotated = append(rotated, ev.ID)
 			res.More = true
 		} else {
 			processed = append(processed, ev.ID)
-		}
-		if budget == 0 {
-			if overflow || i < len(pending)-1 {
-				res.More = true
-			}
-			break
 		}
 	}
 	if len(pending) == batch {
@@ -295,36 +325,19 @@ func (d *Dispatcher) Flush(ctx context.Context) (Result, error) {
 			return Result{}, fmt.Errorf("alerts: mark events processed: %w", err)
 		}
 	}
+	if len(rotated) > 0 {
+		if err := qtx.MarkAlertEventsAttempted(ctx, rotated); err != nil {
+			return Result{}, fmt.Errorf("alerts: rotate events: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, fmt.Errorf("alerts: commit flush: %w", err)
 	}
 	res.Events = len(processed)
-	res.Delivered = d.deliver(ctx, queued)
+	if res.Queued > 0 && d.Mailer != nil {
+		d.Mailer.Kick()
+	}
 	return res, nil
-}
-
-// deliver hands committed events to the notifiers. Each delivery gets its own
-// timeout derived from a context that ignores the caller's deadline and
-// cancellation: the claim budget already sized the batch to the remaining run
-// time, and dropping an email whose subscription is committed as notified
-// would lose it for good.
-func (d *Dispatcher) deliver(ctx context.Context, queued []dbgen.DomainEvent) int {
-	if d.Events == nil || len(queued) == 0 {
-		return 0
-	}
-	base := context.WithoutCancel(ctx)
-	delivered := 0
-	for _, ev := range queued {
-		emitCtx, cancel := context.WithTimeout(base, d.emitTimeout())
-		err := d.Events.Deliver(emitCtx, ev)
-		cancel()
-		if err != nil {
-			d.reportError(fmt.Errorf("alerts: deliver %s for subscription %s: %w", ev.Topic, uuidString(ev.AggregateID), err))
-			continue
-		}
-		delivered++
-	}
-	return delivered
 }
 
 // selectHits truncates hits to budget and reports whether any were left over.

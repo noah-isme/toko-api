@@ -1200,8 +1200,9 @@ paths:
         variants. Posting again for the same (product, variant, type) re-arms it
         (status active, notifiedAt null, priceAtSubscribe refreshed for PRICE_DROP) and
         returns 200. BACK_IN_STOCK is rejected with 409 ALREADY_IN_STOCK while the target
-        is sellable. Alerts fire once, delivered as an in-app notification
-        (type back_in_stock / price_drop) and email; they are never sent to webhooks.
+        is sellable, using the cart rule (variant: stock > 0; product-level: inStock).
+        Alerts fire once, delivered as an in-app notification (type back_in_stock /
+        price_drop) and a queued, retried email; they are never sent to webhooks.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

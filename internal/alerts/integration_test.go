@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,10 +83,13 @@ func newEnv(t *testing.T) *env {
 	// Drain leftovers from earlier runs so per-test assertions are exact.
 	_, err = pool.Exec(ctx, `UPDATE product_alert_events SET processed_at = now() WHERE processed_at IS NULL`)
 	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `UPDATE product_alert_deliveries SET failed_at = now() WHERE delivered_at IS NULL AND failed_at IS NULL`)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		c := context.Background()
 		tenants := []string{e.tenA, e.tenB}
 		for _, stmt := range []string{
+			`DELETE FROM product_alert_deliveries WHERE tenant_id = ANY($1::uuid[])`,
 			`DELETE FROM domain_events WHERE topic LIKE 'alert.%' AND payload->>'tenantId' = ANY($1::text[])`,
 			`DELETE FROM webhook_endpoints WHERE tenant_id = ANY($1::uuid[])`,
 			`DELETE FROM product_alert_events WHERE tenant_id = ANY($1::uuid[])`,
@@ -128,12 +132,40 @@ func (e *env) dispatcher(maxSubs, batch int) *alerts.Dispatcher {
 	return &alerts.Dispatcher{
 		Pool:             e.pool,
 		Q:                e.q,
-		Events:           &events.Bus{Store: e.q, Notifiers: []events.Notifier{e.capture}},
 		MaxSubscriptions: maxSubs,
 		BatchSize:        batch,
 		Currency:         "IDR",
-		OnError:          func(err error) { e.t.Errorf("delivery error: %v", err) },
+		Retention:        -1, // pruning is exercised explicitly
+		OnError:          func(err error) { e.t.Errorf("dispatcher error: %v", err) },
 	}
+}
+
+func (e *env) mailer(notifiers ...events.Notifier) *alerts.Mailer {
+	if len(notifiers) == 0 {
+		notifiers = []events.Notifier{e.capture}
+	}
+	return &alerts.Mailer{
+		Q:           e.q,
+		Events:      &events.Bus{Store: e.q, Notifiers: notifiers},
+		SendTimeout: time.Second,
+		Retention:   -1,
+	}
+}
+
+// drainMail runs mailer passes until none are due and returns deliveries.
+func (e *env) drainMail(m *alerts.Mailer) int {
+	e.t.Helper()
+	delivered := 0
+	for i := 0; i < 100; i++ {
+		res, err := m.Flush(e.ctx)
+		require.NoError(e.t, err)
+		delivered += res.Delivered
+		if res.Attempted == 0 {
+			return delivered
+		}
+	}
+	e.t.Fatal("drainMail did not converge")
+	return delivered
 }
 
 func (e *env) insertTenant() string {
@@ -214,7 +246,7 @@ func (e *env) flushAll(d *alerts.Dispatcher) alerts.Result {
 		total.Events += res.Events
 		total.Claimed += res.Claimed
 		total.Notified += res.Notified
-		total.Delivered += res.Delivered
+		total.Queued += res.Queued
 		if !res.More {
 			return total
 		}
@@ -252,7 +284,12 @@ func TestIntegrationBackInStockFiresOnce(t *testing.T) {
 	d := e.dispatcher(0, 0)
 	res := e.flushAll(d)
 	require.Equal(t, 1, res.Notified)
-	require.Equal(t, 1, res.Delivered)
+	require.Equal(t, 1, res.Queued)
+	require.Equal(t, 0, e.capture.count(), "the dispatcher never sends email itself")
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_deliveries pd JOIN domain_events de ON de.id=pd.event_id WHERE de.aggregate_id=$1 AND pd.tenant_id=$2 AND pd.delivered_at IS NULL`, sub, e.tenA))
+	require.Equal(t, 1, e.drainMail(e.mailer()))
+	require.Equal(t, 1, e.capture.count())
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_deliveries pd JOIN domain_events de ON de.id=pd.event_id WHERE de.aggregate_id=$1 AND pd.delivered_at IS NOT NULL AND pd.attempts=1`, sub))
 	require.Equal(t, 1, e.notifications(user, alerts.KindBackInStock))
 	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_subscriptions WHERE id=$1 AND notified_at IS NOT NULL`, sub))
 	require.Equal(t, 1, e.domainEvents(sub))
@@ -557,24 +594,209 @@ func TestIntegrationRunnerDrains(t *testing.T) {
 	prod := e.insertProduct(e.tenA, "Dompet", 150000, false)
 	_, _ = e.subscribe(e.tenA, user, map[string]any{"productId": prod, "type": "BACK_IN_STOCK"})
 
+	mailRunner := &alerts.Runner{Flusher: e.mailer(), Interval: time.Hour, Timeout: 5 * time.Second,
+		OnError: func(err error) { t.Errorf("mail runner: %v", err) }}
 	d := e.dispatcher(0, 0)
-	d.EmitTimeout = time.Second // claim budget = Timeout / EmitTimeout
+	d.Mailer = mailRunner // kicked after commit; its ticker never fires here
 	r := &alerts.Runner{Flusher: d, Interval: 50 * time.Millisecond, Timeout: 5 * time.Second,
 		OnError: func(err error) { t.Errorf("runner: %v", err) }}
 	r.Start(context.Background())
+	mailRunner.Start(context.Background())
 	e.exec(`UPDATE products SET in_stock=true WHERE id=$1`, prod)
 
 	deadline := time.Now().Add(2 * time.Second)
-	for e.notifications(user, alerts.KindBackInStock) == 0 {
+	for e.notifications(user, alerts.KindBackInStock) == 0 || e.capture.count() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("runner did not deliver within 2s")
+			t.Fatal("runners did not notify and email within 2s")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.NoError(t, r.Stop(stopCtx))
-	require.GreaterOrEqual(t, e.capture.count(), 1)
+	require.NoError(t, mailRunner.Stop(stopCtx))
+	require.Equal(t, 1, e.capture.count())
+}
+
+// One popular product must not starve other events, in any tenant: the
+// budget is shared across the events of a pass and an overflowing event
+// rotates behind events that were not attempted yet.
+func TestIntegrationTwoTenantFairness(t *testing.T) {
+	e := newEnv(t)
+
+	t.Run("same pass", func(t *testing.T) {
+		prodA := e.insertProduct(e.tenA, "Populer A", 100000, true)
+		varA := e.insertVariant(prodA, 100000, 0)
+		for i := 0; i < 5; i++ {
+			u, _ := e.insertUser()
+			code, _ := e.subscribe(e.tenA, u, map[string]any{"productId": prodA, "variantId": varA, "type": "BACK_IN_STOCK"})
+			require.Equal(t, http.StatusCreated, code)
+		}
+		prodB := e.insertProduct(e.tenB, "Biasa B", 50000, true)
+		varB := e.insertVariant(prodB, 50000, 0)
+		userB, _ := e.insertUser()
+		code, _ := e.subscribe(e.tenB, userB, map[string]any{"productId": prodB, "variantId": varB, "type": "BACK_IN_STOCK"})
+		require.Equal(t, http.StatusCreated, code)
+
+		e.exec(`UPDATE product_variants SET stock=10 WHERE id=$1`, varA) // A's event first (lower id)
+		e.exec(`UPDATE product_variants SET stock=10 WHERE id=$1`, varB)
+
+		res, err := e.dispatcher(2, 0).Flush(e.ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, res.Claimed)
+		require.True(t, res.More)
+		require.Equal(t, 1, e.notifications(userB, alerts.KindBackInStock), "tenant B must be served in the first pass")
+		require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_events WHERE variant_id=$1 AND processed_at IS NOT NULL`, varB))
+		require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_events WHERE variant_id=$1 AND processed_at IS NULL AND last_attempt_at IS NOT NULL`, varA))
+
+		e.flushAll(e.dispatcher(2, 0))
+		require.Equal(t, 5, e.count(`SELECT count(*) FROM product_alert_subscriptions WHERE variant_id=$1 AND notified_at IS NOT NULL`, varA))
+	})
+
+	t.Run("later event jumps the queue", func(t *testing.T) {
+		prodA := e.insertProduct(e.tenA, "Populer A2", 100000, true)
+		varA := e.insertVariant(prodA, 100000, 0)
+		for i := 0; i < 5; i++ {
+			u, _ := e.insertUser()
+			code, _ := e.subscribe(e.tenA, u, map[string]any{"productId": prodA, "variantId": varA, "type": "BACK_IN_STOCK"})
+			require.Equal(t, http.StatusCreated, code)
+		}
+		e.exec(`UPDATE product_variants SET stock=10 WHERE id=$1`, varA)
+		d := e.dispatcher(2, 0)
+		res, err := d.Flush(e.ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, res.Claimed)
+		require.True(t, res.More)
+
+		// B restocks after A's event was already attempted once.
+		prodB := e.insertProduct(e.tenB, "Biasa B2", 50000, true)
+		varB := e.insertVariant(prodB, 50000, 0)
+		userB, _ := e.insertUser()
+		code, _ := e.subscribe(e.tenB, userB, map[string]any{"productId": prodB, "variantId": varB, "type": "BACK_IN_STOCK"})
+		require.Equal(t, http.StatusCreated, code)
+		e.exec(`UPDATE product_variants SET stock=1 WHERE id=$1`, varB)
+
+		// Only one claim per pass: B (never attempted) must win it.
+		res, err = e.dispatcher(1, 0).Flush(e.ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1, res.Claimed)
+		require.Equal(t, 1, e.notifications(userB, alerts.KindBackInStock))
+		e.flushAll(d)
+		require.Equal(t, 5, e.count(`SELECT count(*) FROM product_alert_subscriptions WHERE variant_id=$1 AND notified_at IS NOT NULL`, varA))
+	})
+}
+
+// Sellability matches the cart exactly: a variant with stock is sellable even
+// when products.in_stock is false (e.g. after a platform inventory update set
+// every variant to 0 and a pending order expiry released stock to one).
+func TestIntegrationVariantRestockIgnoresProductFlag(t *testing.T) {
+	e := newEnv(t)
+	user, _ := e.insertUser()
+	prod := e.insertProduct(e.tenA, "Kaos Flag", 100000, false)
+	variant := e.insertVariant(prod, 100000, 0)
+	code, _ := e.subscribe(e.tenA, user, map[string]any{"productId": prod, "variantId": variant, "type": "BACK_IN_STOCK"})
+	require.Equal(t, http.StatusCreated, code)
+
+	require.NoError(t, e.q.ReleaseVariantStock(e.ctx, dbgen.ReleaseVariantStockParams{ID: mustUUID(t, variant), Qty: 3}))
+	e.flushAll(e.dispatcher(0, 0))
+	require.Equal(t, 1, e.notifications(user, alerts.KindBackInStock))
+}
+
+// Emails survive relay failures: the delivery row is retried with backoff
+// and nothing is lost when the first attempts fail.
+func TestIntegrationMailerRetriesFailedDelivery(t *testing.T) {
+	e := newEnv(t)
+	user, _ := e.insertUser()
+	prod := e.insertProduct(e.tenA, "Jam", 400000, false)
+	_, sub := e.subscribe(e.tenA, user, map[string]any{"productId": prod, "type": "BACK_IN_STOCK"})
+	e.exec(`UPDATE products SET in_stock=true WHERE id=$1`, prod)
+	e.flushAll(e.dispatcher(0, 0))
+
+	failing := &failingNotifier{}
+	m := e.mailer(failing)
+	res, err := m.Flush(e.ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Attempted)
+	require.Equal(t, 0, res.Delivered)
+	q := `SELECT count(*) FROM product_alert_deliveries pd JOIN domain_events de ON de.id=pd.event_id
+	      WHERE de.aggregate_id=$1 AND pd.delivered_at IS NULL AND pd.failed_at IS NULL AND pd.attempts=1
+	        AND pd.last_error LIKE '%relay down%' AND pd.next_attempt_at > now()`
+	require.Equal(t, 1, e.count(q, sub))
+
+	// Not due yet: nothing leased.
+	res, err = m.Flush(e.ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Attempted)
+
+	// Backoff elapsed and the relay is back.
+	e.exec(`UPDATE product_alert_deliveries SET next_attempt_at = now() - interval '1 second' WHERE tenant_id=$1`, e.tenA)
+	require.Equal(t, 1, e.drainMail(e.mailer()))
+	require.Equal(t, 1, e.capture.count())
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_deliveries pd JOIN domain_events de ON de.id=pd.event_id WHERE de.aggregate_id=$1 AND pd.delivered_at IS NOT NULL AND pd.attempts=2`, sub))
+}
+
+func TestIntegrationPruneProcessedEvents(t *testing.T) {
+	e := newEnv(t)
+	prod := e.insertProduct(e.tenA, "Lama", 1000, true)
+	e.exec(`UPDATE products SET price=900 WHERE id=$1`, prod)
+	e.exec(`UPDATE products SET price=800 WHERE id=$1`, prod)
+	e.flushAll(e.dispatcher(0, 0))
+	require.Equal(t, 2, e.count(`SELECT count(*) FROM product_alert_events WHERE product_id=$1 AND processed_at IS NOT NULL`, prod))
+	e.exec(`UPDATE product_alert_events SET processed_at = now() - interval '8 days' WHERE product_id=$1 AND id = (SELECT min(id) FROM product_alert_events WHERE product_id=$1)`, prod)
+
+	d := e.dispatcher(0, 0)
+	d.Retention = 7 * 24 * time.Hour
+	_, err := d.Flush(e.ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_events WHERE product_id=$1`, prod), "only the old processed event is pruned")
+}
+
+// hookStore runs afterCheck once, right after Subscribe's eligibility read and
+// before the subscription is written.
+type hookStore struct {
+	*dbgen.Queries
+	afterCheck func()
+}
+
+func (h *hookStore) GetAlertTarget(ctx context.Context, arg dbgen.GetAlertTargetParams) (dbgen.GetAlertTargetRow, error) {
+	row, err := h.Queries.GetAlertTarget(ctx, arg)
+	if h.afterCheck != nil {
+		f := h.afterCheck
+		h.afterCheck = nil
+		f()
+	}
+	return row, err
+}
+
+// A restock that commits and is fully drained between Subscribe's check and
+// the subscription's commit must still notify the subscriber.
+func TestIntegrationSubscribeRestockRace(t *testing.T) {
+	e := newEnv(t)
+	user, _ := e.insertUser()
+	prod := e.insertProduct(e.tenA, "Balapan", 100000, true)
+	variant := e.insertVariant(prod, 100000, 0)
+	d := e.dispatcher(0, 0)
+
+	store := &hookStore{Queries: e.q, afterCheck: func() {
+		e.exec(`UPDATE product_variants SET stock=2 WHERE id=$1`, variant)
+		e.flushAll(d) // drains the restock event before the subscription exists
+	}}
+	svc := &alerts.Service{Q: store}
+	_, created, err := svc.Subscribe(e.ctx, mustUUID(t, user), mustUUID(t, e.tenA), alerts.SubscribeInput{
+		ProductID: mustUUID(t, prod), VariantID: mustUUID(t, variant), Type: alerts.TypeBackInStock,
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, 0, e.notifications(user, alerts.KindBackInStock))
+
+	e.flushAll(d)
+	require.Equal(t, 1, e.notifications(user, alerts.KindBackInStock))
+}
+
+type failingNotifier struct{}
+
+func (failingNotifier) Notify(context.Context, dbgen.DomainEvent) error {
+	return errors.New("relay down")
 }
 
 func mustUUID(t *testing.T, s string) (u pgtype.UUID) {
