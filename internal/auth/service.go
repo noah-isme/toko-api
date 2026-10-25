@@ -87,11 +87,15 @@ type Config struct {
 
 // User represents a safe subset of the user model returned to clients.
 type User struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Email         string    `json:"email"`
-	Phone         string    `json:"phone,omitempty"`
-	Roles         []string  `json:"roles"`
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Email string   `json:"email"`
+	Phone string   `json:"phone,omitempty"`
+	Roles []string `json:"roles"`
+	// Role and Permissions describe the caller's role in the resolved tenant.
+	// They are set by GET /auth/me only (absent from login/register).
+	Role          string    `json:"role,omitempty"`
+	Permissions   *[]string `json:"permissions,omitempty"`
 	EmailVerified bool      `json:"emailVerified"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
