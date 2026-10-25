@@ -1009,11 +1009,11 @@ paths:
         to every stored subscription of the authenticated user. Per-type
         preferences are ignored (explicit debug action). Subscriptions that can
         never receive a push are deleted and counted in `pruned`: the push
-        service answered 404/410, the stored endpoint is not https, the stored
-        keys are unusable (`p256dh` not an uncompressed P-256 point, `auth` not
-        16 bytes), or the endpoint resolves to a non-public address. Server-side
-        failures (e.g. misconfigured VAPID keys) count as `failed` and never
-        delete a subscription.
+        service answered 404/410, the stored endpoint is not https, or the
+        stored keys are unusable (`p256dh` not an uncompressed P-256 point,
+        `auth` not 16 bytes). Server-side failures (e.g. misconfigured VAPID
+        keys, or the push host resolving to an address the server's outbound
+        guard refuses) count as `failed` and never delete a subscription.
         Rate-limited per user (default 5 calls per 60 seconds,
         `RATE_LIMIT_PUSH_TEST_MAX` / `RATE_LIMIT_PUSH_TEST_WINDOW_SEC`).
         No request body.
@@ -1063,8 +1063,8 @@ paths:
             No push service accepted the notification (`PUSH_SEND_FAILED`).
             `error.details` is `{ "sent": 0, "failed": <int>, "pruned": <int> }`
             with the same meaning as in the 200 response (`pruned` subscriptions
-            were deleted: 404/410, non-https endpoint, unusable keys or
-            non-public address; `failed` ones were kept).
+            were deleted: 404/410, non-https endpoint or unusable keys;
+            `failed` ones were kept).
           content:
             application/json:
               schema:
@@ -4092,10 +4092,10 @@ components:
           description: Subscriptions accepted by their push service.
         failed:
           type: integer
-          description: Subscriptions rejected by their push service, unreachable, or not sendable because of a server-side error (e.g. misconfigured VAPID keys). Never deleted.
+          description: Subscriptions rejected by their push service, unreachable, or not sendable because of a server-side error (e.g. misconfigured VAPID keys, or the push host resolving to an address the server's outbound guard refuses). Never deleted.
         pruned:
           type: integer
-          description: Subscriptions deleted because they can never receive a push (push service answered 404/410, endpoint not https, unusable p256dh/auth keys, or endpoint resolving to a non-public address).
+          description: Subscriptions deleted because they can never receive a push (push service answered 404/410, endpoint not https, or unusable p256dh/auth keys). Never caused by server-side problems.
     Favorite:
       type: object
       required:

@@ -47,9 +47,15 @@ type Sender interface {
 type DeliveryError struct {
 	Host  string
 	Class string
-	// Permanent failures cannot succeed on retry; the subscription is pruned.
+	// Permanent failures prove the subscription itself is unusable; the
+	// subscription is pruned.
 	Permanent bool
-	cause     error
+	// NoRetry failures cannot succeed on retry, but say nothing about the
+	// subscription (for example the worker's own DNS resolves the push host to
+	// an address the SSRF guard refuses). They are counted as failed and logged;
+	// the subscription is kept and the job is not retried.
+	NoRetry bool
+	cause   error
 }
 
 func (e *DeliveryError) Error() string {
@@ -116,16 +122,23 @@ func (s *WebPushSender) Send(ctx context.Context, sub dbgen.PushSubscription, ms
 
 // classifySendErr maps a webpush-go error. Subscription keys were checked
 // before the call, so an error without an HTTP request (not a *url.Error) is a
-// server-side problem, such as an unusable VAPID key or a JWT signing failure.
-// Those are never Permanent: pruning on them would delete every valid
-// subscription because of the server's own misconfiguration.
+// server-side problem, such as an unusable VAPID key, a JWT signing failure or
+// a payload the library cannot encrypt. Those are never Permanent: pruning on
+// them would delete every valid subscription because of the server's own
+// misconfiguration.
+//
+// A dial refused by the SSRF guard (common.ErrUnsafeAddress) is not Permanent
+// either. Stored endpoints are allowlisted DNS names, so the refused address
+// comes from how this worker's resolver answers (DNS64/NAT64 prefixes, service
+// mesh VIPs, fake-IP egress proxies), not from the subscription. It is NoRetry:
+// the next attempt resolves the same way.
 func classifySendErr(host string, err error) *DeliveryError {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {
-		return &DeliveryError{Host: host, Class: "push request could not be built (check the VAPID keys)", cause: err}
+		return &DeliveryError{Host: host, Class: "push request could not be built (server-side error: VAPID keys or payload)", cause: err}
 	}
 	if errors.Is(err, common.ErrUnsafeAddress) {
-		return &DeliveryError{Host: host, Class: "endpoint resolves to a non-public address", Permanent: true, cause: err}
+		return &DeliveryError{Host: host, Class: "push host resolves to an address the outbound guard refuses", NoRetry: true, cause: err}
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {

@@ -12,7 +12,7 @@ Webhook delivery needs reliable, asynchronous processing with retry semantics. E
 ## Decision
 
 Build a **lightweight Redis-based task queue** (`internal/queue`) with:
-- Redis sorted-set enqueue and best-effort deduplication (`DedupTTL`). `SETNX` reserves the deduplication key and a separate `ZADD` publishes the task; the two operations are not atomic, so a publish failure can leave the reservation until its TTL expires.
+- Redis sorted-set enqueue with deduplication (`DedupTTL`). The existence check, `ZADD` and the dedup `SET` run in one Lua script, so a dedup key exists only when the task was queued (the original `SETNX` + `ZADD` pair could leave a reservation behind after a failed publish). Email and push tasks use `OUTBOX_RELAY_MAX_AGE_SEC` as their dedup window; other kinds use `IDEMPOTENCY_TTL_SEC`.
 - Visibility timeouts and periodic re-queue on timeout. Queue removal and processing-set insertion are separate Redis operations, so a worker crash between them can lose a task.
 - Configurable max attempts with exponential back-off.
 - Dead-letter queue (DLQ) stored in PostgreSQL for durability and admin inspection.

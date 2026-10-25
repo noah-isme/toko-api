@@ -192,8 +192,8 @@ No request body. Synchronously sends a real test push to **every** stored subscr
 ```
 
 - `sent` — subscriptions accepted by their push service (2xx).
-- `failed` — subscriptions rejected (other 4xx, 429, 5xx), unreachable, or not sendable because of a server-side error (for example misconfigured VAPID keys). Failed subscriptions are never deleted.
-- `pruned` — subscriptions deleted server-side because they can never receive a push: the push service answered `404`/`410`, the stored endpoint is not https, the stored keys are unusable (`p256dh` is not an uncompressed P-256 point or `auth` is not 16 bytes, in standard or URL-safe base64), or the endpoint host resolves to a non-public address. A client whose own endpoint was pruned should call `POST /push/subscription` again.
+- `failed` — subscriptions rejected (other 4xx, 429, 5xx), unreachable, or not sendable because of a server-side error (for example misconfigured VAPID keys, or the push host resolving to an address the server's outbound SSRF guard refuses, such as a DNS64/NAT64 or service-mesh address). Failed subscriptions are never deleted.
+- `pruned` — subscriptions deleted server-side because they can never receive a push: the push service answered `404`/`410`, the stored endpoint is not https, or the stored keys are unusable (`p256dh` is not an uncompressed P-256 point or `auth` is not 16 bytes, in standard or URL-safe base64). Server-side problems never prune. A client whose own endpoint was pruned should call `POST /push/subscription` again.
 
 **Errors:**
 

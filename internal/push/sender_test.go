@@ -113,7 +113,9 @@ func TestWebPushSenderReturnsStatusOnRejection(t *testing.T) {
 	require.Equal(t, http.StatusGone, status)
 }
 
-func TestWebPushSenderRefusesInternalAddressAsPermanent(t *testing.T) {
+// A dial refused by the SSRF guard depends on how the worker resolves an
+// allowlisted push host, not on the subscription: never prune, never retry.
+func TestWebPushSenderRefusedAddressIsNoRetryNotPermanent(t *testing.T) {
 	priv, pub, err := webpush.GenerateVAPIDKeys()
 	require.NoError(t, err)
 	var hits atomic.Int32
@@ -124,7 +126,8 @@ func TestWebPushSenderRefusesInternalAddressAsPermanent(t *testing.T) {
 	_, err = sender.Send(context.Background(), browserSubscription(t, srv.URL+"/secret-token"), Message{Title: "x"})
 	var de *DeliveryError
 	require.True(t, errors.As(err, &de), "got %v", err)
-	require.True(t, de.Permanent)
+	require.False(t, de.Permanent, "a refused address must not prune the subscription")
+	require.True(t, de.NoRetry)
 	require.ErrorIs(t, err, common.ErrUnsafeAddress)
 	require.NotContains(t, err.Error(), "secret-token")
 	require.Zero(t, hits.Load())

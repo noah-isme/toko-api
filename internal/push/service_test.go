@@ -3,15 +3,19 @@ package push
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
+	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
@@ -101,6 +105,49 @@ func TestSendToUserForeignSenderErrorIsRedacted(t *testing.T) {
 	_, err := enabledService(store, sender).SendToUser(context.Background(), user, Message{})
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "secret-token")
+}
+
+// The worker's resolver can map an allowlisted push host into a blocked range
+// (DNS64/NAT64, mesh VIPs, fake-IP proxies). SendToUser must keep every
+// subscription and not ask for a retry; the real SSRF-safe client refuses a
+// loopback TLS server the same way.
+func TestSendToUserRefusedAddressKeepsSubscriptions(t *testing.T) {
+	priv, pub, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	user := newID()
+	store := &stubStore{}
+	for i := 0; i < 3; i++ {
+		sub := browserSubscription(t, fmt.Sprintf("%s/secret-token-%d", srv.URL, i))
+		sub.UserID = user
+		store.subs = append(store.subs, sub)
+	}
+	sender := NewWebPushSender(pub, priv, "mailto:a@b.c", 60, common.NewOutboundHTTPClient(2*time.Second, false))
+
+	res, err := enabledService(store, sender).SendToUser(context.Background(), user, Message{Title: "t"})
+	require.NoError(t, err, "a refused address cannot succeed on retry")
+	require.Equal(t, SendResult{Failed: 3}, res)
+	require.Zero(t, res.Pruned)
+	require.Empty(t, store.deleted, "no subscription may be deleted")
+	require.Zero(t, hits.Load(), "the dial must still be refused")
+}
+
+func TestSendToUserNoRetryDeliveryErrorIsDroppedAndKept(t *testing.T) {
+	user := newID()
+	store := &stubStore{subs: []dbgen.PushSubscription{subFor(user, fcmEndpoint), subFor(user, mozillaEndpoint)}}
+	sender := &fakeSender{errs: map[string]error{
+		fcmEndpoint: &DeliveryError{Host: "fcm.googleapis.com", Class: "refused", NoRetry: true},
+	}}
+	res, err := enabledService(store, sender).SendToUser(context.Background(), user, Message{})
+	require.NoError(t, err)
+	require.Equal(t, SendResult{Sent: 1, Failed: 1}, res)
+	require.Empty(t, store.deleted)
 }
 
 func TestSendToUserPermanent4xxDropped(t *testing.T) {

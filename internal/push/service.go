@@ -147,15 +147,17 @@ func (s *Service) Allowed(ctx context.Context, userID pgtype.UUID, category stri
 // SendToUser sends msg to every stored subscription of the user.
 //
 //   - 2xx: counted as sent.
-//   - 404/410 from the push service, a non-https endpoint, undecodable keys or
-//     an endpoint resolving to a non-public address: the subscription is
-//     deleted (pruned) and no error is returned for it.
+//   - 404/410 from the push service, a non-https endpoint or undecodable keys:
+//     the subscription is deleted (pruned) and no error is returned for it.
 //   - 429, 5xx, network errors and non-permanent sender errors (such as a
 //     VAPID key the push library cannot use): counted as failed and returned
 //     (joined), so a queue job retries. Never pruned: a server-side problem
 //     must not delete the user's subscriptions.
-//   - Other 4xx (bad VAPID config, payload too large, ...): counted as failed
-//     and logged; not returned, since a retry cannot succeed.
+//   - Other 4xx (bad VAPID config, payload too large, ...) and NoRetry sender
+//     errors (the push host resolves to an address the outbound guard refuses):
+//     counted as failed and logged at Warn with the host; not returned, since a
+//     retry cannot succeed, and never pruned, since the subscription may be
+//     fine.
 //
 // Returned errors and log lines name the push service host, never the
 // endpoint URL (its path is the subscription's bearer token).
@@ -191,6 +193,10 @@ func (s *Service) SendToUser(ctx context.Context, userID pgtype.UUID, msg Messag
 			if de == nil {
 				// Not from WebPushSender: keep only the type, not the text.
 				de = &DeliveryError{Host: host, Class: fmt.Sprintf("send error (%T)", err)}
+			}
+			if de.NoRetry {
+				subLog.Warn().Str("class", de.Class).Msg("push send failed; not retrying")
+				continue
 			}
 			subLog.Warn().Str("class", de.Class).Msg("push send failed")
 			retryable = errors.Join(retryable, de)

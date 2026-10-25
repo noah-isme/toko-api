@@ -64,6 +64,12 @@ func main() {
 
 	notifyStore := notify.NewStore(queries)
 	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL, MaxAttempts: cfg.QueueMaxAttempts}
+	// Email/push tasks are keyed by event id and re-dispatched by the outbox
+	// relay for up to OutboxRelayMaxAge, so their dedup key must outlive a
+	// queued or retrying task for that long; with IdempotencyTTL (10 min) a
+	// backlogged worker would let a re-dispatch queue a second copy.
+	notifyQueue := taskQueue
+	notifyQueue.DedupTTL = cfg.OutboxRelayMaxAge
 	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
 		Store: notifyStore,
@@ -148,7 +154,7 @@ func main() {
 		Scheduler: dispatcher,
 		Notifiers: []events.Notifier{
 			notify.EmailNotifier{
-				Queue:        &notify.EmailQueue{Queue: taskQueue, MaxAttempts: cfg.QueueMaxAttempts},
+				Queue:        &notify.EmailQueue{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
 				Enabled:      cfg.NotifyEmailEnabled,
 				From:         cfg.NotifyEmailFrom,
 				TopicToggles: emailToggles,
@@ -163,7 +169,7 @@ func main() {
 				},
 			},
 			&push.Notifier{
-				Enqueue: &push.Enqueuer{Queue: taskQueue, MaxAttempts: cfg.QueueMaxAttempts},
+				Enqueue: &push.Enqueuer{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
 				Enabled: cfg.PushEnabled(),
 			},
 		},
