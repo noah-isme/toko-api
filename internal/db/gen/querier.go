@@ -139,6 +139,10 @@ type Querier interface {
 	GetOrderForInvoice(ctx context.Context, arg GetOrderForInvoiceParams) (GetOrderForInvoiceRow, error)
 	GetOrderInvoice(ctx context.Context, arg GetOrderInvoiceParams) (GetOrderInvoiceRow, error)
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
+	// Re-reads the order status inside the numbering transaction and holds a
+	// share lock, so a concurrent cancel (an UPDATE of the row) either commits
+	// first and is seen here, or waits until the invoice row is committed.
+	GetOrderStatusForInvoice(ctx context.Context, arg GetOrderStatusForInvoiceParams) (OrderStatus, error)
 	GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetPersonalizedRecommendations(ctx context.Context, arg GetPersonalizedRecommendationsParams) ([]GetPersonalizedRecommendationsRow, error)

@@ -240,6 +240,23 @@ func TestIntegrationInvoiceConcurrentFirstRequests(t *testing.T) {
 	require.Equal(t, 1, e.count(`SELECT count(*) FROM order_invoices WHERE order_id=$1`, order))
 }
 
+// Item titles with cp1252 characters used to panic in the renderer after the
+// invoice number was committed, leaving the order permanently undownloadable.
+func TestIntegrationInvoiceNonASCIITitle(t *testing.T) {
+	e := newIEnv(t)
+	owner := e.insertUser("José Müller")
+	order := e.insertOrder(e.tenA, owner, "PAID", "PAID")
+	e.exec(`UPDATE order_items SET title='Café Latte – Men’s Edition' WHERE order_id=$1`, order)
+
+	for i := 0; i < 2; i++ {
+		rec := e.get("/orders/"+order+"/invoice", e.tenA, owner)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "Caf\xe9 Latte \x96 Men\x92s Edition")
+		require.Contains(t, rec.Body.String(), "Jos\xe9 M\xfcller")
+	}
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM order_invoices WHERE order_id=$1`, order))
+}
+
 func (e *ienv) count(sql string, args ...any) int {
 	e.t.Helper()
 	var n int

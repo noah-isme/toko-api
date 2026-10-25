@@ -247,8 +247,15 @@ date, order number and order date, payment status and channel, order status,
 customer name and email, shipping address, line items (title, SKU, qty, unit
 price, subtotal), and subtotal, discount (with voucher code), tax, shipping and
 total. Amounts are whole rupiah formatted as `Rp 1.250.000`, the same values as
-the order detail response. Labels are in Indonesian. Characters outside Latin-1
-render as `?`.
+the order detail response. Labels are in Indonesian. Text is encoded as
+Windows-1252, so Latin-1 letters and typographic punctuation (`é`, `’`, `–`)
+render as-is and any other character renders as `?`. The SKU column shows the
+variant's current SKU (order lines do not snapshot SKUs); titles, quantities
+and amounts are the order-time snapshot.
+
+An order cancelled at the same moment as its first invoice request is not
+issued a number: eligibility is re-checked under a row lock inside the
+numbering transaction.
 
 **Errors** (JSON envelope):
 

@@ -41,6 +41,16 @@ VALUES (sqlc.arg(tenant_id))
 ON CONFLICT (tenant_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id
 RETURNING last_number;
 
+-- name: GetOrderStatusForInvoice :one
+-- Re-reads the order status inside the numbering transaction and holds a
+-- share lock, so a concurrent cancel (an UPDATE of the row) either commits
+-- first and is seen here, or waits until the invoice row is committed.
+SELECT status
+FROM orders
+WHERE id = sqlc.arg(order_id)
+  AND tenant_id = sqlc.arg(tenant_id)
+FOR SHARE;
+
 -- name: GetOrderInvoice :one
 SELECT invoice_number, issued_at
 FROM order_invoices

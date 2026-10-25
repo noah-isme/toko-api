@@ -161,3 +161,48 @@ func TestLabels(t *testing.T) {
 		t.Errorf("zero date = %q", got)
 	}
 }
+
+// Item titles are wrapped with a width lookup; titles with characters above
+// 0x7F used to panic (index out of range [65533]) and made the order's invoice
+// permanently undownloadable. Latin-1/cp1252 characters must render as their
+// single-byte encoding, anything else as '?', and nothing may panic.
+func TestRenderNonASCIIItemTitles(t *testing.T) {
+	doc := fixtureDocument()
+	doc.Store.Name = "Toko Café"
+	doc.Customer.Name = "José Müller"
+	doc.Items = []Item{
+		{Title: "Café Latte", SKU: "CL-é", Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+		{Title: "Men’s Shirt", Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+		{Title: "Kaos – Hitam", Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+		{Title: "Kaos 日本", Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+		{Title: "bad \xff\xfe utf8", Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+		{Title: strings.Repeat("Crème brûlée – édition spéciale ", 8), Qty: 1, UnitPrice: 1000, Subtotal: 1000},
+	}
+	pdf, err := (&Renderer{Compress: false}).Render(doc)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	assertPDFStructure(t, pdf)
+	text := string(pdf)
+	for _, w := range []string{
+		"Caf\xe9 Latte",   // é in cp1252
+		"Men\x92s Shirt",  // ’ in cp1252
+		"Kaos \x96 Hitam", // – in cp1252
+		"Toko Caf\xe9",
+		"Jos\xe9 M\xfcller",
+	} {
+		if !strings.Contains(text, w) {
+			t.Errorf("PDF missing %q", w)
+		}
+	}
+}
+
+func TestRenderNeverPanics(t *testing.T) {
+	doc := fixtureDocument()
+	doc.Items = []Item{{Title: string([]byte{0x80, 0x81, 0xc3, 0x28, 0xe2, 0x82}), Qty: 1}}
+	doc.VoucherCode = "\xff"
+	doc.PaymentChannel = "\xfe"
+	if _, err := (&Renderer{}).Render(doc); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+}

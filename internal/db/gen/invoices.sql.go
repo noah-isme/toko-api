@@ -134,6 +134,29 @@ func (q *Queries) GetOrderInvoice(ctx context.Context, arg GetOrderInvoiceParams
 	return i, err
 }
 
+const getOrderStatusForInvoice = `-- name: GetOrderStatusForInvoice :one
+SELECT status
+FROM orders
+WHERE id = $1
+  AND tenant_id = $2
+FOR SHARE
+`
+
+type GetOrderStatusForInvoiceParams struct {
+	OrderID  pgtype.UUID `json:"order_id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+// Re-reads the order status inside the numbering transaction and holds a
+// share lock, so a concurrent cancel (an UPDATE of the row) either commits
+// first and is seen here, or waits until the invoice row is committed.
+func (q *Queries) GetOrderStatusForInvoice(ctx context.Context, arg GetOrderStatusForInvoiceParams) (OrderStatus, error) {
+	row := q.db.QueryRow(ctx, getOrderStatusForInvoice, arg.OrderID, arg.TenantID)
+	var status OrderStatus
+	err := row.Scan(&status)
+	return status, err
+}
+
 const incrementInvoiceCounter = `-- name: IncrementInvoiceCounter :one
 UPDATE invoice_counters
 SET last_number = last_number + 1,

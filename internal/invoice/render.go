@@ -32,8 +32,15 @@ func NewRenderer() *Renderer {
 	return &Renderer{Compress: true}
 }
 
-// Render produces the PDF for doc.
-func (r *Renderer) Render(doc Document) ([]byte, error) {
+// Render produces the PDF for doc. A panic inside fpdf (e.g. from a font
+// width lookup on unexpected input) is converted to an error so one bad
+// field can never take down the request goroutine.
+func (r *Renderer) Render(doc Document) (out []byte, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			out, err = nil, fmt.Errorf("invoice: render panic: %v", rec)
+		}
+	}()
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetCompression(r == nil || r.Compress)
 	pdf.SetMargins(pageMargin, pageMargin, pageMargin)
@@ -145,7 +152,10 @@ func (r *Renderer) Render(doc Document) ([]byte, error) {
 			m(it.UnitPrice),
 			m(it.Subtotal),
 		}
-		titleLines := pdf.SplitText(cells[0], colWidths[0]-2)
+		// cells[0] is already cp1252 (single-byte), so count lines with the
+		// byte-based SplitLines. SplitText decodes UTF-8 runes and would index
+		// the 256-entry width table with U+FFFD for any byte above 0x7F.
+		titleLines := pdf.SplitLines([]byte(cells[0]), colWidths[0]-2)
 		rows := len(titleLines)
 		if rows < 1 {
 			rows = 1

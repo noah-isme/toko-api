@@ -158,6 +158,18 @@ func (s *Service) assignNumber(ctx context.Context, tenantID, orderID pgtype.UUI
 	case !errors.Is(err, pgx.ErrNoRows):
 		return "", time.Time{}, fmt.Errorf("invoice: read existing: %w", err)
 	}
+	// Eligibility was checked before the transaction; re-check under a row
+	// lock so an order cancelled at the same moment is not issued a number.
+	status, err := qtx.GetOrderStatusForInvoice(ctx, dbgen.GetOrderStatusForInvoiceParams{OrderID: orderID, TenantID: tenantID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", time.Time{}, ErrNotFound
+		}
+		return "", time.Time{}, fmt.Errorf("invoice: recheck status: %w", err)
+	}
+	if !Eligible(status) {
+		return "", time.Time{}, ErrNotEligible
+	}
 	n, err := qtx.IncrementInvoiceCounter(ctx, tenantID)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("invoice: increment counter: %w", err)
