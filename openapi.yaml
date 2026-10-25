@@ -1976,7 +1976,10 @@ paths:
   /api/v1/analytics/sales:
     get:
       summary: Sales trend (daily)
-      description: Returns daily sales aggregates for the requested date range. Range is inclusive of `from` and exclusive of `to`.
+      description: >-
+        Returns daily sales aggregates for the requested date range, bucketed by tenant-local day
+        (tenants.timezone). Range is inclusive of `from` and exclusive of `to`. When `from`/`to` are
+        omitted the `days` window ends at the next tenant-local midnight. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
@@ -2000,7 +2003,7 @@ paths:
             type: integer
             default: 30
             minimum: 1
-          description: Number of days to look back when from/to are omitted
+          description: Number of whole tenant-local days to look back when from/to are omitted
       responses:
         '200':
           description: Daily sales aggregates
@@ -2016,7 +2019,7 @@ paths:
                     items:
                       $ref: '#/components/schemas/AnalyticsSalesDay'
         '400':
-          description: Invalid date range
+          description: Invalid date range or missing tenant (TENANT_REQUIRED)
         '401':
           description: Unauthorized
         '403':
@@ -2026,7 +2029,11 @@ paths:
   /api/v1/analytics/top-products:
     get:
       summary: Top products by qty
-      description: Returns top-selling products ordered by quantity sold.
+      description: >-
+        Returns the tenant's top-selling products ordered by quantity sold (all time unless `from`/`to`
+        are given). Item-level gross: sums order_items.subtotal of orders matching the revenue rule
+        (partially refunded orders keep their full item value, fully refunded orders are excluded).
+        Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
@@ -2036,7 +2043,8 @@ paths:
             type: integer
             default: 10
             minimum: 1
-          description: Number of items to return
+            maximum: 100
+          description: Number of items to return (values above 100 are clamped)
         - name: offset
           in: query
           schema:
@@ -2044,6 +2052,14 @@ paths:
             default: 0
             minimum: 0
           description: Number of items to skip
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+          description: Optional inclusive lower bound on order created_at (RFC3339)
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+          description: Optional exclusive upper bound on order created_at (RFC3339); must be after `from`
       responses:
         '200':
           description: Top selling products
@@ -2058,6 +2074,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AnalyticsTopProduct'
+        '400':
+          description: Invalid range or missing tenant (TENANT_REQUIRED)
         '401':
           description: Unauthorized
         '403':
@@ -2067,9 +2085,21 @@ paths:
   /api/v1/analytics/overview:
     get:
       summary: Overview for dashboard
-      description: Aggregated order and revenue metrics for the requested date range.
+      description: >-
+        Aggregated order and revenue metrics for the requested date range (sum of /analytics/sales
+        rows). Default window is `days` (default 30) whole tenant-local days. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 30, minimum: 1 }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
       responses:
         '200': { description: Analytics overview }
         '400': { description: Invalid range }
@@ -2877,14 +2907,22 @@ paths:
   /api/v1/admin/orders/stats:
     get:
       summary: Order statistics (admin)
+      description: >-
+        Order counters for the tenant in [startDate, endDate). totalRevenue, revenueOrders and
+        averageOrderValue follow the revenue rule; totalOrders and the status counters count every
+        order. Note: a date-only startDate/endDate is UTC midnight here (unlike the
+        /admin/reports endpoints, which use tenant-local midnight), so pass RFC3339 bounds with the
+        tenant offset to get tenant-day totals. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
         - name: startDate
           in: query
+          description: Inclusive lower bound, RFC3339 or YYYY-MM-DD (UTC midnight)
           schema: { type: string }
         - name: endDate
           in: query
+          description: Exclusive upper bound, RFC3339 or YYYY-MM-DD (UTC midnight)
           schema: { type: string }
       responses:
         '200':
@@ -2954,7 +2992,10 @@ paths:
   /api/v1/admin/analytics/overview:
     get:
       summary: Dashboard overview (admin)
-      description: Revenue, order, customer, and product counters plus top products by revenue.
+      description: >-
+        Revenue, order, customer, and product counters plus top products by revenue (item-level gross
+        of revenue-rule orders). totalRevenue, revenueOrders and averageOrderValue follow the revenue
+        rule. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
@@ -2979,6 +3020,166 @@ paths:
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '500': { description: Server error }
+  /api/v1/admin/reports/sales-by-category:
+    get:
+      summary: Sales by category (admin report)
+      description: >-
+        Item-level sales per category for the tenant in [from, to): units, distinct orders and gross item revenue (order_items.subtotal) of orders matching the revenue rule. Partially refunded orders keep their full item value; fully refunded orders are excluded, so totals can differ from order-level revenue. Products without a category are grouped as Uncategorized (categoryId null). Sorted by revenue desc.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"sales-by-category_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportSalesByCategory'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  Columns: category_id,category,category_slug,units_sold,orders,revenue,share. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (admin required) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/sales-by-product:
+    get:
+      summary: Sales by product (admin report, paginated)
+      description: >-
+        Item-level sales per product for the tenant in [from, to), same rule and amount basis as sales-by-category, sorted by revenue desc. format=csv ignores page/limit and streams up to 100,000 rows.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - name: categoryId
+          in: query
+          description: Only products in this category (400 BAD_REQUEST if not a UUID)
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"sales-by-product_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination, range]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminReportProductRow'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  range:
+                    $ref: '#/components/schemas/AdminReportRange'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  Columns: product_id,title,slug,category_id,category,units_sold,orders,revenue. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (admin required) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/conversion:
+    get:
+      summary: Checkout conversion funnel (admin report)
+      description: >-
+        Carts created -> checkouts started (orders created) -> paid orders for the tenant in [from, to). checkoutsStarted = paidOrders + pendingOrders + cancelledOrders + refundedOrders. Rates are 4-decimal fractions, 0 when the denominator is 0, and can exceed 1 (a cart can be checked out several times). Approximation: anonymous carts that never reach checkout are included.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"conversion_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportConversion'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  One data row. Columns: from,to,timezone,carts_created,checkouts_started,paid_orders,pending_orders,cancelled_orders,refunded_orders,paid_revenue,refunded_amount,checkout_rate,payment_rate,conversion_rate. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (admin required) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/customers:
+    get:
+      summary: New vs returning customers (admin report)
+      description: >-
+        Customers (signed-in users with at least one revenue-rule order in [from, to)) split into new (first revenue-rule order at this tenant is at or after from) and returning; each user counted once. revenueFromNew + revenueFromReturning + guestRevenue equals the range's net revenue. daily is per tenant-local day over customer orders only; daily rows do not sum to the summary.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"customers_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportCustomers'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  The daily series only. Columns: day,new_customers,returning_customers,orders,revenue. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (admin required) }
+        '500': { description: INTERNAL }
   /api/v1/tenant:
     get:
       summary: Get the current tenant context
@@ -3191,6 +3392,27 @@ paths:
       responses: { '200': { description: Tenant onboarding saved } }
 
 components:
+  parameters:
+    ReportFrom:
+      name: from
+      in: query
+      description: >-
+        Inclusive start. RFC3339 is used as-is; YYYY-MM-DD is midnight in the tenant timezone.
+        Default: 30 days before `to`.
+      schema: { type: string }
+      example: '2026-10-01'
+    ReportTo:
+      name: to
+      in: query
+      description: >-
+        Exclusive end. RFC3339 is used as-is; YYYY-MM-DD is midnight in the tenant timezone.
+        Default: the next tenant-local midnight. Must be after `from`; at most 366 days after it.
+      schema: { type: string }
+      example: '2026-11-01'
+    ReportFormat:
+      name: format
+      in: query
+      schema: { type: string, enum: [json, csv], default: json }
   securitySchemes:
     bearerAuth:
       type: http
@@ -3486,16 +3708,17 @@ components:
                   subtotal: { type: integer }
     AdminOrderStats:
       type: object
-      required: [totalOrders, totalRevenue, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, averageOrderValue]
+      required: [totalOrders, totalRevenue, revenueOrders, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, averageOrderValue]
       properties:
-        totalOrders: { type: integer }
-        totalRevenue: { type: integer, description: Excludes cancelled orders }
+        totalOrders: { type: integer, description: "All orders in range, any status" }
+        totalRevenue: { type: integer, description: Net revenue (IDR) of orders matching the revenue rule }
+        revenueOrders: { type: integer, description: Orders matching the revenue rule }
         pendingOrders: { type: integer }
         paidOrders: { type: integer }
         shippedOrders: { type: integer }
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
-        averageOrderValue: { type: integer }
+        averageOrderValue: { type: integer, description: "totalRevenue / revenueOrders (rounded), 0 when none" }
     AdminVoucher:
       type: object
       required: [id, code, kind, value, minSpend, usedCount, combinable, priority, productIds, categoryIds, brandIds, createdAt, updatedAt]
@@ -3528,14 +3751,15 @@ components:
         updatedAt: { type: string, format: date-time }
     AdminAnalyticsOverview:
       type: object
-      required: [range, totalRevenue, totalOrders, totalCustomers, totalProducts, averageOrderValue, topProducts]
+      required: [range, totalRevenue, revenueOrders, totalOrders, totalCustomers, totalProducts, averageOrderValue, topProducts]
       properties:
         range: { type: string, enum: [7d, 30d, 90d, all] }
-        totalRevenue: { type: integer }
-        totalOrders: { type: integer }
+        totalRevenue: { type: integer, description: Net revenue (IDR) of orders matching the revenue rule }
+        revenueOrders: { type: integer, description: Orders matching the revenue rule }
+        totalOrders: { type: integer, description: "All orders in range, any status" }
         totalCustomers: { type: integer }
         totalProducts: { type: integer }
-        averageOrderValue: { type: integer }
+        averageOrderValue: { type: integer, description: "totalRevenue / revenueOrders (rounded), 0 when none" }
         pendingOrders: { type: integer }
         paidOrders: { type: integer }
         shippedOrders: { type: integer }
@@ -3552,6 +3776,92 @@ components:
               slug: { type: string }
               unitsSold: { type: integer }
               revenue: { type: integer }
+    AdminReportRange:
+      type: object
+      required: [from, to, timezone]
+      properties:
+        from: { type: string, format: date-time, description: "Resolved start, RFC3339 with the tenant offset" }
+        to: { type: string, format: date-time, description: "Resolved exclusive end, RFC3339 with the tenant offset" }
+        timezone: { type: string, description: IANA timezone used (UTC when the tenant value is empty or invalid) }
+    AdminReportCategoryRow:
+      type: object
+      required: [categoryId, categoryName, categorySlug, unitsSold, orders, revenue, share]
+      properties:
+        categoryId: { type: [string, "null"], format: uuid, description: null for Uncategorized }
+        categoryName: { type: string }
+        categorySlug: { type: [string, "null"] }
+        unitsSold: { type: integer }
+        orders: { type: integer, description: Distinct orders containing the category }
+        revenue: { type: integer, description: Gross item revenue (IDR) }
+        share: { type: number, description: "revenue / totalRevenue, 4 decimals" }
+    AdminReportSalesByCategory:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [totalRevenue, totalUnits, rows]
+          properties:
+            totalRevenue: { type: integer }
+            totalUnits: { type: integer }
+            rows:
+              type: array
+              items: { $ref: '#/components/schemas/AdminReportCategoryRow' }
+    AdminReportProductRow:
+      type: object
+      required: [productId, title, slug, categoryId, categoryName, unitsSold, orders, revenue]
+      properties:
+        productId: { type: [string, "null"], format: uuid }
+        title: { type: string, description: Title as recorded on the order items }
+        slug: { type: string }
+        categoryId: { type: [string, "null"], format: uuid }
+        categoryName: { type: string, description: Uncategorized when the product has no category }
+        unitsSold: { type: integer }
+        orders: { type: integer }
+        revenue: { type: integer, description: Gross item revenue (IDR) }
+    AdminReportConversion:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [cartsCreated, checkoutsStarted, paidOrders, pendingOrders, cancelledOrders, refundedOrders, paidRevenue, refundedAmount, checkoutRate, paymentRate, conversionRate]
+          properties:
+            cartsCreated: { type: integer, description: Carts (incl. anonymous) created in range }
+            checkoutsStarted: { type: integer, description: Orders created in range (one per checkout) }
+            paidOrders: { type: integer, description: Orders matching the revenue rule (includes partially refunded) }
+            pendingOrders: { type: integer, description: PENDING_PAYMENT }
+            cancelledOrders: { type: integer, description: CANCELLED }
+            refundedOrders: { type: integer, description: Revenue-status orders fully refunded (PENDING+SUCCEEDED refunds >= total) }
+            paidRevenue: { type: integer, description: Net revenue (IDR) of paidOrders }
+            refundedAmount: { type: integer, description: PENDING+SUCCEEDED refunds recorded against orders created in range }
+            checkoutRate: { type: number, description: checkoutsStarted / cartsCreated }
+            paymentRate: { type: number, description: paidOrders / checkoutsStarted }
+            conversionRate: { type: number, description: paidOrders / cartsCreated }
+    AdminReportCustomersDay:
+      type: object
+      required: [day, newCustomers, returningCustomers, orders, revenue]
+      properties:
+        day: { type: string, format: date, description: Tenant-local date }
+        newCustomers: { type: integer, description: Users whose first revenue-rule order at this tenant is on this day }
+        returningCustomers: { type: integer, description: Users ordering this day whose first order was on an earlier day }
+        orders: { type: integer, description: Customer (non-guest) revenue-rule orders }
+        revenue: { type: integer, description: Net revenue (IDR) of those orders }
+    AdminReportCustomers:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [newCustomers, returningCustomers, totalCustomers, repeatRate, ordersFromNew, ordersFromReturning, revenueFromNew, revenueFromReturning, guestOrders, guestRevenue, daily]
+          properties:
+            newCustomers: { type: integer }
+            returningCustomers: { type: integer }
+            totalCustomers: { type: integer }
+            repeatRate: { type: number, description: "returningCustomers / totalCustomers, 4 decimals" }
+            ordersFromNew: { type: integer }
+            ordersFromReturning: { type: integer }
+            revenueFromNew: { type: integer }
+            revenueFromReturning: { type: integer }
+            guestOrders: { type: integer }
+            guestRevenue: { type: integer }
+            daily:
+              type: array
+              items: { $ref: '#/components/schemas/AdminReportCustomersDay' }
     CheckoutRequest:
       type: object
       required:
@@ -3681,16 +3991,17 @@ components:
         day:
           type: string
           format: date-time
-          description: Aggregation day
+          description: Tenant-local midnight of the aggregation day, with the tenant offset (e.g. 2026-10-01T00:00:00+07:00)
+          example: '2026-10-01T00:00:00+07:00'
         paid_orders:
           type: integer
-          description: Paid orders in the period
+          description: Orders matching the revenue rule (PAID through DELIVERED, not fully refunded)
         all_orders:
           type: integer
-          description: Total orders in the period
+          description: Total orders in the period (any status)
         revenue:
           type: integer
-          description: Gross revenue from paid orders in IDR
+          description: Net revenue in IDR (pricing_total minus PENDING/SUCCEEDED refunds) of revenue-rule orders
     AnalyticsTopProduct:
       type: object
       required:
@@ -3704,10 +4015,10 @@ components:
           description: Product ID
         qty_sold:
           type: integer
-          description: Total units sold
+          description: Total units sold in revenue-rule orders
         gross:
           type: integer
-          description: Gross revenue for the product in IDR
+          description: Sum of order_items.subtotal (gross item value, IDR) in revenue-rule orders
     Review:
       type: object
       required:

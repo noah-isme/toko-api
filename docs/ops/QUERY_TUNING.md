@@ -5,7 +5,7 @@ Target the following expensive flows when investigating latency regressions:
 1. Product listing (filters & sorts).
 2. Product search (full-text lookups).
 3. Related products (category recommendations).
-4. Top products analytics materialized view refreshes.
+4. Live tenant-scoped analytics/report aggregates (`internal/db/queries/analytics.sql`, `admin_reports.sql`).
 5. Orders listing (admin dashboard).
 
 For each query:

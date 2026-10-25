@@ -4,6 +4,8 @@
 
 All admin endpoints require **admin authentication**.
 
+Dashboard overview, order stats and the reports (`/api/v1/admin/analytics/overview`, `/api/v1/admin/orders/stats`, `/api/v1/admin/reports/*`, including CSV export and the revenue rule) are documented in [Analytics](analytics.md).
+
 ## 6.1 List Flash Sale Campaigns
 
 ```http
