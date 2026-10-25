@@ -15,7 +15,10 @@ fails or the process crashes before it completes, the worker's outbox relay
 re-dispatches the event (after 30 s, for up to 24 h, at most 10 attempts).
 Fan-out is idempotent per event: an in-app notification is created at most once
 per event and user (unique `(event_id, user_id)`), and email/push tasks are
-deduplicated by event id. Shipment emails are produced only by this event path;
+deduplicated by event id while queued and for the relay window (24 h) after
+they complete, so a re-dispatch never sends the same email or push twice. A
+push that reached at least one of the user's devices is not retried for the
+devices that failed. Shipment emails are produced only by this event path;
 the `NOTIFY_ON_SHIPPED`, `NOTIFY_ON_OUT_FOR_DELIVERY` and `NOTIFY_ON_DELIVERED`
 flags still gate them (together with `NOTIFY_EMAIL_ENABLED` and the per-topic
 toggles), so a shipment status change sends one email, not two. Web push is

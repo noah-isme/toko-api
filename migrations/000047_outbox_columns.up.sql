@@ -11,17 +11,18 @@
 -- metadata-only on PG >= 11 (no rewrite, no backfill UPDATE): now() is STABLE,
 -- so it is stored as a fast default evaluated once at ALTER time. The lock is
 -- held for milliseconds; lock_timeout bounds only the wait to acquire it, and
--- a timeout fails the migration fast (the Job retries; IF NOT EXISTS makes a
--- rerun safe).
+-- a timeout fails the migration fast.
 --
 -- Rollout. dispatched_at DEFAULT now() means existing rows, and rows written by
 -- old binaries during the rollout (which still fan out inline), are born
 -- "dispatched" and are never picked up by the outbox relay. Only the new
 -- InsertDomainEvent writes dispatched_at = NULL explicitly.
 --
--- Dirty-state recovery: if the second transaction fails after the first one
--- committed, version 47 is marked dirty. Run `migrate force 46` and then
--- `migrate up` again; the IF NOT EXISTS clauses skip the committed part.
+-- Dirty-state recovery: golang-migrate marks version 47 dirty before it runs
+-- this file, so ANY failure (including a lock_timeout on the first ALTER)
+-- leaves it dirty, and plain retries (e.g. the migrate Job's backoffLimit)
+-- then fail with "Dirty database version 47". Always run `migrate force 46`
+-- and then `migrate up`; the IF NOT EXISTS clauses skip whatever committed.
 --
 -- The unique index on notifications (event_id, user_id) is built CONCURRENTLY
 -- in 000048, never here.

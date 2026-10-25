@@ -697,10 +697,10 @@ Returns DLQ entries filtered by kind with pagination.
 **Query parameters:**
 
 - `kind` — optional queue kind filter. Kinds produced by the worker: `webhook-delivery`, `email-delivery`, `push-delivery`
-
-For `email-delivery` and `push-delivery` the `message.payload` is only `{ "eventId": "<uuid>", "topic": "<topic>" }` (no recipient, subject, body, user id or endpoint), and `lastError` is a redacted failure class such as `email-delivery: smtp data failed (smtp 451) via smtp.example.com` or `push-delivery: 1 of 1 subscription(s) failed: push: status 503 from fcm.googleapis.com` (host and status only, never the endpoint URL). Replaying such an entry re-renders the message from the stored domain event.
 - `limit` — page size, capped at `200` (handler default `50`)
 - `offset` — items to skip (default `0`)
+
+For `email-delivery` and `push-delivery` the `message.payload` is only `{ "eventId": "<uuid>", "topic": "<topic>" }` (no recipient, subject, body, user id or endpoint), and `lastError` is a redacted failure class such as `email-delivery: smtp data failed (smtp 451) via smtp.example.com` or `push-delivery: 1 of 1 subscription(s) failed: push: status 503 from fcm.googleapis.com` (host and status only, never the endpoint URL). Replaying such an entry re-renders the message from the stored domain event.
 
 **Response:** `200 OK`
 

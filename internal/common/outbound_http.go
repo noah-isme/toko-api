@@ -11,10 +11,22 @@ import (
 )
 
 // ErrUnsafeAddress is returned (wrapped) when an outbound connection would go
-// to a loopback, private, link-local, CGNAT, unspecified or multicast address.
+// to a loopback, private, link-local, CGNAT, reserved, unspecified or multicast
+// address, or to an IPv6 transition prefix (NAT64, 6to4, Teredo).
 var ErrUnsafeAddress = errors.New("outbound: destination address not allowed")
 
-var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+// blockedPrefixes are non-public ranges the netip predicates do not cover,
+// plus IPv6 transition prefixes that can wrap an internal IPv4 address.
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT shared address space
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, incl. 255.255.255.255
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64 well-known prefix
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix
+	netip.MustParsePrefix("2002::/16"),      // 6to4 (embeds an IPv4 address)
+	netip.MustParsePrefix("2001::/32"),      // Teredo (embeds an IPv4 address)
+}
 
 // NewOutboundHTTPClient returns an HTTP client for requests to user-supplied
 // URLs (e.g. web push endpoints). Unless allowPrivate is set (tests against
@@ -60,8 +72,13 @@ func RejectUnsafeAddr(_ string, address string, _ syscall.RawConn) error {
 	}
 	ip = ip.Unmap()
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnatPrefix.Contains(ip) {
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return fmt.Errorf("%w: %s", ErrUnsafeAddress, address)
+	}
+	for _, prefix := range blockedPrefixes {
+		if prefix.Contains(ip) {
+			return fmt.Errorf("%w: %s", ErrUnsafeAddress, address)
+		}
 	}
 	return nil
 }

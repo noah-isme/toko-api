@@ -1007,8 +1007,13 @@ paths:
       description: |
         Synchronously sends a test push (`{"title":"Notifikasi uji","body":"Push notification berfungsi.","tag":"test","data":{"url":"/account/notifications"}}`)
         to every stored subscription of the authenticated user. Per-type
-        preferences are ignored (explicit debug action). Subscriptions whose push
-        service answers 404/410 are deleted and counted in `pruned`.
+        preferences are ignored (explicit debug action). Subscriptions that can
+        never receive a push are deleted and counted in `pruned`: the push
+        service answered 404/410, the stored endpoint is not https, the stored
+        keys are unusable (`p256dh` not an uncompressed P-256 point, `auth` not
+        16 bytes), or the endpoint resolves to a non-public address. Server-side
+        failures (e.g. misconfigured VAPID keys) count as `failed` and never
+        delete a subscription.
         Rate-limited per user (default 5 calls per 60 seconds,
         `RATE_LIMIT_PUSH_TEST_MAX` / `RATE_LIMIT_PUSH_TEST_WINDOW_SEC`).
         No request body.
@@ -1046,7 +1051,9 @@ paths:
                 type: string
                 example: rate limit exceeded
         '500':
-          description: Subscriptions could not be loaded (`PUSH_SEND_FAILED`, no details).
+          description: |
+            Subscriptions could not be loaded (`PUSH_SEND_FAILED`, no details), or
+            the token's user id is not a UUID (`INVALID_USER_ID`).
           content:
             application/json:
               schema:
@@ -1054,7 +1061,10 @@ paths:
         '502':
           description: |
             No push service accepted the notification (`PUSH_SEND_FAILED`).
-            `error.details` is `{ "sent": 0, "failed": <int>, "pruned": <int> }`.
+            `error.details` is `{ "sent": 0, "failed": <int>, "pruned": <int> }`
+            with the same meaning as in the 200 response (`pruned` subscriptions
+            were deleted: 404/410, non-https endpoint, unusable keys or
+            non-public address; `failed` ones were kept).
           content:
             application/json:
               schema:
@@ -1077,7 +1087,8 @@ paths:
         (operators extend it with `PUSH_ENDPOINT_ALLOWED_HOSTS`). `endpoint` is
         limited to 2048 bytes and each key to 512 bytes. At most
         `PUSH_MAX_SUBSCRIPTIONS_PER_USER` (default 10) subscriptions are kept per
-        user; subscribing another endpoint silently evicts the oldest.
+        user; subscribing another endpoint silently evicts the one least
+        recently (re)subscribed.
       security:
         - bearerAuth: []
       requestBody:
@@ -4081,10 +4092,10 @@ components:
           description: Subscriptions accepted by their push service.
         failed:
           type: integer
-          description: Subscriptions rejected by their push service or unreachable.
+          description: Subscriptions rejected by their push service, unreachable, or not sendable because of a server-side error (e.g. misconfigured VAPID keys). Never deleted.
         pruned:
           type: integer
-          description: Subscriptions deleted because the push service answered 404/410 (or the stored endpoint was not https).
+          description: Subscriptions deleted because they can never receive a push (push service answered 404/410, endpoint not https, unusable p256dh/auth keys, or endpoint resolving to a non-public address).
     Favorite:
       type: object
       required:

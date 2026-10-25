@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -13,6 +14,22 @@ import (
 
 type Handler struct {
 	Svc *Service
+}
+
+// Mount registers the /push routes on r. Auth and tenant middleware are the
+// caller's job; sendTestLimit wraps only POST /send-test (one outbound request
+// per stored subscription, so it needs its own tight per-user budget) and must
+// not be nil.
+func (h *Handler) Mount(r chi.Router, sendTestLimit func(http.Handler) http.Handler) {
+	if sendTestLimit == nil {
+		panic("push: Mount requires a send-test rate limiter")
+	}
+	r.Get("/vapid-key", h.GetVapidPublicKey)
+	r.Post("/subscription", h.Subscribe)
+	r.Delete("/subscription", h.Unsubscribe)
+	r.Get("/preferences", h.GetPreferences)
+	r.Patch("/preferences", h.UpdatePreferences)
+	r.With(sendTestLimit).Post("/send-test", h.SendTest)
 }
 
 // Limits that keep a stored subscription row bounded.

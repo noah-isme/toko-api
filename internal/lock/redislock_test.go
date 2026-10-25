@@ -66,3 +66,29 @@ func TestWithLockIdempotent(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, []string{"first", "second"}, order)
 }
+
+func TestTryLeaseIsExclusiveUntilExpiry(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	locker := lock.Locker{R: client}
+	ctx := context.Background()
+
+	ok, err := locker.TryLease(ctx, "relay", 10*time.Second)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = locker.TryLease(ctx, "relay", 10*time.Second)
+	require.NoError(t, err)
+	require.False(t, ok, "a held lease is not granted twice and the call does not wait")
+
+	mr.FastForward(11 * time.Second)
+	ok, err = locker.TryLease(ctx, "relay", 10*time.Second)
+	require.NoError(t, err)
+	require.True(t, ok, "the lease expires on its own")
+
+	_, err = locker.TryLease(ctx, "relay", 0)
+	require.Error(t, err)
+}

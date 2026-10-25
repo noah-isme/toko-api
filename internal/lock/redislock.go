@@ -54,6 +54,20 @@ func (l Locker) WithLock(ctx context.Context, key string, ttl time.Duration, fn 
 	}
 }
 
+// TryLease takes key for ttl if it is free and reports whether it did. It
+// never waits and never releases: the lease simply expires. Use it for
+// periodic jobs that should run at most once per ttl across replicas, where
+// releasing early would let the next replica's tick run the job again.
+func (l Locker) TryLease(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if l.R == nil {
+		return false, errors.New("lock: redis client not configured")
+	}
+	if ttl <= 0 {
+		return false, errors.New("lock: lease ttl must be positive")
+	}
+	return l.R.SetNX(ctx, key, uuid.NewString(), ttl).Result()
+}
+
 func (l Locker) release(ctx context.Context, key, token string) {
 	const script = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])

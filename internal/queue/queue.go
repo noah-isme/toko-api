@@ -157,6 +157,13 @@ type Worker struct {
 	HeartbeatInterval time.Duration
 	SoftDeadline      time.Duration
 	Logger            *zerolog.Logger
+	// DoneMarkerTTL, when positive, keeps a task's dedup key for this long
+	// after a successful run instead of deleting it on ack, so re-enqueueing
+	// the same idempotency key (e.g. the outbox relay re-dispatching an event
+	// after another handler failed) is dropped rather than run again. Use at
+	// least the relay's max age for kinds whose handlers are not idempotent
+	// (email, push). Zero keeps the delete-on-ack behaviour.
+	DoneMarkerTTL time.Duration
 }
 
 // Run starts processing tasks until the context is cancelled. Active tasks are
@@ -346,7 +353,11 @@ func (w Worker) ack(ctx context.Context, processingKey, raw string, msg taskMess
 		_ = w.R.ZRem(ctx, processingKey, raw)
 	}
 	if msg.Key != "" {
-		_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
+		if w.DoneMarkerTTL > 0 {
+			_ = w.R.Set(ctx, w.dedupKey(msg.Kind, msg.Key), "done", w.DoneMarkerTTL).Err()
+		} else {
+			_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
+		}
 	}
 	if QueueProcessedTotal != nil {
 		QueueProcessedTotal.WithLabelValues(queueLabel(msg.Kind), "success").Inc()

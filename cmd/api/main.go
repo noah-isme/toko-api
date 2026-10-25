@@ -735,12 +735,7 @@ func main() {
 		v.Route("/push", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
 			p.Use(tenantMembership)
-			p.Get("/vapid-key", pushHandler.GetVapidPublicKey)
-			p.Post("/subscription", pushHandler.Subscribe)
-			p.Delete("/subscription", pushHandler.Unsubscribe)
-			p.Get("/preferences", pushHandler.GetPreferences)
-			p.Patch("/preferences", pushHandler.UpdatePreferences)
-			p.With(pushTestLimiter).Post("/send-test", pushHandler.SendTest)
+			pushHandler.Mount(p, pushTestLimiter)
 		})
 
 		// Favorites

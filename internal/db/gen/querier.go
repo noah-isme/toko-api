@@ -242,7 +242,8 @@ type Querier interface {
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
 	TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error)
-	// Keeps the newest $2 subscriptions of a user and deletes the rest.
+	// Keeps the $2 most recently (re)subscribed subscriptions of a user and
+	// deletes the rest. updated_at is bumped by the CreatePushSubscription upsert.
 	TrimPushSubscriptions(ctx context.Context, arg TrimPushSubscriptionsParams) error
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
 	UnsubscribeNewsletter(ctx context.Context, arg UnsubscribeNewsletterParams) error

@@ -158,7 +158,7 @@ WHERE push_subscriptions.user_id = $1
   AND push_subscriptions.id IN (
     SELECT ps.id FROM push_subscriptions ps
     WHERE ps.user_id = $1
-    ORDER BY ps.created_at DESC, ps.id
+    ORDER BY ps.updated_at DESC, ps.id
     OFFSET $2
   )
 `
@@ -168,7 +168,8 @@ type TrimPushSubscriptionsParams struct {
 	Offset int32       `json:"offset"`
 }
 
-// Keeps the newest $2 subscriptions of a user and deletes the rest.
+// Keeps the $2 most recently (re)subscribed subscriptions of a user and
+// deletes the rest. updated_at is bumped by the CreatePushSubscription upsert.
 func (q *Queries) TrimPushSubscriptions(ctx context.Context, arg TrimPushSubscriptionsParams) error {
 	_, err := q.db.Exec(ctx, trimPushSubscriptions, arg.UserID, arg.Offset)
 	return err

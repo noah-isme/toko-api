@@ -26,15 +26,18 @@ func (s *stubOutboxStore) ListUndispatchedDomainEvents(_ context.Context, arg db
 
 type recordingLocker struct {
 	keys []string
+	ttls []time.Duration
+	busy bool
 	err  error
 }
 
-func (l *recordingLocker) WithLock(ctx context.Context, key string, _ time.Duration, fn func(context.Context) error) error {
+func (l *recordingLocker) TryLease(_ context.Context, key string, ttl time.Duration) (bool, error) {
 	l.keys = append(l.keys, key)
+	l.ttls = append(l.ttls, ttl)
 	if l.err != nil {
-		return l.err
+		return false, l.err
 	}
-	return fn(ctx)
+	return !l.busy, nil
 }
 
 func pendingEvent(topic string) dbgen.DomainEvent {
@@ -59,6 +62,7 @@ func TestOutboxRelayRunOnceRedispatches(t *testing.T) {
 	require.Len(t, notifier.events, 2)
 	require.ElementsMatch(t, []any{evA.ID, evB.ID}, []any{store.marked[0], store.marked[1]})
 	require.Equal(t, []string{"lock:outbox:relay"}, locker.keys)
+	require.Equal(t, []time.Duration{13500 * time.Millisecond}, locker.ttls, "lease is ~one default interval")
 }
 
 func TestOutboxRelayRunOnceCountsOnlySuccessfulDispatches(t *testing.T) {
@@ -103,11 +107,23 @@ func TestOutboxRelayRunOnceSkipsWhenLockBusy(t *testing.T) {
 	relay := &events.OutboxRelay{
 		Store:  outbox,
 		Bus:    &events.Bus{Store: &stubStore{}},
-		Locker: &recordingLocker{err: context.DeadlineExceeded},
+		Locker: &recordingLocker{busy: true},
 	}
 	n, err := relay.RunOnce(context.Background())
 	require.NoError(t, err)
 	require.Zero(t, n)
+	require.Empty(t, outbox.args)
+}
+
+func TestOutboxRelayRunOnceReturnsLeaseError(t *testing.T) {
+	outbox := &stubOutboxStore{rows: []dbgen.DomainEvent{pendingEvent(events.TopicOrderPaid)}}
+	relay := &events.OutboxRelay{
+		Store:  outbox,
+		Bus:    &events.Bus{Store: &stubStore{}},
+		Locker: &recordingLocker{err: errors.New("redis down")},
+	}
+	_, err := relay.RunOnce(context.Background())
+	require.Error(t, err)
 	require.Empty(t, outbox.args)
 }
 

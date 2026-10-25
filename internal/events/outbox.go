@@ -17,10 +17,11 @@ type OutboxStore interface {
 	ListUndispatchedDomainEvents(ctx context.Context, arg dbgen.ListUndispatchedDomainEventsParams) ([]dbgen.DomainEvent, error)
 }
 
-// RelayLocker serialises sweeps across worker replicas. Satisfied by
-// lock.Locker.
+// RelayLocker limits sweeps across worker replicas. Satisfied by lock.Locker.
+// TryLease must not block: a replica whose tick finds the lease taken skips
+// that sweep.
 type RelayLocker interface {
-	WithLock(ctx context.Context, key string, ttl time.Duration, fn func(context.Context) error) error
+	TryLease(ctx context.Context, key string, ttl time.Duration) (bool, error)
 }
 
 const outboxRelayLockKey = "lock:outbox:relay"
@@ -78,28 +79,24 @@ func (r *OutboxRelay) Run(ctx context.Context) error {
 }
 
 // RunOnce performs a single sweep and returns how many events were dispatched
-// successfully. When another replica holds the sweep lock for longer than one
-// interval, it returns (0, nil).
+// successfully. With a Locker, the sweep runs only if this replica takes the
+// relay lease, which then expires on its own (it is not released when the
+// sweep ends), so all replicas together sweep about once per Interval rather
+// than once per replica per Interval. A busy lease returns (0, nil).
 func (r *OutboxRelay) RunOnce(ctx context.Context) (int, error) {
 	if r == nil || r.Store == nil || r.Bus == nil {
 		return 0, errors.New("events: outbox relay not configured")
 	}
-	if r.Locker == nil {
-		return r.sweep(ctx)
+	if r.Locker != nil {
+		ok, err := r.Locker.TryLease(ctx, outboxRelayLockKey, r.leaseTTL())
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, nil
+		}
 	}
-	var dispatched int
-	lockCtx, cancel := context.WithTimeout(ctx, r.interval())
-	defer cancel()
-	err := r.Locker.WithLock(lockCtx, outboxRelayLockKey, r.lockTTL(), func(context.Context) error {
-		// The sweep runs on the parent context: lockCtx only bounds the wait.
-		n, err := r.sweep(ctx)
-		dispatched = n
-		return err
-	})
-	if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-		return 0, nil
-	}
-	return dispatched, err
+	return r.sweep(ctx)
 }
 
 func (r *OutboxRelay) sweep(ctx context.Context) (int, error) {
@@ -148,12 +145,12 @@ func (r *OutboxRelay) interval() time.Duration {
 	return r.Interval
 }
 
-func (r *OutboxRelay) lockTTL() time.Duration {
-	ttl := 2 * r.interval()
-	if ttl < 30*time.Second {
-		ttl = 30 * time.Second
-	}
-	return ttl
+// leaseTTL is slightly shorter than the interval so the replica that swept
+// last can take the lease again on its own next tick despite timer jitter. A
+// sweep that outlasts the lease may overlap the next one; handlers are
+// idempotent per event, so that only costs duplicate work.
+func (r *OutboxRelay) leaseTTL() time.Duration {
+	return r.interval() * 9 / 10
 }
 
 func (r *OutboxRelay) minAge() time.Duration {

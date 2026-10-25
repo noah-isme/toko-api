@@ -92,8 +92,9 @@ func main() {
 	}
 
 	dlqStore := queue.NewStore(pool)
-	newQueueWorker := func(kind string, concurrency int, handle func(context.Context, []byte) error) queue.Worker {
+	newQueueWorker := func(kind string, concurrency int, doneMarkerTTL time.Duration, handle func(context.Context, []byte) error) queue.Worker {
 		return queue.Worker{
+			DoneMarkerTTL:     doneMarkerTTL,
 			R:                 redisClient,
 			Prefix:            cfg.QueueRedisPrefix,
 			Kind:              kind,
@@ -180,9 +181,12 @@ func main() {
 	}
 
 	components := map[string]func(context.Context) error{
-		"webhook-delivery": newQueueWorker(notify.WebhookDeliveryTask(), cfg.QueueConcurrencyWebhook, deliveryWorker.Handle).Run,
-		"email-delivery":   newQueueWorker(notify.EmailDeliveryTask(), cfg.QueueConcurrencyEmail, emailWorker.Handle).Run,
-		"push-delivery":    newQueueWorker(push.PushDeliveryTask(), cfg.QueueConcurrencyPush, pushWorker.Handle).Run,
+		// Webhook deliveries are idempotent via webhook_deliveries status, so
+		// their dedup key is dropped on ack. Email and push are not: keep the
+		// marker for the relay window so a re-dispatch cannot send twice.
+		"webhook-delivery": newQueueWorker(notify.WebhookDeliveryTask(), cfg.QueueConcurrencyWebhook, 0, deliveryWorker.Handle).Run,
+		"email-delivery":   newQueueWorker(notify.EmailDeliveryTask(), cfg.QueueConcurrencyEmail, cfg.OutboxRelayMaxAge, emailWorker.Handle).Run,
+		"push-delivery":    newQueueWorker(push.PushDeliveryTask(), cfg.QueueConcurrencyPush, cfg.OutboxRelayMaxAge, pushWorker.Handle).Run,
 		"outbox-relay":     relay.Run,
 	}
 

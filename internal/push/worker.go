@@ -91,6 +91,14 @@ func (w *Worker) Handle(ctx context.Context, payload []byte) error {
 	if errors.Is(err, ErrNoSubscriptions) {
 		return nil
 	}
+	if err != nil && result.Sent > 0 {
+		// Partial success counts as done: a retry resends to every
+		// subscription, so the devices that already got the push would get it
+		// again on each attempt. The failed devices miss this one message.
+		logger.Warn().Err(err).Int("sent", result.Sent).Int("failed", result.Failed).
+			Msg("push delivered to some subscriptions only; not retrying")
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("push-delivery: %d of %d subscription(s) failed: %w",
 			result.Failed, result.Sent+result.Failed+result.Pruned, err)

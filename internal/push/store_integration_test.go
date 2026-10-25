@@ -17,7 +17,7 @@ import (
 )
 
 // Opt-in: set TEST_DATABASE_URL to a migrated database to run it.
-func TestIntegrationTrimPushSubscriptionsKeepsNewest(t *testing.T) {
+func TestIntegrationTrimPushSubscriptionsKeepsMostRecentlySubscribed(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL not set; skipping Postgres integration test")
@@ -40,10 +40,17 @@ func TestIntegrationTrimPushSubscriptionsKeepsNewest(t *testing.T) {
 			UserID: user, Endpoint: fmt.Sprintf("https://fcm.googleapis.com/fcm/send/%d", i), P256dh: "p", Auth: "a",
 		})
 		require.NoError(t, err)
-		_, err = pool.Exec(ctx, `UPDATE push_subscriptions SET created_at = $2 WHERE user_id = $1 AND endpoint = $3`,
-			user, time.Now().Add(time.Duration(i)*time.Minute), fmt.Sprintf("https://fcm.googleapis.com/fcm/send/%d", i))
+		at := time.Now().Add(time.Duration(i-10) * time.Minute)
+		_, err = pool.Exec(ctx, `UPDATE push_subscriptions SET created_at = $2, updated_at = $2 WHERE user_id = $1 AND endpoint = $3`,
+			user, at, fmt.Sprintf("https://fcm.googleapis.com/fcm/send/%d", i))
 		require.NoError(t, err)
 	}
+	// Re-subscribing the oldest endpoint (the browser re-sent it) refreshes it:
+	// eviction must follow updated_at, not created_at.
+	_, err = q.CreatePushSubscription(ctx, dbgen.CreatePushSubscriptionParams{
+		UserID: user, Endpoint: "https://fcm.googleapis.com/fcm/send/0", P256dh: "p2", Auth: "a2",
+	})
+	require.NoError(t, err)
 	require.NoError(t, q.TrimPushSubscriptions(ctx, dbgen.TrimPushSubscriptionsParams{UserID: user, Offset: 2}))
 	subs, err := q.GetPushSubscriptionsByUser(ctx, user)
 	require.NoError(t, err)
@@ -51,5 +58,5 @@ func TestIntegrationTrimPushSubscriptionsKeepsNewest(t *testing.T) {
 	for _, s := range subs {
 		endpoints = append(endpoints, s.Endpoint)
 	}
-	require.ElementsMatch(t, []string{"https://fcm.googleapis.com/fcm/send/2", "https://fcm.googleapis.com/fcm/send/3"}, endpoints)
+	require.ElementsMatch(t, []string{"https://fcm.googleapis.com/fcm/send/0", "https://fcm.googleapis.com/fcm/send/3"}, endpoints)
 }

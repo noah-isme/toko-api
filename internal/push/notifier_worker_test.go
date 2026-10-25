@@ -213,3 +213,12 @@ func TestWorkerRejectsInvalidPayload(t *testing.T) {
 	require.Error(t, f.worker.Handle(context.Background(), []byte("{")))
 	require.Error(t, f.worker.Handle(context.Background(), []byte(`{"eventId":"x"}`)))
 }
+
+func TestWorkerTreatsPartialSuccessAsDone(t *testing.T) {
+	f := newWorkerFixture(events.TopicOrderPaid)
+	f.store.subs = append(f.store.subs, subFor(f.user, mozillaEndpoint))
+	f.sender.statuses = map[string]int{mozillaEndpoint: 503}
+	require.NoError(t, f.worker.Handle(context.Background(), f.payload(t)),
+		"a retry would resend to the subscription that already got the push")
+	require.Len(t, f.sender.sent, 2)
+}
