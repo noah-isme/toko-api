@@ -61,9 +61,9 @@ func (h *CatalogHandler) afterProductChanges(ctx context.Context, source string,
 // recordCatalogAudit writes an explicit audit row for a catalog operation with
 // per-item from/to values. Callers pass the transaction's store so the row
 // commits (or rolls back) together with the change. The request id is the one
-// chi's RequestID middleware assigned (it honours a client X-Request-ID), so the
-// row correlates with the group-level audit middleware row and with the
-// product.* events' requestId.
+// chi's RequestID middleware assigned (it reuses a client X-Request-ID), so the
+// row correlates with the product.* events' requestId (and with the group-level
+// audit middleware row when the client sent X-Request-ID).
 func (h *CatalogHandler) recordCatalogAudit(ctx context.Context, store audit.Store, r *http.Request, action, resourceType string, status int, metadata any) error {
 	if h == nil || !h.AuditEnabled || store == nil {
 		return nil
