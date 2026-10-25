@@ -73,6 +73,10 @@ type Querier interface {
 	AdminListOrders(ctx context.Context, arg AdminListOrdersParams) ([]AdminListOrdersRow, error)
 	AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error)
 	AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error)
+	// Locks the products owning the listed variants, in product id order. Bulk
+	// stock takes these before AdminLockVariantsByIDs so every catalog writer
+	// (import, bulk price, bulk stock) locks products before variants.
+	AdminLockProductsOfVariants(ctx context.Context, arg AdminLockProductsOfVariantsParams) ([]pgtype.UUID, error)
 	AdminLockVariantsByIDs(ctx context.Context, arg AdminLockVariantsByIDsParams) ([]AdminLockVariantsByIDsRow, error)
 	// Locks the listed variants plus every variant of the listed products, in one
 	// statement and in id order (bulk price with applyTo=both|variants).

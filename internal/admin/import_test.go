@@ -368,3 +368,21 @@ func TestImportPlanUnescapesAndAssignsSKU(t *testing.T) {
 		t.Fatalf("zero stock %+v", res.Rows[0])
 	}
 }
+
+func TestSameCSVTextIgnoresCarriageReturns(t *testing.T) {
+	cases := []struct {
+		file, stored string
+		same         bool
+	}{
+		{"a\nb", "a\r\nb", true}, // CRLF reads back as LF
+		{"ab", "a\rb", true},     // a lone CR is dropped by encoding/csv
+		{"a\nb", "a\nb", true},
+		{"a b", "a\nb", false},
+		{"ab", "a\nb", false},
+	}
+	for _, tc := range cases {
+		if got := sameCSVText(tc.file, tc.stored); got != tc.same {
+			t.Errorf("sameCSVText(%q, %q) = %v, want %v", tc.file, tc.stored, got, tc.same)
+		}
+	}
+}

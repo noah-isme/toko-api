@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -38,6 +39,7 @@ const (
 	codeInvalidStatus  = "INVALID_STATUS"
 	codeInvalidApplyTo = "INVALID_APPLY_TO"
 	codeNegativeResult = "NEGATIVE_RESULT"
+	codeOutOfRange     = "OUT_OF_RANGE"
 	codeNotAllowed     = "NOT_ALLOWED"
 )
 
@@ -517,6 +519,13 @@ func (h *CatalogHandler) BulkStock(w http.ResponseWriter, r *http.Request) {
 	for _, t := range targets {
 		ids = append(ids, t.variantID)
 	}
+	// Products first (id order), then variants, matching import and bulk price
+	// so concurrent catalog writers cannot deadlock. Checkout locks only
+	// variants, so this adds no cycle with reservations.
+	if _, err := q.AdminLockProductsOfVariants(ctx, dbgen.AdminLockProductsOfVariantsParams{TenantID: tenantID, Ids: ids}); err != nil {
+		writeTxError(w, err, "failed to lock products")
+		return
+	}
 	// Locks every target in id order; a concurrent checkout reservation on one
 	// of them makes this wait (bounded by lock_timeout) and then read the
 	// post-reservation stock, so deltas compose with reservations.
@@ -535,8 +544,13 @@ func (h *CatalogHandler) BulkStock(w http.ResponseWriter, r *http.Request) {
 			errs.add(t.index, "variantId", codeNotFound, "variant not found")
 			continue
 		}
-		if t.delta != nil && int64(v.Stock)+int64(*t.delta) < 0 {
-			errs.add(t.index, "delta", codeNegativeResult, fmt.Sprintf("stock %d %+d would be negative", v.Stock, *t.delta))
+		if t.delta != nil {
+			switch next := int64(v.Stock) + int64(*t.delta); {
+			case next < 0:
+				errs.add(t.index, "delta", codeNegativeResult, fmt.Sprintf("stock %d %+d would be negative", v.Stock, *t.delta))
+			case next > math.MaxInt32:
+				errs.add(t.index, "delta", codeOutOfRange, fmt.Sprintf("stock %d %+d exceeds %d", v.Stock, *t.delta, math.MaxInt32))
+			}
 		}
 	}
 	if len(errs) > 0 {

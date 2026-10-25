@@ -20,6 +20,19 @@ WHERE v.id = ANY(sqlc.arg(ids)::uuid[])
 ORDER BY v.id
 FOR UPDATE OF v;
 
+-- name: AdminLockProductsOfVariants :many
+-- Locks the products owning the listed variants, in product id order. Bulk
+-- stock takes these before AdminLockVariantsByIDs so every catalog writer
+-- (import, bulk price, bulk stock) locks products before variants.
+SELECT p.id
+FROM products p
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND p.id IN (
+    SELECT v.product_id FROM product_variants v WHERE v.id = ANY(sqlc.arg(ids)::uuid[])
+  )
+ORDER BY p.id
+FOR UPDATE OF p;
+
 -- name: AdminLockVariantsByIDsOrProducts :many
 -- Locks the listed variants plus every variant of the listed products, in one
 -- statement and in id order (bulk price with applyTo=both|variants).

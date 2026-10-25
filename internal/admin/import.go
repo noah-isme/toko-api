@@ -19,6 +19,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/security"
 )
 
 // CSV import of products and stock (POST /api/v1/admin/products/import).
@@ -32,6 +33,10 @@ import (
 const (
 	importMaxFileBytes = 5 << 20
 	importMaxBodyBytes = importMaxFileBytes + 64<<10 // multipart envelope
+
+	// ImportRoutePath is where cmd/api mounts ImportProductsCSV. It must match
+	// the router; BodyLimitOverrides uses it to lift the global body cap.
+	ImportRoutePath    = "/api/v1/admin/products/import"
 	importMaxRows      = 5000
 	importSlugAttempts = 20
 
@@ -44,6 +49,17 @@ const (
 	importActionUnchanged     = "unchanged"
 	importActionReject        = "reject"
 )
+
+// BodyLimitOverrides lists the admin catalog routes whose payload cap differs
+// from the global security.BodyLimit (SECURITY_BODY_LIMIT_BYTES, 1 MiB by
+// default). The import accepts a 5 MiB file, so the global middleware must
+// not buffer or reject it; readImportFile enforces the cap with a JSON
+// PAYLOAD_TOO_LARGE error instead.
+func BodyLimitOverrides() []security.BodyLimitOverride {
+	return []security.BodyLimitOverride{
+		{Method: http.MethodPost, Path: ImportRoutePath, Max: importMaxBodyBytes},
+	}
+}
 
 // Row error codes reported in rows[].errors[].code.
 const (
@@ -1005,6 +1021,14 @@ func firstValid(rows []*importRow) *importRow {
 	return nil
 }
 
+// sameCSVText compares a file cell with a stored value the way a CSV round trip
+// sees them: the export writes CRLF records and encoding/csv turns a CRLF
+// inside a quoted field into LF and drops a lone CR, so stored text with CR
+// characters must not look edited when the file is re-imported unchanged.
+func sameCSVText(file, stored string) bool {
+	return strings.ReplaceAll(file, "\r", "") == strings.ReplaceAll(stored, "\r", "")
+}
+
 // planProducts computes product-level changes for existing products and the
 // product fields of new groups. Changes are reported on the first row of the
 // product.
@@ -1016,7 +1040,7 @@ func (p *importPlan) planProducts() {
 		}
 		cur := prod.locked
 		params := dbgen.AdminUpdateProductParams{ID: cur.ID, TenantID: p.tenantID}
-		if title := row.cell("title"); row.has("title") && strings.TrimSpace(title) != "" && title != cur.Title {
+		if title := row.cell("title"); row.has("title") && strings.TrimSpace(title) != "" && !sameCSVText(title, cur.Title) {
 			params.Title = pgtype.Text{String: title, Valid: true}
 			row.change("title", cur.Title, title)
 		}
@@ -1075,7 +1099,7 @@ func (p *importPlan) planProducts() {
 			if strings.TrimSpace(current) == "" {
 				current = ""
 			}
-			if next != current {
+			if !sameCSVText(next, current) {
 				params.SetDescription = true
 				params.Description = text(next)
 				row.change("description", nullableString(cur.Description), nullableString(params.Description))

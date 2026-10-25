@@ -34,12 +34,16 @@ import (
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/platform"
+	"github.com/noah-isme/backend-toko/internal/security"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Postgres integration tests for the catalog-ops stream (bulk updates, CSV
 // export/import, low stock, product status enforcement, tenant-scoped product
 // webhooks). Opt-in: set TEST_DATABASE_URL to a migrated database.
+
+// productionBodyLimit is the SECURITY_BODY_LIMIT_BYTES default in cmd/api.
+const productionBodyLimit = 1_048_576
 
 type opsEnv struct {
 	t       *testing.T
@@ -87,8 +91,14 @@ func newOpsEnv(t *testing.T) *opsEnv {
 	analytics := &admin.AnalyticsHandler{Q: e.q}
 	flash := &campaign.Handler{Pool: pool}
 
+	// The router mirrors cmd/api: the global BodyLimit (production default
+	// 1 MiB, with the admin overrides) runs before routing, and the routes are
+	// mounted under /api/v1 so the override paths match. e.do adds the prefix.
+	root := chi.NewRouter()
+	root.Use(middleware.RequestID)
+	root.Use(security.BodyLimit{Max: productionBodyLimit, Overrides: admin.BodyLimitOverrides()}.Middleware)
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
+	root.Mount("/api/v1", r)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			ctx := req.Context()
@@ -112,7 +122,7 @@ func newOpsEnv(t *testing.T) *opsEnv {
 	r.Patch("/admin/settings", plat.SettingsUpdate)
 	r.Get("/admin/analytics/overview", analytics.Overview)
 	r.Get("/flash-sales", flash.Public)
-	e.router = r
+	e.router = root
 	return e
 }
 
@@ -185,7 +195,7 @@ func (e *opsEnv) sku(name string) string { return e.tag + "-" + name }
 
 func (e *opsEnv) do(method, path, tenantID string, body []byte, contentType string) *httptest.ResponseRecorder {
 	e.t.Helper()
-	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req := httptest.NewRequest(method, "/api/v1"+path, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", tenantID)
 	req.Header.Set("X-User-ID", e.user)
 	if contentType != "" {
@@ -450,6 +460,39 @@ func TestIntegrationBulkStock(t *testing.T) {
 	require.Equal(t, 422, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "NEGATIVE_RESULT")
 	require.EqualValues(t, 10, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, v1))
+
+	// A delta past int4 is a 422 OUT_OF_RANGE, not a 500.
+	rec = e.postJSON("/admin/products/bulk/stock", e.tenA, map[string]any{"items": []map[string]any{{"variantId": v1, "delta": 2147483647}}})
+	require.Equal(t, 422, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "OUT_OF_RANGE")
+	require.EqualValues(t, 10, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, v1))
+
+	// Lock order: bulk stock locks the product before its variants, like
+	// import and bulk price. A writer holding the product lock and then
+	// taking the variant lock must not deadlock with it.
+	ptx, err := e.pool.Begin(ctx)
+	require.NoError(t, err)
+	_, err = ptx.Exec(ctx, `SELECT 1 FROM products WHERE id=$1 FOR UPDATE`, p.ID)
+	require.NoError(t, err)
+	waiting := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		waiting <- e.postJSON("/admin/products/bulk/stock", e.tenA, map[string]any{"items": []map[string]any{{"variantId": v1, "delta": 1}}})
+	}()
+	select {
+	case <-waiting:
+		t.Fatal("bulk stock must wait for the product lock")
+	case <-time.After(400 * time.Millisecond):
+	}
+	lockCtx, cancelLock := context.WithTimeout(ctx, 3*time.Second)
+	_, err = ptx.Exec(lockCtx, `SELECT 1 FROM product_variants WHERE id=$1 FOR UPDATE`, v1)
+	cancelLock()
+	require.NoError(t, err, "variant must still be free while bulk stock waits on the product")
+	require.NoError(t, ptx.Commit(ctx))
+	rec = <-waiting
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+	require.EqualValues(t, 11, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, v1))
+	rec = e.postJSON("/admin/products/bulk/stock", e.tenA, map[string]any{"items": []map[string]any{{"variantId": v1, "stock": 10}}})
+	require.Equal(t, 200, rec.Code, rec.Body.String())
 
 	// Concurrency: a checkout reservation holding the row lock makes the bulk
 	// delta wait, then apply on top of the reserved stock (12, not 15).
@@ -724,7 +767,11 @@ func TestIntegrationImport(t *testing.T) {
 	s1 := e.variant(shoe.ID, e.sku("S1"), 10000, 10)
 	e.variant(shoe.ID, e.sku("S2"), 10000, 5)
 	skuLess := e.variant(shoe.ID, "", 10000, 2)
-	e.product(e.tenA, "Tanpa Varian", 700)
+	noVariant := e.product(e.tenA, "Tanpa Varian", 700)
+	// CR characters do not survive a CSV round trip (CRLF reads back as LF, a
+	// lone CR is dropped); an unchanged re-import must still be a no-op.
+	_, err = e.pool.Exec(bg, `UPDATE products SET description = E'Baris satu\r\nBaris dua\rtiga' WHERE id = $1`, noVariant.ID)
+	require.NoError(t, err)
 	bProd := e.product(e.tenB, "B product", 1)
 	e.variant(bProd.ID, e.sku("B1"), 1, 1)
 	_, err = e.pool.Exec(bg, `UPDATE products SET slug=$1 WHERE id=$2`, "it-dup-"+strings.ToLower(e.tag), bProd.ID)
@@ -912,6 +959,51 @@ func TestIntegrationImportDoesNotRestoreSoldStock(t *testing.T) {
 	rec = e.importCSV(e.tenA, "stock", false, []byte("sku,stock,stock_baseline\n"+e.sku("J1")+",20,7\n"))
 	require.Equal(t, 200, rec.Code, rec.Body.String())
 	require.EqualValues(t, 20, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, v))
+}
+
+// TestIntegrationImportBodyLimits sends uploads through the same global
+// BodyLimit as cmd/api (1 MiB default plus admin.BodyLimitOverrides): an
+// exported catalog between 1 MiB and 5 MiB re-imports, a file over 5 MiB gets
+// the handler's JSON PAYLOAD_TOO_LARGE, and bulk bodies over the global cap
+// get the JSON envelope from the middleware.
+func TestIntegrationImportBodyLimits(t *testing.T) {
+	e := newOpsEnv(t)
+	bg := context.Background()
+	p := e.product(e.tenA, "Kaos Polos", 45000)
+	_, err := e.pool.Exec(bg, `UPDATE products SET description = repeat('Bahan katun combed 30s, nyaman dipakai. ', 25) WHERE id = $1`, p.ID)
+	require.NoError(t, err)
+	_, err = e.pool.Exec(bg, `
+		INSERT INTO product_variants(product_id, sku, price, stock, attributes)
+		SELECT $1, $2 || '-L' || g, 45000, 5, jsonb_build_object('size', 'S' || g)
+		FROM generate_series(1, 1500) g`, p.ID, e.tag)
+	require.NoError(t, err)
+
+	rec := e.do(http.MethodGet, "/admin/products/export", e.tenA, nil, "")
+	require.Equal(t, 200, rec.Code)
+	file := rec.Body.Bytes()
+	require.Greater(t, len(file), productionBodyLimit, "fixture must exceed the global 1 MiB cap")
+	require.Less(t, len(file), 5<<20)
+
+	before := e.catalogChecksum(e.tenA)
+	rec = e.importCSV(e.tenA, "products", true, file)
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+	res := decode[importResp](t, rec)
+	require.Equal(t, 1500, res.Data.Summary.Total)
+	require.Equal(t, 1500, res.Data.Summary.Unchanged)
+	require.Equal(t, before, e.catalogChecksum(e.tenA))
+
+	// Over 5 MiB: rejected by the handler with the JSON envelope, no writes.
+	big := append([]byte("sku,stock\n"), bytes.Repeat([]byte("X,1\n"), (5<<20)/4+10)...)
+	rec = e.importCSV(e.tenA, "stock", false, big)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Equal(t, "PAYLOAD_TOO_LARGE", decode[apiError](t, rec).Error.Code)
+	require.Equal(t, before, e.catalogChecksum(e.tenA))
+
+	// Bulk endpoints keep the global cap, answered as JSON.
+	huge := []byte(`{"items":[` + strings.Repeat(`{"sku":"x","stock":1},`, productionBodyLimit/20) + `{"sku":"x","stock":1}]}`)
+	rec = e.do(http.MethodPost, "/admin/products/bulk/stock", e.tenA, huge, "application/json")
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Equal(t, "PAYLOAD_TOO_LARGE", decode[apiError](t, rec).Error.Code)
 }
 
 func writeCSV(t *testing.T, rows [][]string) []byte {

@@ -403,6 +403,45 @@ func (q *Queries) AdminGetProductsByIDsForUpdate(ctx context.Context, arg AdminG
 	return items, nil
 }
 
+const adminLockProductsOfVariants = `-- name: AdminLockProductsOfVariants :many
+SELECT p.id
+FROM products p
+WHERE p.tenant_id = $1
+  AND p.id IN (
+    SELECT v.product_id FROM product_variants v WHERE v.id = ANY($2::uuid[])
+  )
+ORDER BY p.id
+FOR UPDATE OF p
+`
+
+type AdminLockProductsOfVariantsParams struct {
+	TenantID pgtype.UUID   `json:"tenant_id"`
+	Ids      []pgtype.UUID `json:"ids"`
+}
+
+// Locks the products owning the listed variants, in product id order. Bulk
+// stock takes these before AdminLockVariantsByIDs so every catalog writer
+// (import, bulk price, bulk stock) locks products before variants.
+func (q *Queries) AdminLockProductsOfVariants(ctx context.Context, arg AdminLockProductsOfVariantsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, adminLockProductsOfVariants, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const adminLockVariantsByIDs = `-- name: AdminLockVariantsByIDs :many
 SELECT v.id, v.product_id, v.sku, v.price, v.stock, v.attributes, p.slug
 FROM product_variants v

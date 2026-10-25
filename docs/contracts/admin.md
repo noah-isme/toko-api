@@ -936,7 +936,7 @@ POST /api/v1/admin/products/bulk/stock
 { "items": [ { "variantId": "v-uuid-1", "stock": 40 }, { "variantId": "v-uuid-2", "delta": -3 } ] }
 ```
 
-Each item sends exactly one of `stock` (absolute, ≥ 0) or `delta`. Deltas apply against the **live** stock after the row is locked, so concurrent checkouts are respected (stock 10, a checkout reserves 3, `delta +5` → 12). A result below zero rejects the row (`NEGATIVE_RESULT`); nothing is clamped. `inStock` of each touched product is recomputed.
+Each item sends exactly one of `stock` (absolute, ≥ 0) or `delta`. Deltas apply against the **live** stock after the row is locked, so concurrent checkouts are respected (stock 10, a checkout reserves 3, `delta +5` → 12). A result below zero rejects the row (`NEGATIVE_RESULT`); nothing is clamped. A result above 2147483647 is `OUT_OF_RANGE`. Products are locked before their variants (the same order as bulk price and import), so concurrent catalog writers do not deadlock. `inStock` of each touched product is recomputed.
 
 **Response:** `200 OK` — `{"data": {"updated": 2, "items": [{"variantId", "productId", "sku", "stock", "inStock"}]}}` (`stock` after the update; `inStock` is `null` for products that did not change).
 
@@ -956,7 +956,7 @@ POST /api/v1/admin/products/bulk/status
 - Targets are locked in id order with a 5 s lock timeout, so a bulk request never stalls checkout for longer.
 - Errors (nothing is changed in any error case):
   - `400 BAD_REQUEST` (malformed, empty `items`) or `400 TOO_MANY_ROWS` (`details: {max, got}`)
-  - `413 PAYLOAD_TOO_LARGE`
+  - `413 PAYLOAD_TOO_LARGE` (JSON envelope; the global `SECURITY_BODY_LIMIT_BYTES` cap, 1 MiB by default, answers in the same shape)
   - `409 CONFLICT` — a concurrent change held a lock > 5 s or a deadlock was detected; retry
   - `422 VALIDATION_FAILED` with every bad item:
 
@@ -970,7 +970,7 @@ POST /api/v1/admin/products/bulk/status
 }
 ```
 
-  Row codes: `MISSING`, `AMBIGUOUS` (both ids, or both `stock` and `delta`), `INVALID_UUID`, `NEGATIVE`, `NOT_FOUND` (missing or another store's id; never distinguished), `DUPLICATE`, `INVALID_STATUS`, `INVALID_APPLY_TO`, `NEGATIVE_RESULT`, `NOT_ALLOWED`.
+  Row codes: `MISSING`, `AMBIGUOUS` (both ids, or both `stock` and `delta`), `INVALID_UUID`, `NEGATIVE`, `NOT_FOUND` (missing or another store's id; never distinguished), `DUPLICATE`, `INVALID_STATUS`, `INVALID_APPLY_TO`, `NEGATIVE_RESULT`, `OUT_OF_RANGE`, `NOT_ALLOWED`.
 - Side effects match single updates: catalog cache invalidation and one `product.*` event per changed value (6.28).
 - Audit: besides the `/admin` middleware row, each bulk request that changed something writes one explicit row (`catalog.bulk.price|stock|status`, resource `catalog_bulk`) **in the same transaction**, with `metadata.items[] = {productId, variantId?, sku?, slug, changes: {field: {from, to}}}`, the actor user id and the server request id (chi's request id; a client-sent `X-Request-ID` is reused, which is how the row can be correlated with the client's request). The same request id and actor appear in the `product.*` event payloads.
 
@@ -987,7 +987,7 @@ Columns, in order: `sku, product_id, variant_id, title, slug, status, price, com
 - `stock_baseline` repeats `stock` at export time. Leave it alone when editing; the import uses it to protect sales made since the export (6.25).
 - `attributes` is a JSON object; `in_stock`, `stock_status`, `created_at`, `updated_at` are informational (ignored on import).
 
-**CSV conventions (both exports):** UTF-8 **with BOM** (decision: admins open the files in Excel with Indonesian regional settings, which garbles BOM-less UTF-8), comma delimiter, CRLF, RFC 4180 quoting. Text cells starting with `=`, `+`, `-`, `@`, TAB or CR are prefixed with `'` (formula-injection safety); numeric columns are never prefixed. Errors before the first byte return JSON; a failure mid-stream truncates the file (status already 200), so compare the row count with the list total. Download via `fetch` + blob (bearer token), not a bare link.
+**CSV conventions (both exports):** UTF-8 **with BOM** (decision: admins open the files in Excel with Indonesian regional settings, which garbles BOM-less UTF-8), comma delimiter, CRLF, RFC 4180 quoting. Text cells starting with `=`, `+`, `-`, `@`, TAB or CR are prefixed with `'` (formula-injection safety); numeric columns are never prefixed. Errors before the first byte return JSON; a failure mid-stream truncates the file (status already 200), so compare the row count with the list total. Download via `fetch` + blob (bearer token), not a bare link. Excel with an Indonesian list separator (`;`) opens a double-clicked comma file in one column; tell admins to use **Data > From Text/CSV** (delimiter: comma). The import accepts either `,` or `;`, so a file re-saved by Excel with `;` imports fine.
 
 ## 6.25 Import Products / Stock (CSV, dry run)
 
@@ -997,7 +997,7 @@ Content-Type: multipart/form-data   (field "file")
 ```
 
 - `type` — `products` or `stock` (required). `dryRun` — default `true`; send `false` to apply.
-- File ≤ 5 MiB, ≤ 5000 data rows, CSV only (an `.xlsx` is `400 UNSUPPORTED_FILE`; non-UTF-8 is `400 INVALID_ENCODING`). Held in memory only; contents are never logged.
+- File ≤ 5 MiB, ≤ 5000 data rows, CSV only (an `.xlsx` is `400 UNSUPPORTED_FILE`; non-UTF-8 is `400 INVALID_ENCODING`). This route is exempt from the global 1 MiB request-body cap (`SECURITY_BODY_LIMIT_BYTES`); the handler caps the multipart body at 5 MiB + 64 KiB and answers `413 PAYLOAD_TOO_LARGE` as JSON. Held in memory only; contents are never logged.
 - Optional BOM; `,` or `;` delimiter detected on the header line; headers lower-case, any order. Unknown / duplicate / missing required header → `400 INVALID_HEADER | DUPLICATE_HEADER | MISSING_HEADER` with `details.header`; zero writes.
 - `type=products`: required `sku`; optional `variant_id, product_id, title, slug, status, price, compare_at, variant_price, stock, stock_baseline, low_stock_threshold, category_slug, brand_slug, description, attributes`; ignored `in_stock, stock_status, created_at, updated_at` (so an export re-imports as is).
 - `type=stock`: required `sku, stock`; optional `variant_id, stock_baseline`. Never creates anything; unknown keys are `UNKNOWN_SKU` / `UNKNOWN_VARIANT`.
@@ -1012,7 +1012,9 @@ Content-Type: multipart/form-data   (field "file")
 
 A row carrying `variant_id` or `product_id` never creates a product. Keys must be unique in the file (`DUPLICATE_SKU`, `DUPLICATE_VARIANT`). Rows of one product must carry identical product-level cells (`CONFLICTING_PRODUCT_VALUES`); product-level changes appear on the product's first row.
 
-**Empty cells:** `compare_at`, `low_stock_threshold`, `description`, `category_slug`, `brand_slug` — empty clears. Every other column — empty leaves the value unchanged (create defaults: status `published`, stock `0`, variant price = product price, attributes `{}`; `title` and `price` are required to create: `MISSING_FOR_CREATE`). `0` is a value, never "empty". A `'` before a formula trigger is removed, so `'=X` stores `=X`.
+**Empty cells:** `compare_at`, `low_stock_threshold`, `description`, `category_slug`, `brand_slug` — empty clears. Every other column — empty leaves the value unchanged (create defaults: status `published`, stock `0`, variant price = product price, attributes `{}`; `title` and `price` are required to create: `MISSING_FOR_CREATE`). `0` is a value, never "empty". A `'` before a formula trigger is removed, so `'=X` stores `=X` (text that literally starts with `'` plus a trigger cannot be stored through an import). `title` and `description` are compared ignoring CR characters (a CSV round trip turns CRLF into LF and drops a lone CR), so an unchanged export re-imports as `unchanged`.
+
+**Prices:** `price` is the product (listing) price only; `variant_price` is what the cart charges. Editing only `price` leaves variant prices as they are, so listing and cart disagree — edit `variant_price` on every row of that product too (or use bulk price with `applyTo=both`).
 
 **Stock and sales since the export** (no silent overselling):
 

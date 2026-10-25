@@ -624,7 +624,9 @@ func main() {
 	if strings.TrimSpace(corsOrigins) != "" {
 		r.Use(security.AllowCORS(corsOrigins))
 	}
-	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes)}.Middleware)
+	// The CSV import has its own 5 MiB cap (enforced in the handler), so it is
+	// exempt from the global limit; every other route keeps bodyLimitBytes.
+	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes), Overrides: admin.BodyLimitOverrides()}.Middleware)
 	if csrfEnabled {
 		r.Use(security.CSRF{
 			Header:         csrfHeader,

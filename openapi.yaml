@@ -1640,6 +1640,11 @@ paths:
         only to endpoints of the emitting tenant. Order, payment and shipment
         events are not tenant-stamped yet and keep broadcasting to every active
         endpoint subscribed to the topic.
+
+        Known limitation (pre-existing, tracked with the notifications/RBAC
+        streams): this endpoint does not yet set `tenant_id` on the new row,
+        so tenant-scoped `product.*` delivery only reaches endpoints whose
+        tenant was assigned directly in the database until that lands.
       security:
         - bearerAuth: []
       requestBody:
@@ -2631,7 +2636,8 @@ paths:
         either an absolute `stock` or a `delta`. Deltas are applied atomically
         against the live stock after locking the row, so concurrent checkout
         reservations are respected; a result below zero rejects the row
-        (`NEGATIVE_RESULT`, nothing is clamped). `products.in_stock` is
+        (`NEGATIVE_RESULT`, nothing is clamped) and a result above
+        2147483647 is `OUT_OF_RANGE`. `products.in_stock` is
         recomputed for every touched product. Emits `product.stock_changed`
         per changed variant and writes one `catalog.bulk.stock` audit row.
       security: [{ bearerAuth: [] }]
@@ -2766,7 +2772,10 @@ paths:
       x-required-permission: [catalog:write, inventory:write]
       description: |
         Multipart upload (field `file`, at most 5 MiB, at most 5000 data rows,
-        CSV only; .xlsx is rejected). The file is held in memory only and its
+        CSV only; .xlsx is rejected). This route is exempt from the global
+        request-body cap (`SECURITY_BODY_LIMIT_BYTES`, 1 MiB by default); the
+        handler enforces the 5 MiB file cap (5 MiB + 64 KiB for the whole
+        multipart body) and answers 413 `PAYLOAD_TOO_LARGE` as JSON. The file is held in memory only and its
         contents are never logged. `dryRun` defaults to `true`; send
         `dryRun=false` to apply. Both modes plan the whole file inside one
         transaction against locked current values and return the planned
@@ -2778,7 +2787,11 @@ paths:
         or missing required headers fail the whole file with 400
         `INVALID_HEADER | DUPLICATE_HEADER | MISSING_HEADER` (`details.header`).
         A leading `'` before a formula trigger is removed, so exported files
-        round-trip. Rows consisting only of empty cells are skipped; `row` in
+        round-trip (consequence: text that literally starts with `'` followed
+        by `=`, `+`, `-`, `@`, TAB or CR cannot be stored through an import).
+        `title` and `description` are compared ignoring CR characters, since
+        a CSV round trip turns CRLF into LF and drops a lone CR; an unchanged
+        export therefore re-imports as `unchanged`. Rows consisting only of empty cells are skipped; `row` in
         the response is the spreadsheet row (header = row 1).
 
         **type=products** requires `sku`; optional `variant_id, product_id,
@@ -2801,6 +2814,12 @@ paths:
         empty `sku` and `variant_id` but a `product_id` updates only the
         product-level columns (products without variants export this way);
         variant columns on such a row are `NO_VARIANT`.
+
+        **Prices**: `price` is the product (listing) price only;
+        `variant_price` is what the cart charges for that variant. Editing
+        `price` alone leaves the variant prices unchanged, so listing and cart
+        disagree; edit `variant_price` on every row of the product as well
+        (bulk price `applyTo=both` does this in one call).
 
         **Empty cells**: for `compare_at`, `low_stock_threshold`,
         `description`, `category_slug`, `brand_slug` an empty cell clears the
@@ -3653,7 +3672,12 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     PayloadTooLarge:
-      description: Request body over the limit (1 MiB bulk, 5 MiB import); code PAYLOAD_TOO_LARGE.
+      description: |
+        Request body over the limit; code PAYLOAD_TOO_LARGE in the standard
+        JSON error envelope. Every route is capped by the global
+        `SECURITY_BODY_LIMIT_BYTES` (1 MiB by default), which bulk endpoints
+        also enforce themselves (1 MiB); the CSV import is exempt from the
+        global cap and allows a 5 MiB file.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
@@ -3666,7 +3690,7 @@ components:
         field: { type: string }
         code:
           type: string
-          enum: [MISSING, AMBIGUOUS, INVALID_UUID, NEGATIVE, NOT_FOUND, DUPLICATE, INVALID_STATUS, INVALID_APPLY_TO, NEGATIVE_RESULT, NOT_ALLOWED]
+          enum: [MISSING, AMBIGUOUS, INVALID_UUID, NEGATIVE, NOT_FOUND, DUPLICATE, INVALID_STATUS, INVALID_APPLY_TO, NEGATIVE_RESULT, OUT_OF_RANGE, NOT_ALLOWED]
         message: { type: string }
     BulkPriceItem:
       oneOf:
