@@ -92,3 +92,14 @@ func TestAdminTargetsAreReachable(t *testing.T) {
 		}
 	}
 }
+
+// orders:write is granted to the fulfillment role, so the admin status endpoint
+// must never confirm payment: PENDING_PAYMENT -> PAID stays with the payment
+// webhook, and money movement stays with roles that hold refunds:write.
+func TestAdminCannotMarkOrderPaid(t *testing.T) {
+	for _, target := range []dbgen.OrderStatus{dbgen.OrderStatusPAID, dbgen.OrderStatusPENDINGPAYMENT} {
+		if isAllowedAdminTarget(target) {
+			t.Errorf("%s must not be an admin-settable target", target)
+		}
+	}
+}
