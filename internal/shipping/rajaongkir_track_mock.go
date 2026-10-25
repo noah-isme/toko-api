@@ -81,8 +81,17 @@ func (t RajaOngkirTracker) TrackWithSummary(ctx context.Context, req TrackReq) (
 	return parseRajaOngkirWaybill(body)
 }
 
+// ErrNoTrackingData means the carrier answered normally but has nothing for
+// this waybill yet (not scanned, or unknown waybill). It is a per-shipment
+// condition, not a carrier outage, so it must not trip a circuit breaker.
+var ErrNoTrackingData = errors.New("carrier has no tracking data for this waybill")
+
 type rajaOngkirWaybill struct {
 	RajaOngkir struct {
+		Status struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+		} `json:"status"`
 		Result struct {
 			Delivered bool `json:"delivered"`
 			Summary   struct {
@@ -109,6 +118,9 @@ func parseRajaOngkirWaybill(body []byte) (TrackResult, error) {
 	var payload rajaOngkirWaybill
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return TrackResult{}, fmt.Errorf("decode rajaongkir tracking: %w", err)
+	}
+	if code := payload.RajaOngkir.Status.Code; code != 0 && code != http.StatusOK {
+		return TrackResult{}, fmt.Errorf("%w: rajaongkir status %d: %s", ErrNoTrackingData, code, strings.TrimSpace(payload.RajaOngkir.Status.Description))
 	}
 	result := payload.RajaOngkir.Result
 	events := make([]TrackEvent, 0, len(result.Manifest)+1)
@@ -141,7 +153,7 @@ func parseRajaOngkirWaybill(body []byte) (TrackResult, error) {
 		terminal = terminalStatus(result.Summary.Status)
 	}
 	if len(events) == 0 && terminal == "" {
-		return TrackResult{}, errors.New("rajaongkir returned no tracking events")
+		return TrackResult{}, fmt.Errorf("%w: rajaongkir returned no tracking events", ErrNoTrackingData)
 	}
 	return TrackResult{Events: events, Terminal: terminal}, nil
 }

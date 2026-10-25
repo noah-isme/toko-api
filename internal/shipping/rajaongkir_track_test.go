@@ -2,6 +2,7 @@ package shipping
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -125,5 +126,14 @@ func TestRajaOngkirTrackErrorsWithoutKeyOrOnHTTPError(t *testing.T) {
 	tr.APIKey = "wrong"
 	if _, err := tr.Track(context.Background(), TrackReq{Courier: "jne", TrackingNumber: "X1"}); err == nil {
 		t.Fatal("want error on non-2xx")
+	}
+}
+
+func TestRajaOngkirNoTrackingDataIsDistinct(t *testing.T) {
+	for _, name := range []string{"invalid_waybill.json", "empty_result.json"} {
+		_, err := fixtureTracker(t, name).TrackWithSummary(context.Background(), TrackReq{Courier: "jne", TrackingNumber: "X1"})
+		if !errors.Is(err, ErrNoTrackingData) {
+			t.Fatalf("%s: err = %v, want ErrNoTrackingData", name, err)
+		}
 	}
 }

@@ -63,7 +63,9 @@ func (p BreakerProvider) TrackWithSummary(ctx context.Context, req shipping.Trac
 		res.Events, err = p.Inner.Track(ctx, req)
 	}
 	if p.Breaker != nil {
-		p.Breaker.Report(ctx, err == nil)
+		// A normal "nothing for this waybill yet" answer is not a carrier
+		// failure: fresh shipments must not open the breaker for everyone.
+		p.Breaker.Report(ctx, err == nil || errors.Is(err, shipping.ErrNoTrackingData))
 	}
 	return res, err
 }
@@ -185,6 +187,11 @@ func (j *ShipmentTrackingJob) pollOne(ctx context.Context, row dbgen.ListShipmen
 	}
 	res.Add("polled", 1)
 	attempts := int(row.TrackAttempts) + 1
+	if errors.Is(err, shipping.ErrNoTrackingData) {
+		res.Add("no_tracking_data", 1)
+		logger.Debug().Err(err).Int("attempts", attempts).Msg("shipment_tracking: no carrier data yet")
+		return j.recordError(ctx, row, attempts, truncate("provider: "+err.Error()), res)
+	}
 	if err != nil {
 		res.Add("errors", 1)
 		logger.Warn().Err(err).Int("attempts", attempts).Msg("shipment_tracking: carrier call failed")
@@ -219,7 +226,7 @@ func (j *ShipmentTrackingJob) pollOne(ctx context.Context, row dbgen.ListShipmen
 			"location":    ev.Location,
 			"occurredAt":  ev.OccurredAt,
 		})
-		_, _, err := j.Svc.AppendEventOpts(ctx, row.OrderID, st, nonEmpty(desc), nonEmpty(loc), occurredAt, raw, shipping.AppendOptions{Silent: silent})
+		_, _, err := j.Svc.AppendEventOpts(ctx, row.OrderID, st, nonEmpty(desc), nonEmpty(loc), occurredAt, raw, shipping.AppendOptions{Silent: silent, RequireForward: true})
 		if err != nil {
 			if errors.Is(err, shipping.ErrInvalidShipmentTransition) {
 				continue

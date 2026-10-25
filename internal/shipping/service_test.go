@@ -148,3 +148,29 @@ func (r *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.Ins
 	r.topics = append(r.topics, arg.Topic)
 	return dbgen.InsertDomainEventRow{ID: arg.AggregateID, Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
 }
+
+func TestAppendEventOptsRequireForwardRejectsSameStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), UserID: toPGUUID(uuid.New()), Status: dbgen.OrderStatusDELIVERED}, "buyer@example.com")
+	queries.storeShipment(dbgen.Shipment{
+		ID:         toPGUUID(uuid.New()),
+		OrderID:    toPGUUID(orderID),
+		Status:     dbgen.ShipmentStatusDELIVERED,
+		LastStatus: dbgen.NullShipmentStatus{ShipmentStatus: dbgen.ShipmentStatusDELIVERED, Valid: true},
+	})
+	mailer := &recordingMailer{}
+	store := &recordingEventStore{}
+	svc := &shipping.Service{Q: queries, Mail: mailer, NotifyOnDelivered: true, Events: &events.Bus{Store: store}}
+
+	// A second tracking run that saw the same DELIVERED scan must not record
+	// it again or notify twice.
+	_, _, err := svc.AppendEventOpts(ctx, toPGUUID(orderID), dbgen.ShipmentStatusDELIVERED, nil, nil, nil, []byte(`{}`), shipping.AppendOptions{RequireForward: true})
+	require.ErrorIs(t, err, shipping.ErrInvalidShipmentTransition)
+	require.Empty(t, queries.events)
+	require.Empty(t, mailer.Subjects())
+	require.Empty(t, store.topics)
+}

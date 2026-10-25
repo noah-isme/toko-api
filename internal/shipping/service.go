@@ -99,6 +99,10 @@ type AppendOptions struct {
 	// sends no customer email and emits no domain event. The tracking job uses
 	// it for carrier events that are already old (historical backlog).
 	Silent bool
+	// RequireForward rejects a status equal to the shipment's current one
+	// with ErrInvalidShipmentTransition, so a repeated poll of the same
+	// carrier event does not insert a duplicate event or notify twice.
+	RequireForward bool
 }
 
 // AppendEvent records a tracking event, updates the shipment state machine and synchronises the order status.
@@ -129,7 +133,7 @@ func (s *Service) AppendEventOpts(ctx context.Context, orderID pgtype.UUID, stat
 	if shipment.LastStatus.Valid {
 		current = shipment.LastStatus.ShipmentStatus
 	}
-	if !allowedShipmentTransition(current, status) {
+	if !allowedShipmentTransition(current, status) || (opts.RequireForward && current == status) {
 		return dbgen.ShipmentEvent{}, dbgen.Shipment{}, ErrInvalidShipmentTransition
 	}
 	event, err := s.Q.InsertShipmentEvent(ctx, dbgen.InsertShipmentEventParams{

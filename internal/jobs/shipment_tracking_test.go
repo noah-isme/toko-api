@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -446,5 +447,30 @@ func TestShipmentTrackingPassesTenantAndMaxAge(t *testing.T) {
 		if got := e.q.stopCalls[i]; got.TenantID != tid || got.MaxAgeDays != 9 {
 			t.Fatalf("stop params %+v", got)
 		}
+	}
+}
+
+// "No data for this waybill yet" is a normal carrier answer: it backs off the
+// shipment but never opens the breaker for every other shipment.
+func TestShipmentTrackingNoTrackingDataDoesNotTripBreaker(t *testing.T) {
+	e := newTrackingEnv()
+	for i := 0; i < 5; i++ {
+		e.addShipment(e.tenant, dbgen.ShipmentStatusSHIPPED, 0, e.now.Add(-time.Hour))
+	}
+	e.tracker.err = fmt.Errorf("%w: empty", shipping.ErrNoTrackingData)
+	breaker := resilience.NewBreaker(2, 0.5, time.Hour)
+	e.job.Provider = BreakerProvider{Inner: e.tracker, Breaker: breaker}
+	res := e.run(t)
+	if e.tracker.calls != 5 || res["skipped_breaker"] != 0 {
+		t.Fatalf("calls=%d counters=%v", e.tracker.calls, res)
+	}
+	if res["no_tracking_data"] != 5 || res["errors"] != 0 {
+		t.Fatalf("counters %v", res)
+	}
+	if len(e.q.updates) != 5 || e.q.updates[0].TrackAttempts != 1 {
+		t.Fatalf("every shipment must be rescheduled with backoff, updates=%+v", e.q.updates)
+	}
+	if !breaker.Allow(context.Background()) {
+		t.Fatal("breaker must stay closed")
 	}
 }

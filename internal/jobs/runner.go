@@ -47,9 +47,9 @@ type TryLocker interface {
 // a given job per tick and the others record a skip.
 type Runner struct {
 	Locker TryLocker
-	// LockTTL bounds how long a crashed holder blocks the job. A run that
-	// takes longer than this can overlap with the next one, which is safe
-	// because every write is conditional.
+	// LockTTL bounds how long a crashed holder blocks the job. Each run gets
+	// a context deadline shorter than LockTTL (see runTimeout), so a run is
+	// cancelled before its lock can expire and another replica take over.
 	LockTTL   time.Duration
 	Heartbeat time.Duration
 	Logger    *zerolog.Logger
@@ -141,8 +141,10 @@ func (r *Runner) RunOnce(ctx context.Context, job Job) string {
 	start := r.now()
 	var result Result
 	acquired, err := r.Locker.TryLock(ctx, "lock:job:"+name, r.lockTTL(), func(ctx context.Context) error {
+		runCtx, cancel := context.WithTimeout(ctx, r.runTimeout())
+		defer cancel()
 		var runErr error
-		result, runErr = safeRun(ctx, job)
+		result, runErr = safeRun(runCtx, job)
 		return runErr
 	})
 	elapsed := r.now().Sub(start)
@@ -233,6 +235,12 @@ func (r *Runner) lockTTL() time.Duration {
 		return 5 * time.Minute
 	}
 	return r.LockTTL
+}
+
+// runTimeout is the per-run deadline: 90% of LockTTL, leaving a margin for
+// the lock release and clock skew between replicas.
+func (r *Runner) runTimeout() time.Duration {
+	return r.lockTTL() * 9 / 10
 }
 
 func (r *Runner) now() time.Time {

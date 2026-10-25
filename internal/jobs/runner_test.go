@@ -91,6 +91,27 @@ func TestRunnerRecoversFromPanic(t *testing.T) {
 	require.Equal(t, statusError, r.RunOnce(context.Background(), job))
 }
 
+// A run is cancelled before its lock can expire, so another replica cannot
+// start an overlapping run of the same job.
+func TestRunnerCancelsRunBeforeLockExpires(t *testing.T) {
+	locker := newLocker(t)
+	lockTTL := 500 * time.Millisecond
+	var remaining time.Duration
+	var runErr error
+	job := funcJob{name: "slow", fn: func(ctx context.Context) (Result, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok, "job context must carry a deadline")
+		remaining = time.Until(deadline)
+		<-ctx.Done()
+		runErr = ctx.Err()
+		return nil, runErr
+	}}
+	r := &Runner{Locker: locker, LockTTL: lockTTL, Jobs: []Spec{{Job: job, Interval: time.Hour}}}
+	require.Equal(t, statusError, r.RunOnce(context.Background(), job))
+	require.ErrorIs(t, runErr, context.DeadlineExceeded)
+	require.LessOrEqual(t, remaining, lockTTL*9/10)
+}
+
 type heldLocker struct{}
 
 func (heldLocker) TryLock(context.Context, string, time.Duration, func(context.Context) error) (bool, error) {
