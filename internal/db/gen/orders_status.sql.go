@@ -24,26 +24,28 @@ func (q *Queries) GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStat
 
 const updateOrderStatusIfAllowed = `-- name: UpdateOrderStatusIfAllowed :one
 UPDATE orders
-SET status = $2,
+SET status = $1::order_status,
     updated_at = now()
-WHERE id = $1
+WHERE id = $2
   AND (
-        (status = 'PENDING_PAYMENT' AND $2 IN ('PAID', 'CANCELLED', 'EXPIRED')) OR
-        (status = 'PAID' AND $2 IN ('PACKED', 'CANCELLED')) OR
-        (status = 'PACKED' AND $2 = 'SHIPPED') OR
-        (status = 'SHIPPED' AND $2 = 'OUT_FOR_DELIVERY') OR
-        (status = 'OUT_FOR_DELIVERY' AND $2 = 'DELIVERED')
+        (status = 'PENDING_PAYMENT' AND $1::order_status IN ('PAID', 'CANCELLED', 'EXPIRED')) OR
+        (status = 'PAID' AND $1::order_status IN ('PACKED', 'CANCELLED')) OR
+        (status = 'PACKED' AND $1::order_status = 'SHIPPED') OR
+        (status = 'SHIPPED' AND $1::order_status = 'OUT_FOR_DELIVERY') OR
+        (status = 'OUT_FOR_DELIVERY' AND $1::order_status = 'DELIVERED')
       )
 RETURNING id
 `
 
 type UpdateOrderStatusIfAllowedParams struct {
-	ID     pgtype.UUID `json:"id"`
 	Status OrderStatus `json:"status"`
+	ID     pgtype.UUID `json:"id"`
 }
 
+// The status guard. The parameter is cast explicitly: without the cast
+// PostgreSQL infers it as text from the IN lists and rejects the SET.
 func (q *Queries) UpdateOrderStatusIfAllowed(ctx context.Context, arg UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, updateOrderStatusIfAllowed, arg.ID, arg.Status)
+	row := q.db.QueryRow(ctx, updateOrderStatusIfAllowed, arg.Status, arg.ID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
