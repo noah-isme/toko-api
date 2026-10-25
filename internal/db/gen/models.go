@@ -683,6 +683,13 @@ type ProductQuestion struct {
 	TenantID     pgtype.UUID        `json:"tenant_id"`
 }
 
+type ProductSale struct {
+	ProductID pgtype.UUID        `json:"product_id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	UnitsSold int64              `json:"units_sold"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ProductSpec struct {
 	ID        pgtype.UUID `json:"id"`
 	ProductID pgtype.UUID `json:"product_id"`

@@ -14,6 +14,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/lock"
@@ -90,6 +91,15 @@ func main() {
 		Handler: func(jobCtx context.Context, task queue.Task) error {
 			return deliveryWorker.Handle(jobCtx, task.Payload)
 		},
+	}
+
+	if cfg.ProductSalesRefresh > 0 {
+		popularity := catalog.PopularityRefresher{Pool: pool, Interval: cfg.ProductSalesRefresh, Logger: &logger}
+		go func() {
+			if err := popularity.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error().Err(err).Msg("popularity refresher stopped")
+			}
+		}()
 	}
 
 	logger.Info().Msg("worker starting")

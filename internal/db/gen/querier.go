@@ -65,6 +65,16 @@ type Querier interface {
 	CountOrderItems(ctx context.Context, orderID pgtype.UUID) (int64, error)
 	CountOrdersForDay(ctx context.Context, arg CountOrdersForDayParams) (int64, error)
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// Search predicate shared by every public list/facet query below:
+	//   match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the 'simple' tsvector
+	//                         expression, served by idx_products_search_simple (migration 000049).
+	//                         The expression must stay character-for-character identical to the
+	//                         index definition or the planner falls back to a sequential scan.
+	//   match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
+	//                         the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
+	// Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
+	// migration 000053) exists, every query in this block plus SuggestProductTitles must also
+	// filter p.status = 'published'.
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
 	CountUnreadNotifications(ctx context.Context, arg CountUnreadNotificationsParams) (int64, error)
 	CountVoucherUsageByUser(ctx context.Context, arg CountVoucherUsageByUserParams) (int64, error)
@@ -102,9 +112,16 @@ type Querier interface {
 	DeleteReview(ctx context.Context, arg DeleteReviewParams) error
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
+	DeleteStaleProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
 	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
+	FacetBrandsPublic(ctx context.Context, arg FacetBrandsPublicParams) ([]FacetBrandsPublicRow, error)
+	// Facets: each query applies the search predicate and every filter except its own dimension.
+	FacetCategoriesPublic(ctx context.Context, arg FacetCategoriesPublicParams) ([]FacetCategoriesPublicRow, error)
+	FacetInStockPublic(ctx context.Context, arg FacetInStockPublicParams) ([]FacetInStockPublicRow, error)
+	// bucket = number of edges <= price, i.e. 0 for price < edges[1], len(edges) for price >= last edge.
+	FacetPriceBucketsPublic(ctx context.Context, arg FacetPriceBucketsPublicParams) ([]FacetPriceBucketsPublicRow, error)
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
 	GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error)
 	GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error)
@@ -138,6 +155,7 @@ type Querier interface {
 	GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error)
 	GetProductQuestions(ctx context.Context, arg GetProductQuestionsParams) ([]ProductQuestion, error)
 	GetProductReviews(ctx context.Context, arg GetProductReviewsParams) ([]Review, error)
+	GetProductSalesUnits(ctx context.Context, arg GetProductSalesUnitsParams) (int64, error)
 	GetPushPreferences(ctx context.Context, userID pgtype.UUID) (PushPreference, error)
 	GetPushSubscription(ctx context.Context, arg GetPushSubscriptionParams) (PushSubscription, error)
 	GetPushSubscriptionsByUser(ctx context.Context, userID pgtype.UUID) ([]PushSubscription, error)
@@ -198,6 +216,10 @@ type Querier interface {
 	ListSessions(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
+	// product_sales is a derived counter maintained only by the worker refresh job
+	// (internal/catalog/popularity.go). Paid states must match the popularity rule:
+	// PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED (CANCELLED and unpaid states excluded).
+	ListTenantIDsForProductSales(ctx context.Context) ([]pgtype.UUID, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
@@ -224,9 +246,14 @@ type Querier interface {
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
 	SubscribeNewsletter(ctx context.Context, arg SubscribeNewsletterParams) (NewsletterSubscriber, error)
+	// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, so a scan of
+	// the tenant's titles with the function form of word_similarity is acceptable.
+	SuggestProductTitles(ctx context.Context, arg SuggestProductTitlesParams) ([]SuggestProductTitlesRow, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
 	TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error)
+	// Transaction-scoped advisory lock so only one refresher works on a tenant at a time.
+	TryLockProductSalesTenant(ctx context.Context, tenantID pgtype.UUID) (bool, error)
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
 	UnsubscribeNewsletter(ctx context.Context, arg UnsubscribeNewsletterParams) error
 	UnvoteQuestion(ctx context.Context, arg UnvoteQuestionParams) error
@@ -244,6 +271,7 @@ type Querier interface {
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
 	UpsertOrderProductPair(ctx context.Context, arg UpsertOrderProductPairParams) (OrderProductPair, error)
+	UpsertProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	UpsertPushPreferences(ctx context.Context, arg UpsertPushPreferencesParams) (PushPreference, error)
 	UpsertUserProductView(ctx context.Context, arg UpsertUserProductViewParams) (UserProductView, error)
 	UpsertUserRecommendationCache(ctx context.Context, arg UpsertUserRecommendationCacheParams) (UserRecommendationCache, error)

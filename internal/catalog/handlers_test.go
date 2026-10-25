@@ -137,6 +137,23 @@ type fakeCatalogQueries struct {
 	images         map[string][]dbgen.ProductImage
 	specs          map[string][]dbgen.ProductSpec
 	related        map[string][]dbgen.ListRelatedByCategoryRow
+
+	// Search/facet test hooks.
+	fuzzyProducts   []dbgen.ListProductsPublicRow
+	suggestions     []dbgen.SuggestProductTitlesRow
+	facetCategories []dbgen.FacetCategoriesPublicRow
+	facetBrands     []dbgen.FacetBrandsPublicRow
+	facetPrices     []dbgen.FacetPriceBucketsPublicRow
+	facetStock      []dbgen.FacetInStockPublicRow
+	lastCount       dbgen.CountProductsPublicParams
+	lastList        dbgen.ListProductsPublicParams
+	countModes      []string
+	lastFacetCat    *dbgen.FacetCategoriesPublicParams
+	lastFacetBrand  *dbgen.FacetBrandsPublicParams
+	lastFacetPrice  *dbgen.FacetPriceBucketsPublicParams
+	lastFacetStock  *dbgen.FacetInStockPublicParams
+	suggestCalls    int
+	lastSuggest     dbgen.SuggestProductTitlesParams
 }
 
 func newFakeCatalogQueries(t *testing.T) *fakeCatalogQueries {
@@ -275,12 +292,16 @@ func (f *fakeCatalogQueries) GetCategoryByID(ctx context.Context, arg dbgen.GetC
 }
 
 func (f *fakeCatalogQueries) CountProductsPublic(ctx context.Context, arg dbgen.CountProductsPublicParams) (int64, error) {
+	f.lastCount = arg
+	f.countModes = append(f.countModes, arg.MatchMode)
 	return int64(len(f.filterProducts(arg))), nil
 }
 
 func (f *fakeCatalogQueries) ListProductsPublic(ctx context.Context, arg dbgen.ListProductsPublicParams) ([]dbgen.ListProductsPublicRow, error) {
+	f.lastList = arg
 	filtered := f.filterProducts(dbgen.CountProductsPublicParams{
 		Q:            arg.Q,
+		MatchMode:    arg.MatchMode,
 		CategorySlug: arg.CategorySlug,
 		BrandSlug:    arg.BrandSlug,
 		MinPrice:     arg.MinPrice,
@@ -336,9 +357,40 @@ func (f *fakeCatalogQueries) ListRelatedByCategory(ctx context.Context, arg dbge
 	return result, nil
 }
 
+func (f *fakeCatalogQueries) FacetCategoriesPublic(ctx context.Context, arg dbgen.FacetCategoriesPublicParams) ([]dbgen.FacetCategoriesPublicRow, error) {
+	f.lastFacetCat = &arg
+	return append([]dbgen.FacetCategoriesPublicRow(nil), f.facetCategories...), nil
+}
+
+func (f *fakeCatalogQueries) FacetBrandsPublic(ctx context.Context, arg dbgen.FacetBrandsPublicParams) ([]dbgen.FacetBrandsPublicRow, error) {
+	f.lastFacetBrand = &arg
+	return append([]dbgen.FacetBrandsPublicRow(nil), f.facetBrands...), nil
+}
+
+func (f *fakeCatalogQueries) FacetPriceBucketsPublic(ctx context.Context, arg dbgen.FacetPriceBucketsPublicParams) ([]dbgen.FacetPriceBucketsPublicRow, error) {
+	f.lastFacetPrice = &arg
+	return append([]dbgen.FacetPriceBucketsPublicRow(nil), f.facetPrices...), nil
+}
+
+func (f *fakeCatalogQueries) FacetInStockPublic(ctx context.Context, arg dbgen.FacetInStockPublicParams) ([]dbgen.FacetInStockPublicRow, error) {
+	f.lastFacetStock = &arg
+	return append([]dbgen.FacetInStockPublicRow(nil), f.facetStock...), nil
+}
+
+func (f *fakeCatalogQueries) SuggestProductTitles(ctx context.Context, arg dbgen.SuggestProductTitlesParams) ([]dbgen.SuggestProductTitlesRow, error) {
+	f.suggestCalls++
+	f.lastSuggest = arg
+	return append([]dbgen.SuggestProductTitlesRow(nil), f.suggestions...), nil
+}
+
 func (f *fakeCatalogQueries) filterProducts(arg dbgen.CountProductsPublicParams) []dbgen.ListProductsPublicRow {
-	result := make([]dbgen.ListProductsPublicRow, 0, len(f.productList))
-	for _, row := range f.productList {
+	source := f.productList
+	if arg.MatchMode == catalog.SearchModeFuzzy {
+		// Fuzzy rows stand in for trigram matches: returned regardless of q.
+		return append([]dbgen.ListProductsPublicRow(nil), f.fuzzyProducts...)
+	}
+	result := make([]dbgen.ListProductsPublicRow, 0, len(source))
+	for _, row := range source {
 		if !matchesString(arg.Q, row.Title) {
 			continue
 		}
@@ -385,46 +437,26 @@ func (f *fakeCatalogQueries) brandSlugForProduct(slug string) string {
 	return brand.Slug
 }
 
-func matchesString(pattern any, value string) bool {
-	if pattern == nil {
+func matchesString(pattern pgtype.Text, value string) bool {
+	if !pattern.Valid {
 		return true
 	}
-	s, ok := pattern.(string)
-	if !ok {
-		return true
-	}
-	return strings.Contains(strings.ToLower(value), strings.ToLower(s))
+	return strings.Contains(strings.ToLower(value), strings.ToLower(pattern.String))
 }
 
-func matchesEqual(pattern any, value string) bool {
-	if pattern == nil {
+func matchesEqual(pattern pgtype.Text, value string) bool {
+	if !pattern.Valid || pattern.String == "" {
 		return true
 	}
-	s, ok := pattern.(string)
-	if !ok || s == "" {
-		return true
-	}
-	return strings.EqualFold(s, value)
+	return strings.EqualFold(pattern.String, value)
 }
 
-func matchesMin(pattern any, price int64) bool {
-	if pattern == nil {
-		return true
-	}
-	if v, ok := pattern.(int64); ok {
-		return price >= v
-	}
-	return true
+func matchesMin(pattern pgtype.Int8, price int64) bool {
+	return !pattern.Valid || price >= pattern.Int64
 }
 
-func matchesMax(pattern any, price int64) bool {
-	if pattern == nil {
-		return true
-	}
-	if v, ok := pattern.(int64); ok {
-		return price <= v
-	}
-	return true
+func matchesMax(pattern pgtype.Int8, price int64) bool {
+	return !pattern.Valid || price <= pattern.Int64
 }
 
 func mustUUID(t *testing.T, value string) pgtype.UUID {

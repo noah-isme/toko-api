@@ -12,22 +12,29 @@ import (
 )
 
 const countProductsPublic = `-- name: CountProductsPublic :one
+
 SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE p.tenant_id = $1
-  AND ($2::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $2))
-  AND ($3::text IS NULL OR c.slug = $3)
-  AND ($4::text IS NULL OR b.slug = $4)
-  AND ($5::bigint IS NULL OR p.price >= $5)
-  AND ($6::bigint IS NULL OR p.price <= $6)
-  AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND ($2::text IS NULL
+       OR ($3::text = 'fuzzy' AND $2::text <% p.title)
+       OR ($3::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $2)))
+  AND ($4::text IS NULL OR c.slug = $4)
+  AND ($5::text IS NULL OR b.slug = $5)
+  AND ($6::bigint IS NULL OR p.price >= $6)
+  AND ($7::bigint IS NULL OR p.price <= $7)
+  AND ($8::boolean IS NULL OR p.in_stock = $8)
 `
 
 type CountProductsPublicParams struct {
 	TenantID     pgtype.UUID `json:"tenant_id"`
 	Q            pgtype.Text `json:"q"`
+	MatchMode    string      `json:"match_mode"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
 	MinPrice     pgtype.Int8 `json:"min_price"`
@@ -35,10 +42,23 @@ type CountProductsPublicParams struct {
 	InStock      pgtype.Bool `json:"in_stock"`
 }
 
+// Search predicate shared by every public list/facet query below:
+//
+//	match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the 'simple' tsvector
+//	                      expression, served by idx_products_search_simple (migration 000049).
+//	                      The expression must stay character-for-character identical to the
+//	                      index definition or the planner falls back to a sequential scan.
+//	match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
+//	                      the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
+//
+// Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
+// migration 000053) exists, every query in this block plus SuggestProductTitles must also
+// filter p.status = 'published'.
 func (q *Queries) CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countProductsPublic,
 		arg.TenantID,
 		arg.Q,
+		arg.MatchMode,
 		arg.CategorySlug,
 		arg.BrandSlug,
 		arg.MinPrice,
@@ -48,6 +68,276 @@ func (q *Queries) CountProductsPublic(ctx context.Context, arg CountProductsPubl
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const facetBrandsPublic = `-- name: FacetBrandsPublic :many
+SELECT b.id, b.name, b.slug, COUNT(*)::bigint AS count
+FROM products p
+JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL
+       OR ($3::text = 'fuzzy' AND $2::text <% p.title)
+       OR ($3::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $2)))
+  AND ($4::text IS NULL OR c.slug = $4)
+  AND ($5::bigint IS NULL OR p.price >= $5)
+  AND ($6::bigint IS NULL OR p.price <= $6)
+  AND ($7::boolean IS NULL OR p.in_stock = $7)
+GROUP BY b.id, b.name, b.slug
+ORDER BY count DESC, b.name ASC
+LIMIT 50
+`
+
+type FacetBrandsPublicParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
+	Q            pgtype.Text `json:"q"`
+	MatchMode    string      `json:"match_mode"`
+	CategorySlug pgtype.Text `json:"category_slug"`
+	MinPrice     pgtype.Int8 `json:"min_price"`
+	MaxPrice     pgtype.Int8 `json:"max_price"`
+	InStock      pgtype.Bool `json:"in_stock"`
+}
+
+type FacetBrandsPublicRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Name  string      `json:"name"`
+	Slug  string      `json:"slug"`
+	Count int64       `json:"count"`
+}
+
+func (q *Queries) FacetBrandsPublic(ctx context.Context, arg FacetBrandsPublicParams) ([]FacetBrandsPublicRow, error) {
+	rows, err := q.db.Query(ctx, facetBrandsPublic,
+		arg.TenantID,
+		arg.Q,
+		arg.MatchMode,
+		arg.CategorySlug,
+		arg.MinPrice,
+		arg.MaxPrice,
+		arg.InStock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FacetBrandsPublicRow
+	for rows.Next() {
+		var i FacetBrandsPublicRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.Count,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetCategoriesPublic = `-- name: FacetCategoriesPublic :many
+
+SELECT c.id, c.name, c.slug, COUNT(*)::bigint AS count
+FROM products p
+JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL
+       OR ($3::text = 'fuzzy' AND $2::text <% p.title)
+       OR ($3::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $2)))
+  AND ($4::text IS NULL OR b.slug = $4)
+  AND ($5::bigint IS NULL OR p.price >= $5)
+  AND ($6::bigint IS NULL OR p.price <= $6)
+  AND ($7::boolean IS NULL OR p.in_stock = $7)
+GROUP BY c.id, c.name, c.slug
+ORDER BY count DESC, c.name ASC
+LIMIT 50
+`
+
+type FacetCategoriesPublicParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	Q         pgtype.Text `json:"q"`
+	MatchMode string      `json:"match_mode"`
+	BrandSlug pgtype.Text `json:"brand_slug"`
+	MinPrice  pgtype.Int8 `json:"min_price"`
+	MaxPrice  pgtype.Int8 `json:"max_price"`
+	InStock   pgtype.Bool `json:"in_stock"`
+}
+
+type FacetCategoriesPublicRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Name  string      `json:"name"`
+	Slug  string      `json:"slug"`
+	Count int64       `json:"count"`
+}
+
+// Facets: each query applies the search predicate and every filter except its own dimension.
+func (q *Queries) FacetCategoriesPublic(ctx context.Context, arg FacetCategoriesPublicParams) ([]FacetCategoriesPublicRow, error) {
+	rows, err := q.db.Query(ctx, facetCategoriesPublic,
+		arg.TenantID,
+		arg.Q,
+		arg.MatchMode,
+		arg.BrandSlug,
+		arg.MinPrice,
+		arg.MaxPrice,
+		arg.InStock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FacetCategoriesPublicRow
+	for rows.Next() {
+		var i FacetCategoriesPublicRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Slug,
+			&i.Count,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetInStockPublic = `-- name: FacetInStockPublic :many
+SELECT p.in_stock, COUNT(*)::bigint AS count
+FROM products p
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $1
+  AND ($2::text IS NULL
+       OR ($3::text = 'fuzzy' AND $2::text <% p.title)
+       OR ($3::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $2)))
+  AND ($4::text IS NULL OR c.slug = $4)
+  AND ($5::text IS NULL OR b.slug = $5)
+  AND ($6::bigint IS NULL OR p.price >= $6)
+  AND ($7::bigint IS NULL OR p.price <= $7)
+GROUP BY p.in_stock
+`
+
+type FacetInStockPublicParams struct {
+	TenantID     pgtype.UUID `json:"tenant_id"`
+	Q            pgtype.Text `json:"q"`
+	MatchMode    string      `json:"match_mode"`
+	CategorySlug pgtype.Text `json:"category_slug"`
+	BrandSlug    pgtype.Text `json:"brand_slug"`
+	MinPrice     pgtype.Int8 `json:"min_price"`
+	MaxPrice     pgtype.Int8 `json:"max_price"`
+}
+
+type FacetInStockPublicRow struct {
+	InStock bool  `json:"in_stock"`
+	Count   int64 `json:"count"`
+}
+
+func (q *Queries) FacetInStockPublic(ctx context.Context, arg FacetInStockPublicParams) ([]FacetInStockPublicRow, error) {
+	rows, err := q.db.Query(ctx, facetInStockPublic,
+		arg.TenantID,
+		arg.Q,
+		arg.MatchMode,
+		arg.CategorySlug,
+		arg.BrandSlug,
+		arg.MinPrice,
+		arg.MaxPrice,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FacetInStockPublicRow
+	for rows.Next() {
+		var i FacetInStockPublicRow
+		if err := rows.Scan(&i.InStock, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetPriceBucketsPublic = `-- name: FacetPriceBucketsPublic :many
+SELECT (SELECT COUNT(*) FROM unnest($1::bigint[]) AS e(edge) WHERE e.edge <= p.price)::int AS bucket,
+       COUNT(*)::bigint AS count
+FROM products p
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = $2
+  AND ($3::text IS NULL
+       OR ($4::text = 'fuzzy' AND $3::text <% p.title)
+       OR ($4::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $3)))
+  AND ($5::text IS NULL OR c.slug = $5)
+  AND ($6::text IS NULL OR b.slug = $6)
+  AND ($7::boolean IS NULL OR p.in_stock = $7)
+GROUP BY 1
+ORDER BY 1
+`
+
+type FacetPriceBucketsPublicParams struct {
+	Edges        []int64     `json:"edges"`
+	TenantID     pgtype.UUID `json:"tenant_id"`
+	Q            pgtype.Text `json:"q"`
+	MatchMode    string      `json:"match_mode"`
+	CategorySlug pgtype.Text `json:"category_slug"`
+	BrandSlug    pgtype.Text `json:"brand_slug"`
+	InStock      pgtype.Bool `json:"in_stock"`
+}
+
+type FacetPriceBucketsPublicRow struct {
+	Bucket int32 `json:"bucket"`
+	Count  int64 `json:"count"`
+}
+
+// bucket = number of edges <= price, i.e. 0 for price < edges[1], len(edges) for price >= last edge.
+func (q *Queries) FacetPriceBucketsPublic(ctx context.Context, arg FacetPriceBucketsPublicParams) ([]FacetPriceBucketsPublicRow, error) {
+	rows, err := q.db.Query(ctx, facetPriceBucketsPublic,
+		arg.Edges,
+		arg.TenantID,
+		arg.Q,
+		arg.MatchMode,
+		arg.CategorySlug,
+		arg.BrandSlug,
+		arg.InStock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FacetPriceBucketsPublicRow
+	for rows.Next() {
+		var i FacetPriceBucketsPublicRow
+		if err := rows.Scan(&i.Bucket, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getProductBySlug = `-- name: GetProductBySlug :one
@@ -241,31 +531,52 @@ SELECT p.id,
        c.name AS category_name,
        b.id   AS brand_id,
        b.name AS brand_name,
-       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::float8 AS rating,
-       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::int AS review_count,
+       COALESCE(rv.avg_rating, 0)::float8 AS rating,
+       COALESCE(rv.review_count, 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+LEFT JOIN LATERAL (
+    SELECT AVG(r.rating)::float8 AS avg_rating, COUNT(*)::int AS review_count
+    FROM reviews r
+    WHERE r.product_id = p.id AND r.tenant_id = p.tenant_id
+) rv ON true
+LEFT JOIN product_sales ps ON ps.product_id = p.id AND ps.tenant_id = p.tenant_id
 WHERE p.tenant_id = $1
-  AND ($2::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', $2))
-  AND ($3::text IS NULL OR c.slug = $3)
-  AND ($4::text IS NULL OR b.slug = $4)
-  AND ($5::bigint IS NULL OR p.price >= $5)
-  AND ($6::bigint IS NULL OR p.price <= $6)
-  AND ($7::boolean IS NULL OR p.in_stock = $7)
-ORDER BY CASE WHEN $8::text = 'price:asc' THEN p.price END ASC,
-         CASE WHEN $8::text = 'price:desc' THEN p.price END DESC,
-         CASE WHEN $8::text = 'title:asc' THEN p.title END ASC,
-         CASE WHEN $8::text = 'title:desc' THEN p.title END DESC,
-         CASE WHEN $2::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', $2)) END DESC,
-         p.created_at DESC
-LIMIT $10 OFFSET $9
+  AND ($2::text IS NULL
+       OR ($3::text = 'fuzzy' AND $2::text <% p.title)
+       OR ($3::text <> 'fuzzy'
+           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
+               @@ websearch_to_tsquery('simple', $2)))
+  AND ($4::text IS NULL OR c.slug = $4)
+  AND ($5::text IS NULL OR b.slug = $5)
+  AND ($6::bigint IS NULL OR p.price >= $6)
+  AND ($7::bigint IS NULL OR p.price <= $7)
+  AND ($8::boolean IS NULL OR p.in_stock = $8)
+ORDER BY CASE WHEN $9::text = 'price:asc' THEN p.price END ASC,
+         CASE WHEN $9::text = 'price:desc' THEN p.price END DESC,
+         CASE WHEN $9::text = 'title:asc' THEN p.title END ASC,
+         CASE WHEN $9::text = 'title:desc' THEN p.title END DESC,
+         CASE WHEN $9::text = 'popularity:desc' THEN COALESCE(ps.units_sold, 0) END DESC,
+         CASE WHEN $9::text = 'rating:desc' THEN COALESCE(rv.avg_rating, 0) END DESC,
+         CASE WHEN $9::text = 'rating:desc' THEN COALESCE(rv.review_count, 0) END DESC,
+         CASE
+           WHEN $2::text IS NULL THEN NULL
+           WHEN $3::text = 'fuzzy' THEN word_similarity($2::text, p.title)::float8
+           ELSE ts_rank((setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B')), websearch_to_tsquery('simple', $2))::float8
+         END DESC,
+         p.created_at DESC,
+         p.id
+LIMIT $11 OFFSET $10
 `
 
 type ListProductsPublicParams struct {
 	TenantID     pgtype.UUID `json:"tenant_id"`
 	Q            pgtype.Text `json:"q"`
+	MatchMode    string      `json:"match_mode"`
 	CategorySlug pgtype.Text `json:"category_slug"`
 	BrandSlug    pgtype.Text `json:"brand_slug"`
 	MinPrice     pgtype.Int8 `json:"min_price"`
@@ -299,6 +610,7 @@ func (q *Queries) ListProductsPublic(ctx context.Context, arg ListProductsPublic
 	rows, err := q.db.Query(ctx, listProductsPublic,
 		arg.TenantID,
 		arg.Q,
+		arg.MatchMode,
 		arg.CategorySlug,
 		arg.BrandSlug,
 		arg.MinPrice,
@@ -473,6 +785,55 @@ func (q *Queries) ListVariantsByProduct(ctx context.Context, productID pgtype.UU
 			&i.Stock,
 			&i.Attributes,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const suggestProductTitles = `-- name: SuggestProductTitles :many
+SELECT p.title, p.slug, word_similarity($1::text, p.title)::float8 AS score
+FROM products p
+WHERE p.tenant_id = $2
+  AND word_similarity($1::text, p.title) >= $3::float4
+ORDER BY score DESC, p.title ASC
+LIMIT $4
+`
+
+type SuggestProductTitlesParams struct {
+	Q          string      `json:"q"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	MinScore   float32     `json:"min_score"`
+	LimitValue int32       `json:"limit_value"`
+}
+
+type SuggestProductTitlesRow struct {
+	Title string  `json:"title"`
+	Slug  string  `json:"slug"`
+	Score float64 `json:"score"`
+}
+
+// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, so a scan of
+// the tenant's titles with the function form of word_similarity is acceptable.
+func (q *Queries) SuggestProductTitles(ctx context.Context, arg SuggestProductTitlesParams) ([]SuggestProductTitlesRow, error) {
+	rows, err := q.db.Query(ctx, suggestProductTitles,
+		arg.Q,
+		arg.TenantID,
+		arg.MinScore,
+		arg.LimitValue,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SuggestProductTitlesRow
+	for rows.Next() {
+		var i SuggestProductTitlesRow
+		if err := rows.Scan(&i.Title, &i.Slug, &i.Score); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
