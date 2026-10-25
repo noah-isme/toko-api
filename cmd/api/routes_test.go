@@ -164,15 +164,17 @@ func concretePath(pattern string) string {
 
 // TestAdminRoutesDenyCustomersAndAuditMutations drives every walked route
 // through the real middleware chain: a customer member is stopped by
-// RequireStaff, and every mutating request of a staff member is audited even
-// when the permission check denies it.
+// RequireStaff and that probe is audited, and every mutating request of a
+// staff member is audited even when the permission check denies it.
 func TestAdminRoutesDenyCustomersAndAuditMutations(t *testing.T) {
 	audited := map[string]int{}
 	d := testDeps()
 	d.Audit = func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r)
-			audited[r.Method+" "+chi.RouteContext(r.Context()).RoutePattern()]++
+			// Keyed by the concrete path: a request RequireStaff denies never
+			// reaches the inner router, so its route pattern is incomplete.
+			audited[r.Method+" "+r.URL.Path]++
 		})
 	}
 	r := buildAdminRouter(d)
@@ -192,6 +194,9 @@ func TestAdminRoutesDenyCustomersAndAuditMutations(t *testing.T) {
 		r.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusForbidden, rec.Code, "customer on %s", key)
 		assert.Contains(t, rec.Body.String(), `"required":"staff"`, key)
+		if strings.HasPrefix(pattern, "/api/v1/admin") {
+			assert.Equal(t, 1, audited[method+" "+path], "customer probe of %s must be audited", key)
+		}
 
 		if method == http.MethodGet || strings.HasPrefix(pattern, "/api/v1/analytics") {
 			continue
@@ -204,7 +209,7 @@ func TestAdminRoutesDenyCustomersAndAuditMutations(t *testing.T) {
 		rec = httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusForbidden, rec.Code, "%s on %s", role, key)
-		assert.Equal(t, 1, audited[key], "mutation %s must be audited", key)
+		assert.Equal(t, 2, audited[method+" "+path], "mutation %s must be audited", key)
 	}
 }
 

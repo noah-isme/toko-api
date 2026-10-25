@@ -57,11 +57,15 @@ type adminDeps struct {
 func registerAdminRoutes(a chi.Router, d adminDeps) {
 	a.Use(d.RequireAuth)
 	a.Use(d.Membership)
-	a.Use(rbac.RequireStaff)
 	if d.Audit != nil {
-		// Records every request, including denied ones, with its final status.
+		// Installed before RequireStaff so every request from a tenant member
+		// is recorded with its final status, including staff, platform-admin
+		// and permission denials (customers probing /admin). Requests rejected
+		// earlier (401, 403 TENANT_FORBIDDEN) have no tenant actor and are not
+		// recorded here.
 		a.Use(d.Audit)
 	}
+	a.Use(rbac.RequireStaff)
 
 	const (
 		get   = http.MethodGet
