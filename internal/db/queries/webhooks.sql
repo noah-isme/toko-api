@@ -41,6 +41,11 @@ INSERT INTO webhook_deliveries (endpoint_id, event_id, status, max_attempt, next
 VALUES (sqlc.arg(endpoint_id), sqlc.arg(event_id), 'PENDING', sqlc.arg(max_attempt), now())
 RETURNING *;
 
+-- name: GetDeliveryByEndpointEvent :one
+SELECT *
+FROM webhook_deliveries
+WHERE endpoint_id = sqlc.arg(endpoint_id) AND event_id = sqlc.arg(event_id);
+
 -- name: DequeueDueDeliveries :many
 SELECT *
 FROM webhook_deliveries

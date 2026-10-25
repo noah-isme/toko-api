@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,28 +66,29 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 	availableAt := time.Now().Add(t.Delay)
 	msg.AvailableAt = availableAt.UnixNano()
 
-	if msg.Key != "" {
-		dedupKey := e.dedupKey(kind, msg.Key)
-		ttl := e.DedupTTL
-		if ttl <= 0 {
-			ttl = 24 * time.Hour
-		}
-		ok, err := e.R.SetNX(ctx, dedupKey, "1", ttl).Result()
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-	}
-
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	queueKey := e.queueKey(kind)
 	score := float64(msg.AvailableAt)
-	if err := e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err(); err != nil {
+	if msg.Key != "" {
+		ttl := e.DedupTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		// The dedup check, the ZADD and the dedup SET run as one script, so the
+		// dedup key can only exist when the task was actually queued. With a
+		// separate SETNX a failed or cancelled ZADD would leave the key behind
+		// and every retry inside the TTL would be silently dropped.
+		_, err := enqueueDedupScript.Run(ctx, e.R,
+			[]string{e.dedupKey(kind, msg.Key), queueKey},
+			ttl.Milliseconds(), strconv.FormatFloat(score, 'f', -1, 64), string(raw),
+		).Int()
+		if err != nil {
+			return err
+		}
+	} else if err := e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err(); err != nil {
 		return err
 	}
 	if QueueDepth != nil {
@@ -96,6 +98,19 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 	}
 	return nil
 }
+
+// enqueueDedupScript queues a task unless its dedup key exists. KEYS[1] is the
+// dedup key, KEYS[2] the queue ZSET; ARGV is ttl (ms), score, member. ZADD runs
+// before SET: if ZADD fails the script aborts and no dedup key is written.
+// Returns 1 when queued, 0 when deduplicated.
+var enqueueDedupScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+redis.call('SET', KEYS[1], '1', 'PX', ARGV[1])
+return 1
+`)
 
 func (e Enqueuer) queueKey(kind string) string {
 	if e.Prefix == "" {

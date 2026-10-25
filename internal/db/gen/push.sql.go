@@ -152,6 +152,28 @@ func (q *Queries) GetPushSubscriptionsByUser(ctx context.Context, userID pgtype.
 	return items, nil
 }
 
+const trimPushSubscriptions = `-- name: TrimPushSubscriptions :exec
+DELETE FROM push_subscriptions
+WHERE push_subscriptions.user_id = $1
+  AND push_subscriptions.id IN (
+    SELECT ps.id FROM push_subscriptions ps
+    WHERE ps.user_id = $1
+    ORDER BY ps.created_at DESC, ps.id
+    OFFSET $2
+  )
+`
+
+type TrimPushSubscriptionsParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Offset int32       `json:"offset"`
+}
+
+// Keeps the newest $2 subscriptions of a user and deletes the rest.
+func (q *Queries) TrimPushSubscriptions(ctx context.Context, arg TrimPushSubscriptionsParams) error {
+	_, err := q.db.Exec(ctx, trimPushSubscriptions, arg.UserID, arg.Offset)
+	return err
+}
+
 const upsertPushPreferences = `-- name: UpsertPushPreferences :one
 INSERT INTO push_preferences (user_id, enabled, order_updates, promo_updates, stock_updates)
 VALUES ($1, $2, $3, $4, $5)

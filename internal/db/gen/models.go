@@ -407,12 +407,15 @@ type Category struct {
 }
 
 type DomainEvent struct {
-	ID          pgtype.UUID        `json:"id"`
-	Topic       string             `json:"topic"`
-	AggregateID pgtype.UUID        `json:"aggregate_id"`
-	Payload     []byte             `json:"payload"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	TenantID    pgtype.UUID        `json:"tenant_id"`
+	ID                pgtype.UUID        `json:"id"`
+	Topic             string             `json:"topic"`
+	AggregateID       pgtype.UUID        `json:"aggregate_id"`
+	Payload           []byte             `json:"payload"`
+	OccurredAt        pgtype.Timestamptz `json:"occurred_at"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	DispatchedAt      pgtype.Timestamptz `json:"dispatched_at"`
+	DispatchAttempts  int32              `json:"dispatch_attempts"`
+	LastDispatchError pgtype.Text        `json:"last_dispatch_error"`
 }
 
 type EmailVerification struct {
@@ -541,6 +544,7 @@ type Notification struct {
 	Data      []byte             `json:"data"`
 	ReadAt    pgtype.Timestamptz `json:"read_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	EventID   pgtype.UUID        `json:"event_id"`
 }
 
 type Order struct {

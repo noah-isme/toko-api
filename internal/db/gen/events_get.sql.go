@@ -12,28 +12,24 @@ import (
 )
 
 const getDomainEvent = `-- name: GetDomainEvent :one
-SELECT id, topic, aggregate_id, payload, occurred_at
+SELECT id, topic, aggregate_id, payload, occurred_at, tenant_id, dispatched_at, dispatch_attempts, last_dispatch_error
 FROM domain_events
 WHERE id = $1
 `
 
-type GetDomainEventRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	Topic       string             `json:"topic"`
-	AggregateID pgtype.UUID        `json:"aggregate_id"`
-	Payload     []byte             `json:"payload"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-}
-
-func (q *Queries) GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error) {
+func (q *Queries) GetDomainEvent(ctx context.Context, id pgtype.UUID) (DomainEvent, error) {
 	row := q.db.QueryRow(ctx, getDomainEvent, id)
-	var i GetDomainEventRow
+	var i DomainEvent
 	err := row.Scan(
 		&i.ID,
 		&i.Topic,
 		&i.AggregateID,
 		&i.Payload,
 		&i.OccurredAt,
+		&i.TenantID,
+		&i.DispatchedAt,
+		&i.DispatchAttempts,
+		&i.LastDispatchError,
 	)
 	return i, err
 }

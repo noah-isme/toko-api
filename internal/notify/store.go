@@ -25,6 +25,7 @@ type Store interface {
 	MoveToDLQ(ctx context.Context, arg dbgen.MoveToDLQParams) error
 	InsertWebhookDlq(ctx context.Context, arg dbgen.InsertWebhookDlqParams) (dbgen.WebhookDlq, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (dbgen.WebhookDelivery, error)
+	GetDeliveryByEndpointEvent(ctx context.Context, arg dbgen.GetDeliveryByEndpointEventParams) (dbgen.WebhookDelivery, error)
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (dbgen.WebhookDelivery, error)
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
 	ListWebhookDeliveries(ctx context.Context, arg dbgen.ListWebhookDeliveriesParams) ([]dbgen.ListWebhookDeliveriesRow, error)
@@ -120,16 +121,10 @@ func (s QueriesStore) CountWebhookDeliveries(ctx context.Context, arg dbgen.Coun
 	return s.Queries.CountWebhookDeliveries(ctx, arg)
 }
 
+func (s QueriesStore) GetDeliveryByEndpointEvent(ctx context.Context, arg dbgen.GetDeliveryByEndpointEventParams) (dbgen.WebhookDelivery, error) {
+	return s.Queries.GetDeliveryByEndpointEvent(ctx, arg)
+}
+
 func (s QueriesStore) GetDomainEvent(ctx context.Context, id pgtype.UUID) (dbgen.DomainEvent, error) {
-	row, err := s.Queries.GetDomainEvent(ctx, id)
-	if err != nil {
-		return dbgen.DomainEvent{}, err
-	}
-	return dbgen.DomainEvent{
-		ID:          row.ID,
-		Topic:       row.Topic,
-		AggregateID: row.AggregateID,
-		Payload:     row.Payload,
-		OccurredAt:  row.OccurredAt,
-	}, nil
+	return s.Queries.GetDomainEvent(ctx, id)
 }

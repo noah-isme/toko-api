@@ -48,9 +48,10 @@ func (q *Queries) CountUnreadNotifications(ctx context.Context, arg CountUnreadN
 }
 
 const createNotification = `-- name: CreateNotification :one
-INSERT INTO notifications (user_id, tenant_id, type, title, body, data)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, user_id, tenant_id, type, title, body, data, read_at, created_at
+INSERT INTO notifications (user_id, tenant_id, type, title, body, data, event_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (event_id, user_id) WHERE event_id IS NOT NULL DO NOTHING
+RETURNING id, user_id, tenant_id, type, title, body, data, read_at, created_at, event_id
 `
 
 type CreateNotificationParams struct {
@@ -60,8 +61,12 @@ type CreateNotificationParams struct {
 	Title    string      `json:"title"`
 	Body     string      `json:"body"`
 	Data     []byte      `json:"data"`
+	EventID  pgtype.UUID `json:"event_id"`
 }
 
+// A non-NULL event_id makes the insert idempotent per (event, user): re-running
+// event fan-out (outbox relay) hits the partial unique index from migration
+// 000048 and returns no row (pgx.ErrNoRows) instead of a duplicate.
 func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error) {
 	row := q.db.QueryRow(ctx, createNotification,
 		arg.UserID,
@@ -70,6 +75,7 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 		arg.Title,
 		arg.Body,
 		arg.Data,
+		arg.EventID,
 	)
 	var i Notification
 	err := row.Scan(
@@ -82,12 +88,13 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 		&i.Data,
 		&i.ReadAt,
 		&i.CreatedAt,
+		&i.EventID,
 	)
 	return i, err
 }
 
 const listNotifications = `-- name: ListNotifications :many
-SELECT id, user_id, tenant_id, type, title, body, data, read_at, created_at
+SELECT id, user_id, tenant_id, type, title, body, data, read_at, created_at, event_id
 FROM notifications
 WHERE user_id = $1 AND tenant_id = $2
 ORDER BY created_at DESC
@@ -125,6 +132,7 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 			&i.Data,
 			&i.ReadAt,
 			&i.CreatedAt,
+			&i.EventID,
 		); err != nil {
 			return nil, err
 		}

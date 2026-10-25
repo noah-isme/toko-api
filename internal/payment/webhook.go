@@ -285,16 +285,16 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		switch newStatus {
 		case dbgen.PaymentStatusPAID:
-			_, _ = h.Events.Emit(ctx, events.TopicOrderPaid, order.ID, payload)
+			h.Events.EmitLogged(ctx, events.TopicOrderPaid, order.ID, payload)
 		case dbgen.PaymentStatusFAILED:
-			_, _ = h.Events.Emit(ctx, events.TopicPaymentFailed, order.ID, payload)
+			h.Events.EmitLogged(ctx, events.TopicPaymentFailed, order.ID, payload)
 			if orderCanceled {
-				_, _ = h.Events.Emit(ctx, events.TopicOrderCanceled, order.ID, payload)
+				h.Events.EmitLogged(ctx, events.TopicOrderCanceled, order.ID, payload)
 			}
 		case dbgen.PaymentStatusEXPIRED:
-			_, _ = h.Events.Emit(ctx, events.TopicPaymentExpired, order.ID, payload)
+			h.Events.EmitLogged(ctx, events.TopicPaymentExpired, order.ID, payload)
 			if orderCanceled {
-				_, _ = h.Events.Emit(ctx, events.TopicOrderCanceled, order.ID, payload)
+				h.Events.EmitLogged(ctx, events.TopicOrderCanceled, order.ID, payload)
 			}
 		}
 	}

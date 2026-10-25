@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,49 @@ import (
 // SendMail offers no timeout at all, which is why the dialling below is done by
 // hand: a hung relay must not pin a request goroutine indefinitely.
 const defaultSMTPTimeout = 10 * time.Second
+
+// ErrInvalidRecipient is returned (wrapped) when the recipient address does not
+// parse. The address itself is deliberately not part of the error text, since
+// errors end up in logs and job dead-letter entries.
+var ErrInvalidRecipient = errors.New("smtp: invalid recipient address")
+
+// SendError reports which step of the SMTP conversation failed. Err may carry
+// relay replies (a *textproto.Error), which often echo the recipient address,
+// so callers that persist or expose errors should report Stage and Code()
+// rather than Error().
+type SendError struct {
+	// Stage is one of: dial, greet, starttls, auth, mail from, rcpt to, data,
+	// write body, close body, quit, set deadline.
+	Stage string
+	// Addr is the relay host:port for dial/greet failures.
+	Addr string
+	Err  error
+}
+
+func (e *SendError) Error() string {
+	if e.Addr != "" {
+		return fmt.Sprintf("smtp: %s %s: %v", e.Stage, e.Addr, e.Err)
+	}
+	return fmt.Sprintf("smtp: %s: %v", e.Stage, e.Err)
+}
+
+func (e *SendError) Unwrap() error { return e.Err }
+
+// Code returns the SMTP reply code of the failure, or 0 when the failure was
+// not a relay reply (network error, TLS failure, ...).
+func (e *SendError) Code() int {
+	var tp *textproto.Error
+	if errors.As(e.Err, &tp) {
+		return tp.Code
+	}
+	return 0
+}
+
+// Permanent reports a 5xx relay reply: retrying the same message cannot succeed.
+func (e *SendError) Permanent() bool {
+	code := e.Code()
+	return code >= 500 && code < 600
+}
 
 // SMTPSender delivers mail through an SMTP relay.
 //
@@ -67,7 +111,7 @@ func (s *SMTPSender) Send(to, subject, body string) error {
 	}
 	recipient, err := mail.ParseAddress(to)
 	if err != nil {
-		return fmt.Errorf("smtp: invalid recipient %q: %w", to, err)
+		return fmt.Errorf("%w: %v", ErrInvalidRecipient, err)
 	}
 
 	msg := s.buildMessage(recipient.Address, subject, body)
@@ -75,13 +119,13 @@ func (s *SMTPSender) Send(to, subject, body string) error {
 
 	conn, err := net.DialTimeout("tcp", addr, s.Timeout)
 	if err != nil {
-		return fmt.Errorf("smtp: dial %s: %w", addr, err)
+		return &SendError{Stage: "dial", Addr: addr, Err: err}
 	}
 	// One deadline for the entire exchange, refreshed by nothing: a relay that
 	// stalls mid-conversation fails rather than hanging.
 	if err := conn.SetDeadline(time.Now().Add(s.Timeout)); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("smtp: set deadline: %w", err)
+		return &SendError{Stage: "set deadline", Err: err}
 	}
 
 	tlsConfig := &tls.Config{
@@ -95,45 +139,45 @@ func (s *SMTPSender) Send(to, subject, body string) error {
 	client, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("smtp: greet %s: %w", addr, err)
+		return &SendError{Stage: "greet", Addr: addr, Err: err}
 	}
 	defer func() { _ = client.Close() }()
 
 	if !s.ImplicitTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			if err := client.StartTLS(tlsConfig); err != nil {
-				return fmt.Errorf("smtp: starttls: %w", err)
+				return &SendError{Stage: "starttls", Err: err}
 			}
 		}
 	}
 
 	if s.Username != "" {
 		if err := client.Auth(smtp.PlainAuth("", s.Username, s.Password, s.Host)); err != nil {
-			return fmt.Errorf("smtp: auth: %w", err)
+			return &SendError{Stage: "auth", Err: err}
 		}
 	}
 
 	if err := client.Mail(s.fromAddress()); err != nil {
-		return fmt.Errorf("smtp: mail from: %w", err)
+		return &SendError{Stage: "mail from", Err: err}
 	}
 	if err := client.Rcpt(recipient.Address); err != nil {
-		return fmt.Errorf("smtp: rcpt to: %w", err)
+		return &SendError{Stage: "rcpt to", Err: err}
 	}
 
 	writer, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("smtp: data: %w", err)
+		return &SendError{Stage: "data", Err: err}
 	}
 	if _, err := writer.Write(msg); err != nil {
 		_ = writer.Close()
-		return fmt.Errorf("smtp: write body: %w", err)
+		return &SendError{Stage: "write body", Err: err}
 	}
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("smtp: close body: %w", err)
+		return &SendError{Stage: "close body", Err: err}
 	}
 
 	if err := client.Quit(); err != nil {
-		return fmt.Errorf("smtp: quit: %w", err)
+		return &SendError{Stage: "quit", Err: err}
 	}
 	return nil
 }

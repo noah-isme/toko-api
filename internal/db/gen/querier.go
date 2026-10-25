@@ -75,6 +75,9 @@ type Querier interface {
 	CreateEmailVerification(ctx context.Context, arg CreateEmailVerificationParams) (EmailVerification, error)
 	CreateInventoryReservation(ctx context.Context, arg CreateInventoryReservationParams) (InventoryReservation, error)
 	CreateLoyaltyTransaction(ctx context.Context, arg CreateLoyaltyTransactionParams) (CreateLoyaltyTransactionRow, error)
+	// A non-NULL event_id makes the insert idempotent per (event, user): re-running
+	// event fan-out (outbox relay) hits the partial unique index from migration
+	// 000048 and returns no row (pgx.ErrNoRows) instead of a duplicate.
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	CreateOrUpdateLoyaltyProfile(ctx context.Context, arg CreateOrUpdateLoyaltyProfileParams) (CreateOrUpdateLoyaltyProfileRow, error)
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
@@ -117,8 +120,9 @@ type Querier interface {
 	GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (GetCategoryByIDRow, error)
 	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
 	GetCustomersAlsoViewed(ctx context.Context, arg GetCustomersAlsoViewedParams) ([]GetCustomersAlsoViewedRow, error)
+	GetDeliveryByEndpointEvent(ctx context.Context, arg GetDeliveryByEndpointEventParams) (WebhookDelivery, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
-	GetDomainEvent(ctx context.Context, id pgtype.UUID) (GetDomainEventRow, error)
+	GetDomainEvent(ctx context.Context, id pgtype.UUID) (DomainEvent, error)
 	GetEmailVerificationByToken(ctx context.Context, token string) (EmailVerification, error)
 	GetFrequentlyBoughtTogether(ctx context.Context, arg GetFrequentlyBoughtTogetherParams) ([]GetFrequentlyBoughtTogetherRow, error)
 	GetLatestPaymentByOrder(ctx context.Context, orderID pgtype.UUID) (Payment, error)
@@ -163,7 +167,10 @@ type Querier interface {
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)
-	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error)
+	// dispatched_at is written as NULL explicitly: that is what makes the row
+	// "pending" for the outbox relay. The column default (now()) exists only for
+	// binaries that predate migration 000047 and still fan out inline.
+	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error)
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
@@ -181,7 +188,9 @@ type Querier interface {
 	// the product.
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]ListCartItemsRow, error)
 	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]ListCategoriesRow, error)
-	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
+	// Like every query here, it lists all domain_events columns in table order so
+	// sqlc maps rows onto dbgen.DomainEvent.
+	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]DomainEvent, error)
 	ListExpiredInventoryReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) ([]InventoryReservation, error)
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
@@ -198,17 +207,23 @@ type Querier interface {
 	ListSessions(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
+	// Used by the outbox relay. The topic list plus the [not_before, older_than)
+	// window let the planner use idx_domain_events_topic_time (topic, occurred_at)
+	// as a bounded range scan per topic instead of scanning the append-only table.
+	ListUndispatchedDomainEvents(ctx context.Context, arg ListUndispatchedDomainEventsParams) ([]DomainEvent, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error
 	MarkDelivering(ctx context.Context, id pgtype.UUID) error
+	MarkDomainEventDispatched(ctx context.Context, id pgtype.UUID) error
 	MarkFailedWithBackoff(ctx context.Context, arg MarkFailedWithBackoffParams) error
 	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) (pgtype.UUID, error)
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
 	MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (MarkUserEmailVerifiedRow, error)
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
+	RecordDomainEventDispatchFailure(ctx context.Context, arg RecordDomainEventDispatchFailureParams) error
 	RefreshSalesDaily(ctx context.Context) error
 	RefreshTopProducts(ctx context.Context) error
 	// Release quota reserved by an unpaid, expired, or cancelled order.
@@ -227,6 +242,8 @@ type Querier interface {
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
 	TransitionInventoryReservation(ctx context.Context, arg TransitionInventoryReservationParams) (InventoryReservation, error)
+	// Keeps the newest $2 subscriptions of a user and deletes the rest.
+	TrimPushSubscriptions(ctx context.Context, arg TrimPushSubscriptionsParams) error
 	UnsetDefaultAddresses(ctx context.Context, arg UnsetDefaultAddressesParams) error
 	UnsubscribeNewsletter(ctx context.Context, arg UnsubscribeNewsletterParams) error
 	UnvoteQuestion(ctx context.Context, arg UnvoteQuestionParams) error

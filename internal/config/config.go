@@ -129,6 +129,31 @@ type Config struct {
 	APIMaxShutdownGrace        time.Duration
 	EnableAPIEmbeddedWorkers   bool
 	AdminDLQPageSize           int
+
+	// Web push (VAPID). Push is disabled unless both keys are set.
+	PushVAPIDPublicKey          string
+	PushVAPIDPrivateKey         string
+	PushVAPIDSubject            string
+	PushTTL                     time.Duration
+	PushEndpointAllowedHosts    []string
+	PushMaxSubscriptionsPerUser int
+	QueueConcurrencyPush        int
+
+	// Outbox relay (cmd/worker) re-dispatching undelivered domain events.
+	OutboxRelayInterval    time.Duration
+	OutboxRelayMinAge      time.Duration
+	OutboxRelayMaxAge      time.Duration
+	OutboxRelayMaxAttempts int
+}
+
+// DefaultPushEndpointAllowedHosts lists the push services browsers use today.
+// Entries starting with "." match any subdomain.
+var DefaultPushEndpointAllowedHosts = []string{
+	"fcm.googleapis.com",
+	".push.services.mozilla.com",
+	".notify.windows.com",
+	"web.push.apple.com",
+	".push.apple.com",
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -272,6 +297,17 @@ func Load() (*Config, error) {
 		APIMaxShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("API_MAX_SHUTDOWN_GRACE_SEC"), 15)) * time.Second,
 		EnableAPIEmbeddedWorkers:   parseBoolWithDefault(k.String("ENABLE_API_EMBEDDED_WORKERS"), false),
 		AdminDLQPageSize:           parsePositiveIntAllowZero(k.String("ADMIN_DLQ_PAGE_SIZE"), 50),
+
+		PushVAPIDPublicKey:          strings.TrimSpace(k.String("PUSH_VAPID_PUBLIC_KEY")),
+		PushVAPIDPrivateKey:         strings.TrimSpace(k.String("PUSH_VAPID_PRIVATE_KEY")),
+		PushTTL:                     time.Duration(parsePositiveIntAllowZero(k.String("PUSH_TTL_SEC"), 86400)) * time.Second,
+		PushEndpointAllowedHosts:    splitAndTrim(strings.ToLower(k.String("PUSH_ENDPOINT_ALLOWED_HOSTS"))),
+		PushMaxSubscriptionsPerUser: parsePositiveIntAllowZero(k.String("PUSH_MAX_SUBSCRIPTIONS_PER_USER"), 10),
+		QueueConcurrencyPush:        parsePositiveIntAllowZero(k.String("QUEUE_CONCURRENCY_PUSH"), 4),
+		OutboxRelayInterval:         time.Duration(parsePositiveIntAllowZero(k.String("OUTBOX_RELAY_INTERVAL_SEC"), 15)) * time.Second,
+		OutboxRelayMinAge:           time.Duration(parsePositiveIntAllowZero(k.String("OUTBOX_RELAY_MIN_AGE_SEC"), 30)) * time.Second,
+		OutboxRelayMaxAge:           time.Duration(parsePositiveIntAllowZero(k.String("OUTBOX_RELAY_MAX_AGE_SEC"), 86400)) * time.Second,
+		OutboxRelayMaxAttempts:      parsePositiveIntAllowZero(k.String("OUTBOX_RELAY_MAX_ATTEMPTS"), 10),
 	}
 	cfg.ShippingProvider = resolveShippingProvider(cfg.AppEnv, cfg.ShippingProvider, cfg.RajaOngkirAPIKey)
 
@@ -446,6 +482,10 @@ func Load() (*Config, error) {
 		cfg.AnalyticsCacheTTL = 120 * time.Second
 	}
 
+	if err := applyPushDefaults(cfg, k.String("PUSH_VAPID_SUBJECT")); err != nil {
+		return nil, err
+	}
+
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("DATABASE_URL is required")
 	}
@@ -460,6 +500,83 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// PushEnabled reports whether web push is configured (both VAPID keys set).
+func (c *Config) PushEnabled() bool {
+	return c != nil && c.PushVAPIDPublicKey != "" && c.PushVAPIDPrivateKey != ""
+}
+
+// applyPushDefaults validates the web push and outbox relay settings and fills
+// in defaults. Missing VAPID keys are not an error (push is simply disabled);
+// exactly one key is, because it can only be a mistake.
+func applyPushDefaults(cfg *Config, rawSubject string) error {
+	if (cfg.PushVAPIDPublicKey == "") != (cfg.PushVAPIDPrivateKey == "") {
+		return errors.New("PUSH_VAPID_PUBLIC_KEY and PUSH_VAPID_PRIVATE_KEY must be set together (or both left empty to disable web push)")
+	}
+	if strings.TrimSpace(rawSubject) == "" {
+		rawSubject = cfg.NotifyEmailFrom
+	}
+	subject, err := normalizeVAPIDSubject(rawSubject)
+	if err != nil {
+		if cfg.PushEnabled() {
+			return err
+		}
+		// Push is disabled; a bad default (e.g. NOTIFY_FROM_EMAIL) must not
+		// stop the app from booting.
+		subject = ""
+	}
+	cfg.PushVAPIDSubject = subject
+	if cfg.PushTTL <= 0 {
+		cfg.PushTTL = 24 * time.Hour
+	}
+	if len(cfg.PushEndpointAllowedHosts) == 0 {
+		cfg.PushEndpointAllowedHosts = append([]string(nil), DefaultPushEndpointAllowedHosts...)
+	}
+	if cfg.PushMaxSubscriptionsPerUser <= 0 {
+		cfg.PushMaxSubscriptionsPerUser = 1
+	}
+	if cfg.QueueConcurrencyPush <= 0 {
+		cfg.QueueConcurrencyPush = 1
+	}
+	if cfg.OutboxRelayInterval <= 0 {
+		cfg.OutboxRelayInterval = 15 * time.Second
+	}
+	if cfg.OutboxRelayMinAge <= 0 {
+		cfg.OutboxRelayMinAge = 30 * time.Second
+	}
+	if cfg.OutboxRelayMaxAge <= 0 {
+		cfg.OutboxRelayMaxAge = 24 * time.Hour
+	}
+	if cfg.OutboxRelayMaxAttempts <= 0 {
+		cfg.OutboxRelayMaxAttempts = 10
+	}
+	return nil
+}
+
+// normalizeVAPIDSubject returns the VAPID "sub" claim as exactly one of
+// "mailto:<addr>" or "https://...". Accepted inputs: "addr", "mailto:addr" (any
+// case) and "https://...".
+func normalizeVAPIDSubject(raw string) (string, error) {
+	errInvalid := errors.New("PUSH_VAPID_SUBJECT must be an email address, mailto: URL or https URL")
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errInvalid
+	}
+	if isHTTPSURL(value) {
+		return value, nil
+	}
+	if len(value) >= len("mailto:") && strings.EqualFold(value[:len("mailto:")], "mailto:") {
+		value = value[len("mailto:"):]
+	}
+	if strings.ContainsAny(value, " \t:/") {
+		return "", errInvalid
+	}
+	at := strings.Index(value, "@")
+	if at <= 0 || at == len(value)-1 || strings.Count(value, "@") != 1 {
+		return "", errInvalid
+	}
+	return "mailto:" + value, nil
 }
 
 // resolveShippingProvider keeps local development independent of external

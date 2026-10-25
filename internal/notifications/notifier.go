@@ -3,7 +3,10 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -21,8 +24,9 @@ type OrderLookup interface {
 type Notifier struct {
 	Svc    *Service
 	Orders OrderLookup
-	// OnError, when set, is invoked for non-fatal persistence failures so the
-	// caller can log without aborting event fan-out.
+	// OnError, when set, is invoked for events that are skipped because their
+	// order no longer exists. Transient failures (order lookup, insert) are
+	// returned instead so the bus records them and the outbox relay retries.
 	OnError func(error)
 }
 
@@ -62,8 +66,13 @@ func (n *Notifier) Notify(ctx context.Context, event dbgen.DomainEvent) error {
 	}
 	order, err := n.Orders.GetOrderByID(ctx, orderID)
 	if err != nil {
-		n.reportError(err)
-		return nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			n.reportError(err)
+			return nil
+		}
+		// Transient: returned so the bus records the failure and the outbox
+		// relay retries. Create is idempotent per (event, user).
+		return fmt.Errorf("notifications: load order: %w", err)
 	}
 	if !order.UserID.Valid || !order.TenantID.Valid {
 		return nil
@@ -72,36 +81,15 @@ func (n *Notifier) Notify(ctx context.Context, event dbgen.DomainEvent) error {
 		"orderId": uuidString(order.ID),
 		"topic":   event.Topic,
 	})
-	if _, err := n.Svc.Create(ctx, order.UserID, order.TenantID, tmpl.kind, tmpl.title, tmpl.body, data); err != nil {
-		n.reportError(err)
-		return nil
+	if _, err := n.Svc.Create(ctx, order.UserID, order.TenantID, event.ID, tmpl.kind, tmpl.title, tmpl.body, data); err != nil {
+		return fmt.Errorf("notifications: create: %w", err)
 	}
 	return nil
 }
 
-// resolveOrderID finds the order id for an event. Order/payment events carry it
-// as the aggregate id; shipment events aggregate on the shipment id but embed
-// the order id in the payload.
+// resolveOrderID finds the order id for an event (see events.OrderIDFor).
 func (n *Notifier) resolveOrderID(event dbgen.DomainEvent) (pgtype.UUID, bool) {
-	switch event.Topic {
-	case events.TopicShipmentShipped, events.TopicShipmentOutForDelivery, events.TopicShipmentDelivered:
-		var payload struct {
-			OrderID string `json:"orderId"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.OrderID == "" {
-			return pgtype.UUID{}, false
-		}
-		id, err := toUUID(payload.OrderID)
-		if err != nil {
-			return pgtype.UUID{}, false
-		}
-		return id, true
-	default:
-		if !event.AggregateID.Valid {
-			return pgtype.UUID{}, false
-		}
-		return event.AggregateID, true
-	}
+	return events.OrderIDFor(event)
 }
 
 func (n *Notifier) reportError(err error) {

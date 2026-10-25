@@ -331,8 +331,8 @@ func (f *fakeQueries) GetDeliveryByID(context.Context, pgtype.UUID) (dbgen.Webho
 	return dbgen.WebhookDelivery{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.GetDomainEventRow, error) {
-	return dbgen.GetDomainEventRow{}, errNotImplemented
+func (f *fakeQueries) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.DomainEvent, error) {
+	return dbgen.DomainEvent{}, errNotImplemented
 }
 
 func (f *fakeQueries) UpdateUserPassword(ctx context.Context, arg dbgen.UpdateUserPasswordParams) (dbgen.UpdateUserPasswordRow, error) {
@@ -749,8 +749,8 @@ func (f *fakeQueries) RefreshTopProducts(context.Context) error {
 	return errNotImplemented
 }
 
-func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
-	return dbgen.InsertDomainEventRow{}, errNotImplemented
+func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
+	return dbgen.DomainEvent{}, errNotImplemented
 }
 
 func (f *fakeQueries) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlqParams) (dbgen.WebhookDlq, error) {
@@ -761,7 +761,7 @@ func (f *fakeQueries) ListActiveEndpointsForTopic(context.Context, string) ([]db
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.ListDomainEventsByTopicRow, error) {
+func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.DomainEvent, error) {
 	return nil, errNotImplemented
 }
 

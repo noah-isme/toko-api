@@ -149,3 +149,119 @@ func TestDatabasePoolDefaultsAndWorkerOverrides(t *testing.T) {
 	}
 }
 
+func setDevEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/toko")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("JWT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "")
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", "")
+	t.Setenv("PUSH_VAPID_SUBJECT", "")
+	t.Setenv("PUSH_ENDPOINT_ALLOWED_HOSTS", "")
+}
+
+func TestLoadPushDisabledByDefault(t *testing.T) {
+	setDevEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PushEnabled() {
+		t.Fatal("push must be disabled without VAPID keys")
+	}
+	if cfg.PushTTL.Seconds() != 86400 || cfg.QueueConcurrencyPush != 4 || cfg.PushMaxSubscriptionsPerUser != 10 {
+		t.Fatalf("unexpected push defaults: ttl=%v conc=%d max=%d", cfg.PushTTL, cfg.QueueConcurrencyPush, cfg.PushMaxSubscriptionsPerUser)
+	}
+	if cfg.OutboxRelayInterval.Seconds() != 15 || cfg.OutboxRelayMinAge.Seconds() != 30 || cfg.OutboxRelayMaxAge.Hours() != 24 || cfg.OutboxRelayMaxAttempts != 10 {
+		t.Fatalf("unexpected relay defaults: %v %v %v %d", cfg.OutboxRelayInterval, cfg.OutboxRelayMinAge, cfg.OutboxRelayMaxAge, cfg.OutboxRelayMaxAttempts)
+	}
+}
+
+func TestLoadPushDisabledInProductionIsNotFatal(t *testing.T) {
+	setProductionEnv(t)
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "")
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PushEnabled() {
+		t.Fatal("push must be disabled")
+	}
+}
+
+func TestLoadPushRequiresBothVAPIDKeys(t *testing.T) {
+	setDevEnv(t)
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "pub")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PUSH_VAPID_PRIVATE_KEY") {
+		t.Fatalf("expected an error for a lone public key, got %v", err)
+	}
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "")
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", "priv")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for a lone private key")
+	}
+}
+
+func TestLoadPushEnabledWithBothKeys(t *testing.T) {
+	setDevEnv(t)
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "pub")
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", "priv")
+	t.Setenv("NOTIFY_FROM_EMAIL", "no-reply@shop.example")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.PushEnabled() {
+		t.Fatal("push must be enabled")
+	}
+	if cfg.PushVAPIDSubject != "mailto:no-reply@shop.example" {
+		t.Fatalf("subject = %q", cfg.PushVAPIDSubject)
+	}
+
+	t.Setenv("PUSH_VAPID_SUBJECT", "not an email")
+	if _, err := Load(); err == nil {
+		t.Fatal("an invalid subject must be rejected when push is enabled")
+	}
+}
+
+func TestNormalizeVAPIDSubject(t *testing.T) {
+	valid := map[string]string{
+		"a@b.c":                       "mailto:a@b.c",
+		"mailto:a@b.c":                "mailto:a@b.c",
+		"MAILTO:a@b.c":                "mailto:a@b.c",
+		"  a@b.c  ":                   "mailto:a@b.c",
+		"https://example.com/contact": "https://example.com/contact",
+	}
+	for in, want := range valid {
+		got, err := normalizeVAPIDSubject(in)
+		if err != nil || got != want {
+			t.Errorf("normalizeVAPIDSubject(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"mailto:mailto:a@b.c", "ftp://x", "not-an-email", "", "a@", "@b", "http://example.com", "a b@c.d"} {
+		if got, err := normalizeVAPIDSubject(in); err == nil {
+			t.Errorf("normalizeVAPIDSubject(%q) = %q, want error", in, got)
+		}
+	}
+}
+
+func TestLoadPushAllowedHostsDefaultAndOverride(t *testing.T) {
+	setDevEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if strings.Join(cfg.PushEndpointAllowedHosts, ",") != strings.Join(DefaultPushEndpointAllowedHosts, ",") {
+		t.Fatalf("default hosts = %v", cfg.PushEndpointAllowedHosts)
+	}
+	t.Setenv("PUSH_ENDPOINT_ALLOWED_HOSTS", " Push.Example.com , .relay.example ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if strings.Join(cfg.PushEndpointAllowedHosts, ",") != "push.example.com,.relay.example" {
+		t.Fatalf("override hosts = %v", cfg.PushEndpointAllowedHosts)
+	}
+}

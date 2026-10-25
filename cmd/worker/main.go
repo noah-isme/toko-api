@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,12 +14,17 @@ import (
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/lock"
+	"github.com/noah-isme/backend-toko/internal/notifications"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
+	"github.com/noah-isme/backend-toko/internal/push"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/resilience"
 )
@@ -32,6 +38,16 @@ func main() {
 	logFormat := envOrDefault("OBS_LOG_FORMAT", "json")
 	logLevel := envOrDefault("OBS_LOG_LEVEL", "info")
 	logger := obs.NewLogger(logFormat, logLevel).With().Str("component", "worker").Logger()
+	// Contexts without a request logger (relay, queue jobs) still log.
+	zerolog.DefaultContextLogger = &logger
+
+	// Registered first so it runs last, after the pool and Redis are closed.
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -75,29 +91,118 @@ func main() {
 		LockTTL:    cfg.LockTTL,
 	}
 
-	webhookQueueWorker := queue.Worker{
-		R:                 redisClient,
-		Prefix:            cfg.QueueRedisPrefix,
-		Kind:              notify.WebhookDeliveryTask(),
-		Concurrency:       cfg.QueueConcurrencyWebhook,
-		VisibilityTimeout: cfg.QueueVisibilityTimeout,
-		RetryBase:         cfg.QueueBackoffBase,
-		RetryJitter:       cfg.QueueBackoffJitter,
-		Store:             queue.NewStore(pool),
-		HeartbeatInterval: cfg.WorkerHeartbeatInterval,
-		SoftDeadline:      cfg.WorkerJobSoftDeadline,
-		Logger:            &logger,
-		Handler: func(jobCtx context.Context, task queue.Task) error {
-			return deliveryWorker.Handle(jobCtx, task.Payload)
+	dlqStore := queue.NewStore(pool)
+	newQueueWorker := func(kind string, concurrency int, handle func(context.Context, []byte) error) queue.Worker {
+		return queue.Worker{
+			R:                 redisClient,
+			Prefix:            cfg.QueueRedisPrefix,
+			Kind:              kind,
+			Concurrency:       concurrency,
+			VisibilityTimeout: cfg.QueueVisibilityTimeout,
+			RetryBase:         cfg.QueueBackoffBase,
+			RetryJitter:       cfg.QueueBackoffJitter,
+			Store:             dlqStore,
+			HeartbeatInterval: cfg.WorkerHeartbeatInterval,
+			SoftDeadline:      cfg.WorkerJobSoftDeadline,
+			Logger:            &logger,
+			Handler: func(jobCtx context.Context, task queue.Task) error {
+				return handle(jobCtx, task.Payload)
+			},
+		}
+	}
+
+	// Email: rendered from domain_events and sent here, never on the request path.
+	emailToggles := notify.MergeShipmentToggles(cfg.NotifyEmailTopics,
+		cfg.NotifyOnShipped, cfg.NotifyOnOutForDelivery, cfg.NotifyOnDelivered)
+	emailWorker := &notify.EmailWorker{
+		Events:       queries,
+		Mail:         notify.NewMailer(cfg, logger),
+		Enabled:      cfg.NotifyEmailEnabled,
+		TopicToggles: emailToggles,
+		RelayHost:    cfg.SMTPHost,
+		Logger:       &logger,
+	}
+
+	// Web push: same SSRF-safe client as the API.
+	var pushSender push.Sender
+	if cfg.PushEnabled() {
+		pushSender = push.NewWebPushSender(cfg.PushVAPIDPublicKey, cfg.PushVAPIDPrivateKey, cfg.PushVAPIDSubject,
+			int(cfg.PushTTL.Seconds()), common.NewOutboundHTTPClient(cfg.OutboundTimeout, false))
+	} else {
+		logger.Warn().Msg("PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY not set: push-delivery tasks will be dropped")
+	}
+	pushSvc := &push.Service{
+		Q:                queries,
+		Sender:           pushSender,
+		PublicKey:        cfg.PushVAPIDPublicKey,
+		AllowedHosts:     cfg.PushEndpointAllowedHosts,
+		MaxSubscriptions: int32(cfg.PushMaxSubscriptionsPerUser),
+	}
+	pushWorker := &push.Worker{Svc: pushSvc, Events: queries, Orders: queries, Logger: &logger}
+
+	// The outbox relay re-dispatches events through the same handlers the API
+	// registers on its bus.
+	bus := &events.Bus{
+		Store:     queries,
+		Scheduler: dispatcher,
+		Notifiers: []events.Notifier{
+			notify.EmailNotifier{
+				Queue:        &notify.EmailQueue{Queue: taskQueue, MaxAttempts: cfg.QueueMaxAttempts},
+				Enabled:      cfg.NotifyEmailEnabled,
+				From:         cfg.NotifyEmailFrom,
+				TopicToggles: emailToggles,
+			},
+			&notifications.Notifier{
+				Svc:    &notifications.Service{Q: queries},
+				Orders: queries,
+				OnError: func(err error) {
+					if err != nil {
+						logger.Warn().Err(err).Msg("in-app notification skipped")
+					}
+				},
+			},
+			&push.Notifier{
+				Enqueue: &push.Enqueuer{Queue: taskQueue, MaxAttempts: cfg.QueueMaxAttempts},
+				Enabled: cfg.PushEnabled(),
+			},
 		},
+	}
+	relay := &events.OutboxRelay{
+		Store:       queries,
+		Bus:         bus,
+		Locker:      lock.Locker{R: redisClient, RetryBackoff: cfg.LockRetryBackoff},
+		Interval:    cfg.OutboxRelayInterval,
+		MinAge:      cfg.OutboxRelayMinAge,
+		MaxAge:      cfg.OutboxRelayMaxAge,
+		MaxAttempts: int32(cfg.OutboxRelayMaxAttempts),
+		BatchSize:   100,
+		Logger:      &logger,
+	}
+
+	components := map[string]func(context.Context) error{
+		"webhook-delivery": newQueueWorker(notify.WebhookDeliveryTask(), cfg.QueueConcurrencyWebhook, deliveryWorker.Handle).Run,
+		"email-delivery":   newQueueWorker(notify.EmailDeliveryTask(), cfg.QueueConcurrencyEmail, emailWorker.Handle).Run,
+		"push-delivery":    newQueueWorker(push.PushDeliveryTask(), cfg.QueueConcurrencyPush, pushWorker.Handle).Run,
+		"outbox-relay":     relay.Run,
 	}
 
 	logger.Info().Msg("worker starting")
-	if err := webhookQueueWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error().Err(err).Msg("worker stopped with error")
-	} else {
-		logger.Info().Msg("worker shutdown complete")
+	group, groupCtx := errgroup.WithContext(ctx)
+	for name, run := range components {
+		group.Go(func() error {
+			logger.Info().Str("worker_component", name).Msg("component started")
+			if err := run(groupCtx); err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			return nil
+		})
 	}
+	if err := group.Wait(); err != nil {
+		logger.Error().Err(err).Msg("worker stopped with error")
+		exitCode = 1
+		return
+	}
+	logger.Info().Msg("worker shutdown complete")
 }
 
 func mustInitDatabase(ctx context.Context, cfg *config.Config, logger zerolog.Logger) (*pgxpool.Pool, *dbgen.Queries) {

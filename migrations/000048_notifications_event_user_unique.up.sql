@@ -1,0 +1,17 @@
+-- 000048: unique (event_id, user_id) on notifications, built CONCURRENTLY so
+-- reads and writes on notifications are never blocked during the build.
+--
+-- This file must contain exactly one statement (not even SET LOCAL): a second
+-- statement would turn the file into an implicit transaction block and
+-- CREATE INDEX CONCURRENTLY would refuse to run. No existing row has an
+-- event_id (the column is new in 000047), so the build cannot fail on
+-- duplicates.
+--
+-- Recovery: if the build fails or is interrupted, golang-migrate marks version
+-- 48 dirty and Postgres may leave an INVALID index behind. Fix with:
+--   migrate force 47
+--   psql -c 'DROP INDEX CONCURRENTLY IF EXISTS uq_notifications_event_user;'
+--   migrate up
+-- The new CreateNotification uses ON CONFLICT on this index, so new binaries
+-- must not roll out until version 48 is clean.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_notifications_event_user ON notifications (event_id, user_id) WHERE event_id IS NOT NULL;
