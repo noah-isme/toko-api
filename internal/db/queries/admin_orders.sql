@@ -85,6 +85,7 @@ SELECT COUNT(*)::bigint                                                         
        COUNT(*) FILTER (WHERE o.status IN ('SHIPPED', 'OUT_FOR_DELIVERY'))::bigint         AS shipped_orders,
        COUNT(*) FILTER (WHERE o.status = 'DELIVERED')::bigint                              AS delivered_orders,
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
+       COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::bigint                                AS expired_orders,
        COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
 FROM orders o
 WHERE o.tenant_id = sqlc.arg(tenant_id)
@@ -112,7 +113,7 @@ SELECT oi.product_id,
 FROM order_items oi
 JOIN orders o ON o.id = oi.order_id
 WHERE o.tenant_id = sqlc.arg(tenant_id)
-  AND o.status <> 'CANCELLED'
+  AND o.status NOT IN ('CANCELLED', 'EXPIRED')
   AND (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
 GROUP BY oi.product_id
 ORDER BY revenue DESC

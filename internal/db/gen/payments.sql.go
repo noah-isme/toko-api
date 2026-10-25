@@ -76,6 +76,37 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 	return i, err
 }
 
+const expirePendingPaymentsByOrder = `-- name: ExpirePendingPaymentsByOrder :many
+UPDATE payments
+SET status = 'EXPIRED',
+    updated_at = now()
+WHERE order_id = $1
+  AND status = 'PENDING'
+RETURNING id
+`
+
+// Expires every still-pending intent of an order (superseded intents
+// included). Callers hold the order row lock.
+func (q *Queries) ExpirePendingPaymentsByOrder(ctx context.Context, orderID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, expirePendingPaymentsByOrder, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLatestPaymentByOrder = `-- name: GetLatestPaymentByOrder :one
 SELECT id, order_id, provider, status, provider_payload, created_at, updated_at, channel, intent_token, redirect_url, amount,
        expires_at, tenant_id

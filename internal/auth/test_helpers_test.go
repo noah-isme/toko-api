@@ -585,10 +585,6 @@ func (f *fakeQueries) ReserveFlashSaleItem(context.Context, dbgen.ReserveFlashSa
 	return dbgen.FlashSaleOrderItem{}, errNotImplemented
 }
 
-func (f *fakeQueries) ListExpiredInventoryReservationsForTenant(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
-	return nil, errNotImplemented
-}
-
 func (f *fakeQueries) ListInventoryReservationsByOrder(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
 	return nil, errNotImplemented
 }

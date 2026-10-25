@@ -184,6 +184,43 @@ func (q *Queries) GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, erro
 	return i, err
 }
 
+const getOrderByIDForUpdate = `-- name: GetOrderByIDForUpdate :one
+SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id, order_number
+FROM orders
+WHERE id = $1
+LIMIT 1
+FOR UPDATE
+`
+
+// Settlement writers (payment webhook, admin payment confirmation, checkout
+// expiry, customer cancel, payment intent creation) lock the order row first;
+// see the lock-order comment in internal/jobs/checkout_expiry.go.
+func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id pgtype.UUID) (Order, error) {
+	row := q.db.QueryRow(ctx, getOrderByIDForUpdate, id)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CartID,
+		&i.Status,
+		&i.Currency,
+		&i.PricingSubtotal,
+		&i.PricingDiscount,
+		&i.PricingTax,
+		&i.PricingShipping,
+		&i.PricingTotal,
+		&i.ShippingAddress,
+		&i.ShippingOption,
+		&i.Notes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AppliedVoucherCode,
+		&i.TenantID,
+		&i.OrderNumber,
+	)
+	return i, err
+}
+
 const getOrderByIDForUser = `-- name: GetOrderByIDForUser :one
 SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discount, pricing_tax, pricing_shipping, pricing_total, shipping_address, shipping_option, notes, created_at, updated_at, applied_voucher_code, tenant_id, order_number
 FROM orders

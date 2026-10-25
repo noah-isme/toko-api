@@ -24,6 +24,16 @@ FROM orders
 WHERE id = $1
 LIMIT 1;
 
+-- Settlement writers (payment webhook, admin payment confirmation, checkout
+-- expiry, customer cancel, payment intent creation) lock the order row first;
+-- see the lock-order comment in internal/jobs/checkout_expiry.go.
+-- name: GetOrderByIDForUpdate :one
+SELECT *
+FROM orders
+WHERE id = $1
+LIMIT 1
+FOR UPDATE;
+
 -- name: ListOrdersForUser :many
 SELECT *
 FROM orders

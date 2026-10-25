@@ -23,6 +23,26 @@ func (q *Queries) CommitFlashSaleReservations(ctx context.Context, orderID pgtyp
 	return err
 }
 
+const countAnomalousExpiredReservationsForTenant = `-- name: CountAnomalousExpiredReservationsForTenant :one
+SELECT count(*)
+FROM inventory_reservations r
+JOIN orders o ON o.id = r.order_id
+WHERE r.tenant_id = $1
+  AND o.tenant_id = $1
+  AND r.status = 'RESERVED'
+  AND r.expires_at <= now()
+  AND o.status NOT IN ('PENDING_PAYMENT', 'CANCELLED', 'EXPIRED')
+`
+
+// Observability only: expired reservations still RESERVED on orders that went
+// on to be paid or fulfilled.
+func (q *Queries) CountAnomalousExpiredReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAnomalousExpiredReservationsForTenant, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createInventoryReservation = `-- name: CreateInventoryReservation :one
 INSERT INTO inventory_reservations (tenant_id, order_id, product_id, variant_id, qty, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -91,39 +111,58 @@ func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, code string) 
 	return err
 }
 
-const listExpiredInventoryReservationsForTenant = `-- name: ListExpiredInventoryReservationsForTenant :many
-SELECT id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
-FROM inventory_reservations
-WHERE tenant_id = $1
-  AND status = 'RESERVED'
-  AND expires_at <= now()
-FOR UPDATE
+const listExpiredUnpaidOrderCandidates = `-- name: ListExpiredUnpaidOrderCandidates :many
+SELECT o.id
+FROM orders o
+LEFT JOIN LATERAL (
+  SELECT p.expires_at
+  FROM payments p
+  WHERE p.order_id = o.id
+  ORDER BY p.created_at DESC
+  LIMIT 1
+) lp ON true
+WHERE o.tenant_id = $1
+  AND o.status = 'PENDING_PAYMENT'
+  AND COALESCE(lp.expires_at, o.created_at + make_interval(secs => $2::int))
+      + make_interval(secs => $3::int) <= now()
+  AND COALESCE(
+        (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id),
+        '-infinity'::timestamptz
+      ) <= now() - make_interval(secs => $4::int)
+ORDER BY o.created_at, o.id
+LIMIT $5
 `
 
-func (q *Queries) ListExpiredInventoryReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) ([]InventoryReservation, error) {
-	rows, err := q.db.Query(ctx, listExpiredInventoryReservationsForTenant, tenantID)
+type ListExpiredUnpaidOrderCandidatesParams struct {
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	FallbackTtlSec int32       `json:"fallback_ttl_sec"`
+	GraceSec       int32       `json:"grace_sec"`
+	ProofHoldSec   int32       `json:"proof_hold_sec"`
+	BatchSize      int32       `json:"batch_size"`
+}
+
+// Phase B candidates (no locks; each order is re-checked under its row lock).
+// Deadline = latest payment expires_at, else created_at + fallback TTL. Orders
+// whose first payment proof is younger than the proof hold are skipped.
+func (q *Queries) ListExpiredUnpaidOrderCandidates(ctx context.Context, arg ListExpiredUnpaidOrderCandidatesParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listExpiredUnpaidOrderCandidates,
+		arg.TenantID,
+		arg.FallbackTtlSec,
+		arg.GraceSec,
+		arg.ProofHoldSec,
+		arg.BatchSize,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []InventoryReservation
+	var items []pgtype.UUID
 	for rows.Next() {
-		var i InventoryReservation
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.OrderID,
-			&i.ProductID,
-			&i.VariantID,
-			&i.Qty,
-			&i.Status,
-			&i.ExpiresAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -205,6 +244,232 @@ func (q *Queries) ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUI
 		return nil, err
 	}
 	return items, nil
+}
+
+const listOrphanExpiredReservationsForTenant = `-- name: ListOrphanExpiredReservationsForTenant :many
+SELECT r.id, r.tenant_id, r.order_id, r.product_id, r.variant_id, r.qty, r.status, r.expires_at, r.created_at, r.updated_at
+FROM inventory_reservations r
+JOIN orders o ON o.id = r.order_id
+WHERE r.tenant_id = $1
+  AND o.tenant_id = $1
+  AND r.status = 'RESERVED'
+  AND r.expires_at <= now()
+  AND o.status IN ('CANCELLED', 'EXPIRED')
+ORDER BY r.variant_id, r.id
+LIMIT $2
+FOR UPDATE OF r SKIP LOCKED
+`
+
+type ListOrphanExpiredReservationsForTenantParams struct {
+	TenantID  pgtype.UUID `json:"tenant_id"`
+	BatchSize int32       `json:"batch_size"`
+}
+
+// Phase A of the checkout-expiry job: expired reservations left on orders that
+// are already terminal (CANCELLED/EXPIRED). Reservations of payable orders are
+// released only when the order itself expires. Ordered by variant so stock
+// rows are locked in ascending variant_id; SKIP LOCKED so the sweep never
+// waits on a transaction that holds the order.
+func (q *Queries) ListOrphanExpiredReservationsForTenant(ctx context.Context, arg ListOrphanExpiredReservationsForTenantParams) ([]InventoryReservation, error) {
+	rows, err := q.db.Query(ctx, listOrphanExpiredReservationsForTenant, arg.TenantID, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InventoryReservation
+	for rows.Next() {
+		var i InventoryReservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.ProductID,
+			&i.VariantID,
+			&i.Qty,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReservedInventoryByOrderForUpdate = `-- name: ListReservedInventoryByOrderForUpdate :many
+SELECT id, tenant_id, order_id, product_id, variant_id, qty, status, expires_at, created_at, updated_at
+FROM inventory_reservations
+WHERE order_id = $1
+  AND status = 'RESERVED'
+ORDER BY variant_id, id
+FOR UPDATE
+`
+
+// Reserved stock of one order, locked in ascending variant_id. Callers hold
+// the order row lock (GetOrderByIDForUpdate) first.
+func (q *Queries) ListReservedInventoryByOrderForUpdate(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error) {
+	rows, err := q.db.Query(ctx, listReservedInventoryByOrderForUpdate, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InventoryReservation
+	for rows.Next() {
+		var i InventoryReservation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OrderID,
+			&i.ProductID,
+			&i.VariantID,
+			&i.Qty,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockFlashSaleItemsForCampaignProducts = `-- name: LockFlashSaleItemsForCampaignProducts :many
+SELECT i.id
+FROM flash_sale_items i
+WHERE i.campaign_id = ANY($1::uuid[])
+  AND i.product_id = ANY($2::uuid[])
+ORDER BY i.id
+FOR UPDATE OF i
+`
+
+type LockFlashSaleItemsForCampaignProductsParams struct {
+	CampaignIds []pgtype.UUID `json:"campaign_ids"`
+	ProductIds  []pgtype.UUID `json:"product_ids"`
+}
+
+// Checkout locks the flash-sale items it is about to reserve, in ascending id,
+// after all variant rows. Matching the two id lists independently can lock a
+// few extra (campaign, product) rows; that is harmless and keeps the order.
+func (q *Queries) LockFlashSaleItemsForCampaignProducts(ctx context.Context, arg LockFlashSaleItemsForCampaignProductsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockFlashSaleItemsForCampaignProducts, arg.CampaignIds, arg.ProductIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockFlashSaleItemsForOrders = `-- name: LockFlashSaleItemsForOrders :many
+SELECT i.id
+FROM flash_sale_items i
+WHERE i.id IN (
+  SELECT f.flash_sale_item_id
+  FROM flash_sale_order_items f
+  WHERE f.order_id = ANY($1::uuid[])
+    AND f.status = 'RESERVED'
+)
+ORDER BY i.id
+FOR UPDATE OF i
+`
+
+// Locks the flash-sale items that still hold RESERVED quota for the given
+// orders, in ascending id, before ReleaseFlashSaleReservations decrements them.
+func (q *Queries) LockFlashSaleItemsForOrders(ctx context.Context, orderIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockFlashSaleItemsForOrders, orderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockPendingOrderForExpiry = `-- name: LockPendingOrderForExpiry :one
+SELECT o.id,
+       o.user_id,
+       o.tenant_id,
+       o.order_number,
+       o.created_at,
+       lp.id         AS payment_id,
+       lp.expires_at AS payment_expires_at,
+       (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id)::timestamptz AS first_proof_at
+FROM orders o
+LEFT JOIN LATERAL (
+  SELECT p.id, p.expires_at
+  FROM payments p
+  WHERE p.order_id = o.id
+  ORDER BY p.created_at DESC
+  LIMIT 1
+) lp ON true
+WHERE o.id = $1
+  AND o.tenant_id = $2
+  AND o.status = 'PENDING_PAYMENT'
+FOR UPDATE OF o SKIP LOCKED
+`
+
+type LockPendingOrderForExpiryParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+type LockPendingOrderForExpiryRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	OrderNumber      pgtype.Text        `json:"order_number"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	PaymentID        pgtype.UUID        `json:"payment_id"`
+	PaymentExpiresAt pgtype.Timestamptz `json:"payment_expires_at"`
+	FirstProofAt     pgtype.Timestamptz `json:"first_proof_at"`
+}
+
+// Phase B re-check under the order row lock. ErrNoRows means the order is
+// locked by another transaction or is no longer pending.
+func (q *Queries) LockPendingOrderForExpiry(ctx context.Context, arg LockPendingOrderForExpiryParams) (LockPendingOrderForExpiryRow, error) {
+	row := q.db.QueryRow(ctx, lockPendingOrderForExpiry, arg.ID, arg.TenantID)
+	var i LockPendingOrderForExpiryRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TenantID,
+		&i.OrderNumber,
+		&i.CreatedAt,
+		&i.PaymentID,
+		&i.PaymentExpiresAt,
+		&i.FirstProofAt,
+	)
+	return i, err
 }
 
 const releaseFlashSaleReservations = `-- name: ReleaseFlashSaleReservations :exec

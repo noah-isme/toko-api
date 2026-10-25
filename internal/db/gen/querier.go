@@ -59,6 +59,9 @@ type Querier interface {
 	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
 	CommitFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// Observability only: expired reservations still RESERVED on orders that went
+	// on to be paid or fulfilled.
+	CountAnomalousExpiredReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	CountAuditLogsFiltered(ctx context.Context, arg CountAuditLogsFilteredParams) (int64, error)
 	CountNewsletterSubscribers(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	CountNotifications(ctx context.Context, arg CountNotificationsParams) (int64, error)
@@ -105,6 +108,9 @@ type Querier interface {
 	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
 	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
+	// Expires every still-pending intent of an order (superseded intents
+	// included). Callers hold the order row lock.
+	ExpirePendingPaymentsByOrder(ctx context.Context, orderID pgtype.UUID) ([]pgtype.UUID, error)
 	FindCartItemByProductVariant(ctx context.Context, arg FindCartItemByProductVariantParams) (CartItem, error)
 	GetActiveCartByAnon(ctx context.Context, arg GetActiveCartByAnonParams) (Cart, error)
 	GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error)
@@ -127,6 +133,10 @@ type Querier interface {
 	GetLoyaltyTransactions(ctx context.Context, arg GetLoyaltyTransactionsParams) ([]GetLoyaltyTransactionsRow, error)
 	GetNewsletterSubscriber(ctx context.Context, arg GetNewsletterSubscriberParams) (NewsletterSubscriber, error)
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (Order, error)
+	// Settlement writers (payment webhook, admin payment confirmation, checkout
+	// expiry, customer cancel, payment intent creation) lock the order row first;
+	// see the lock-order comment in internal/jobs/checkout_expiry.go.
+	GetOrderByIDForUpdate(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
 	GetOrderByTenant(ctx context.Context, arg GetOrderByTenantParams) (GetOrderByTenantRow, error)
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
@@ -171,6 +181,8 @@ type Querier interface {
 	// Endpoints are tenant-owned: an event is only delivered to the endpoints of
 	// the tenant that produced it.
 	ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg ListActiveEndpointsForTopicAndTenantParams) ([]WebhookEndpoint, error)
+	// Tenants the periodic worker jobs iterate over.
+	ListActiveTenantIDs(ctx context.Context) ([]pgtype.UUID, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Filtered variants back the admin audit-log screen. Each filter is skipped when
@@ -184,7 +196,10 @@ type Querier interface {
 	ListCartItems(ctx context.Context, cartID pgtype.UUID) ([]ListCartItemsRow, error)
 	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]ListCategoriesRow, error)
 	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
-	ListExpiredInventoryReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) ([]InventoryReservation, error)
+	// Phase B candidates (no locks; each order is re-checked under its row lock).
+	// Deadline = latest payment expires_at, else created_at + fallback TTL. Orders
+	// whose first payment proof is younger than the proof hold are skipped.
+	ListExpiredUnpaidOrderCandidates(ctx context.Context, arg ListExpiredUnpaidOrderCandidatesParams) ([]pgtype.UUID, error)
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
 	ListInventoryReservationsByOrder(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error)
@@ -194,15 +209,36 @@ type Querier interface {
 	ListOrderItemsForStock(ctx context.Context, orderID pgtype.UUID) ([]ListOrderItemsForStockRow, error)
 	ListOrdersByTenant(ctx context.Context, arg ListOrdersByTenantParams) ([]ListOrdersByTenantRow, error)
 	ListOrdersForUser(ctx context.Context, arg ListOrdersForUserParams) ([]Order, error)
+	// Phase A of the checkout-expiry job: expired reservations left on orders that
+	// are already terminal (CANCELLED/EXPIRED). Reservations of payable orders are
+	// released only when the order itself expires. Ordered by variant so stock
+	// rows are locked in ascending variant_id; SKIP LOCKED so the sweep never
+	// waits on a transaction that holds the order.
+	ListOrphanExpiredReservationsForTenant(ctx context.Context, arg ListOrphanExpiredReservationsForTenantParams) ([]InventoryReservation, error)
 	ListProductsByTenant(ctx context.Context, arg ListProductsByTenantParams) ([]ListProductsByTenantRow, error)
 	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
 	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
+	// Reserved stock of one order, locked in ascending variant_id. Callers hold
+	// the order row lock (GetOrderByIDForUpdate) first.
+	ListReservedInventoryByOrderForUpdate(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error)
 	ListSessions(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
+	// Shipments the tracking job should poll now, oldest schedule first.
+	ListShipmentsDueForTracking(ctx context.Context, arg ListShipmentsDueForTrackingParams) ([]ListShipmentsDueForTrackingRow, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
+	// Checkout locks the flash-sale items it is about to reserve, in ascending id,
+	// after all variant rows. Matching the two id lists independently can lock a
+	// few extra (campaign, product) rows; that is harmless and keeps the order.
+	LockFlashSaleItemsForCampaignProducts(ctx context.Context, arg LockFlashSaleItemsForCampaignProductsParams) ([]pgtype.UUID, error)
+	// Locks the flash-sale items that still hold RESERVED quota for the given
+	// orders, in ascending id, before ReleaseFlashSaleReservations decrements them.
+	LockFlashSaleItemsForOrders(ctx context.Context, orderIds []pgtype.UUID) ([]pgtype.UUID, error)
+	// Phase B re-check under the order row lock. ErrNoRows means the order is
+	// locked by another transaction or is no longer pending.
+	LockPendingOrderForExpiry(ctx context.Context, arg LockPendingOrderForExpiryParams) (LockPendingOrderForExpiryRow, error)
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error
 	MarkDelivering(ctx context.Context, id pgtype.UUID) error
@@ -225,6 +261,8 @@ type Querier interface {
 	ReserveVariantStock(ctx context.Context, arg ReserveVariantStockParams) (pgtype.UUID, error)
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
+	// Stops polling shipments whose last carrier event is older than the max age.
+	StopTrackingStaleShipments(ctx context.Context, arg StopTrackingStaleShipmentsParams) (int64, error)
 	SubscribeNewsletter(ctx context.Context, arg SubscribeNewsletterParams) (NewsletterSubscriber, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
@@ -241,6 +279,7 @@ type Querier interface {
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
 	UpdateQuestionVoteCount(ctx context.Context, questionID pgtype.UUID) (int32, error)
 	UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentStatusParams) (pgtype.UUID, error)
+	UpdateShipmentTrackingPoll(ctx context.Context, arg UpdateShipmentTrackingPollParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)

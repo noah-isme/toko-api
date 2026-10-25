@@ -35,3 +35,13 @@ LIMIT 1;
 -- name: InsertPaymentEvent :exec
 INSERT INTO payment_events (payment_id, status, payload)
 VALUES ($1, $2, $3);
+
+-- Expires every still-pending intent of an order (superseded intents
+-- included). Callers hold the order row lock.
+-- name: ExpirePendingPaymentsByOrder :many
+UPDATE payments
+SET status = 'EXPIRED',
+    updated_at = now()
+WHERE order_id = $1
+  AND status = 'PENDING'
+RETURNING id;
