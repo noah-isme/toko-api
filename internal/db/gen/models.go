@@ -476,6 +476,12 @@ type InventoryReservation struct {
 	UpdatedAt pgtype.Timestamptz         `json:"updated_at"`
 }
 
+type InvoiceCounter struct {
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	LastNumber int64              `json:"last_number"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type LoyaltyProfile struct {
 	UserID            pgtype.UUID        `json:"user_id"`
 	Points            int32              `json:"points"`
@@ -562,6 +568,14 @@ type Order struct {
 	AppliedVoucherCode pgtype.Text        `json:"applied_voucher_code"`
 	TenantID           pgtype.UUID        `json:"tenant_id"`
 	OrderNumber        pgtype.Text        `json:"order_number"`
+}
+
+type OrderInvoice struct {
+	OrderID       pgtype.UUID        `json:"order_id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	InvoiceNumber string             `json:"invoice_number"`
+	IssuedAt      pgtype.Timestamptz `json:"issued_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type OrderItem struct {
@@ -660,6 +674,29 @@ type Product struct {
 	TenantID     pgtype.UUID        `json:"tenant_id"`
 	Description  pgtype.Text        `json:"description"`
 	SearchVector interface{}        `json:"search_vector"`
+}
+
+type ProductAlertEvent struct {
+	ID          int64              `json:"id"`
+	TenantID    pgtype.UUID        `json:"tenant_id"`
+	ProductID   pgtype.UUID        `json:"product_id"`
+	VariantID   pgtype.UUID        `json:"variant_id"`
+	AlertType   string             `json:"alert_type"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
+}
+
+type ProductAlertSubscription struct {
+	ID               pgtype.UUID        `json:"id"`
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	ProductID        pgtype.UUID        `json:"product_id"`
+	VariantID        pgtype.UUID        `json:"variant_id"`
+	AlertType        string             `json:"alert_type"`
+	PriceAtSubscribe pgtype.Int8        `json:"price_at_subscribe"`
+	NotifiedAt       pgtype.Timestamptz `json:"notified_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ProductImage struct {
