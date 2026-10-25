@@ -54,9 +54,10 @@ authorization boundary at the tenant membership.
   `products.slug`, `categories.slug`, `brands.name`, `brands.slug` and
   `product_variants.sku` are still unique database-wide. Before this change only
   global admins could create them; now any self-service owner can. A `409` on
-  create reveals that a value exists in some other tenant (for voucher codes,
-  the attacker can then join that tenant as a customer and redeem it), and a
-  tenant can squat common names and slugs for everyone. Redemption itself is
+  create reveals that a value exists in some other tenant, but not which one
+  (for a voucher code, an attacker who wants to redeem it would still have to
+  find the owning tenant by joining tenants as a customer and trying the code
+  in each), and a tenant can squat common names and slugs for everyone. Redemption itself is
   tenant-scoped, so a foreign code never discounts another tenant's cart. The
   fix is per-tenant uniqueness: one `CREATE UNIQUE INDEX CONCURRENTLY` migration
   per `(tenant_id, ...)` index, then dropping the global constraints
