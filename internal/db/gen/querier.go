@@ -15,8 +15,9 @@ type Querier interface {
 	ActivateTenantMembershipRole(ctx context.Context, arg ActivateTenantMembershipRoleParams) (TenantMembership, error)
 	AddFavorite(ctx context.Context, arg AddFavoriteParams) error
 	// Ownership checks for references written by the admin catalog API.
-	// products.brand_id / products.category_id are plain FKs, so without these
-	// checks a product could point at another tenant's brand or category.
+	// products.brand_id / products.category_id and categories.parent_id are plain
+	// FKs, so without these checks a product or category could point at another
+	// tenant's brand or category.
 	AdminBrandBelongsToTenant(ctx context.Context, arg AdminBrandBelongsToTenantParams) (bool, error)
 	AdminCategoryBelongsToTenant(ctx context.Context, arg AdminCategoryBelongsToTenantParams) (bool, error)
 	AdminCountCustomers(ctx context.Context, tenantID pgtype.UUID) (int64, error)

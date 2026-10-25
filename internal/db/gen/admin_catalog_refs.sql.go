@@ -26,8 +26,9 @@ type AdminBrandBelongsToTenantParams struct {
 }
 
 // Ownership checks for references written by the admin catalog API.
-// products.brand_id / products.category_id are plain FKs, so without these
-// checks a product could point at another tenant's brand or category.
+// products.brand_id / products.category_id and categories.parent_id are plain
+// FKs, so without these checks a product or category could point at another
+// tenant's brand or category.
 func (q *Queries) AdminBrandBelongsToTenant(ctx context.Context, arg AdminBrandBelongsToTenantParams) (bool, error) {
 	row := q.db.QueryRow(ctx, adminBrandBelongsToTenant, arg.ID, arg.TenantID)
 	var ok bool

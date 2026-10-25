@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -116,6 +118,9 @@ func (h *CatalogHandler) CreateCategory(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
+	if !h.parentCategoryOwned(w, ctx, tenantID, parentID) {
+		return
+	}
 	row, err := h.Q.AdminCreateCategory(ctx, dbgen.AdminCreateCategoryParams{
 		Name:     name,
 		Slug:     slug,
@@ -177,6 +182,9 @@ func (h *CatalogHandler) UpdateCategory(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
+	if !h.parentCategoryOwned(w, ctx, tenantID, parentID) {
+		return
+	}
 	row, err := h.Q.AdminUpdateCategory(ctx, dbgen.AdminUpdateCategoryParams{
 		Name:      optionalText(payload.Name),
 		Slug:      slug,
@@ -381,4 +389,24 @@ func (h *CatalogHandler) DeleteBrand(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidate(ctx, "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// parentCategoryOwned rejects a parentId that does not belong to the tenant
+// with the same 400 as an unknown parent (categories.parent_id is a plain FK
+// that accepts any tenant's row). An unset parentId is not checked. It writes
+// the error response and returns false when the request must stop.
+func (h *CatalogHandler) parentCategoryOwned(w http.ResponseWriter, ctx context.Context, tenantID, parentID pgtype.UUID) bool {
+	if !parentID.Valid {
+		return true
+	}
+	ok, err := h.Q.AdminCategoryBelongsToTenant(ctx, dbgen.AdminCategoryBelongsToTenantParams{ID: parentID, TenantID: tenantID})
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to check parent category", nil)
+		return false
+	}
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "unknown parent category", nil)
+		return false
+	}
+	return true
 }

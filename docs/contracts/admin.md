@@ -15,7 +15,8 @@ returns `403 FORBIDDEN` with `details.required` naming it:
 `details.required` is `"staff"` for a member whose role is `customer` and
 `"platform-admin"` for the platform-global endpoints. Reading, changing or
 deleting a resource of another tenant by id or code returns `404`, never `403`,
-and a product cannot reference another tenant's brand or category (`400`).
+a product cannot reference another tenant's brand or category, and a category
+cannot have another tenant's category as `parentId` (`400`).
 
 **Known gap (open, not yet resolved):** voucher codes, product slugs, category
 slugs, brand names and slugs, and variant SKUs are still unique across **all**

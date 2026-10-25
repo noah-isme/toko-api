@@ -232,6 +232,24 @@ func TestIntegrationAdminTenantIsolation(t *testing.T) {
 		assert.Equal(t, "", e.scalar(`SELECT COALESCE(category_id::text,'') FROM products WHERE id=$1`, productA))
 	})
 
+	t.Run("category cannot have another tenant's category as parent", func(t *testing.T) {
+		sfx := randSuffix()
+		parentB := e.scalar(`INSERT INTO categories(name,slug,tenant_id) VALUES($1,$1,$2) RETURNING id::text`, "iso-parent-b-"+sfx, e.tenB)
+		parentA := e.scalar(`INSERT INTO categories(name,slug,tenant_id) VALUES($1,$1,$2) RETURNING id::text`, "iso-parent-a-"+sfx, e.tenA)
+
+		rec := e.do(http.MethodPost, "/api/v1/admin/categories", e.owner, e.tenA, `{"name":"Iso child `+sfx+`","parentId":"`+parentB+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "0", e.scalar(`SELECT COUNT(*)::text FROM categories WHERE parent_id=$1`, parentB))
+
+		rec = e.do(http.MethodPost, "/api/v1/admin/categories", e.owner, e.tenA, `{"name":"Iso child `+sfx+`","parentId":"`+parentA+`"}`)
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		childA := e.scalar(`SELECT id::text FROM categories WHERE parent_id=$1`, parentA)
+
+		rec = e.do(http.MethodPatch, "/api/v1/admin/categories/"+childA, e.owner, e.tenA, `{"parentId":"`+parentB+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, parentA, e.scalar(`SELECT COALESCE(parent_id::text,'') FROM categories WHERE id=$1`, childA))
+	})
+
 	t.Run("positive controls in own tenant", func(t *testing.T) {
 		rec := e.do(http.MethodPatch, "/api/v1/admin/orders/"+e.orderA+"/status", e.owner, e.tenA, `{"status":"PACKED"}`)
 		assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())

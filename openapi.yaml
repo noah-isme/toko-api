@@ -2898,7 +2898,7 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '409': { description: Slug already exists }
@@ -2931,7 +2931,7 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Category not found }
