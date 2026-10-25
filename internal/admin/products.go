@@ -315,6 +315,9 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
+	if !h.catalogRefsOwned(w, ctx, tenantID, brandID, categoryID) {
+		return
+	}
 	id, err := h.Q.AdminCreateProduct(ctx, dbgen.AdminCreateProductParams{
 		Title:       title,
 		Slug:        slug,
@@ -383,6 +386,16 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	categoryID, err := optionalUUID(payload.CategoryID)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid categoryId", nil)
+		return
+	}
+	var checkBrand, checkCategory pgtype.UUID
+	if payload.has("brandId") {
+		checkBrand = brandID
+	}
+	if payload.has("categoryId") {
+		checkCategory = categoryID
+	}
+	if !h.catalogRefsOwned(w, ctx, tenantID, checkBrand, checkCategory) {
 		return
 	}
 	var slug pgtype.Text
@@ -565,6 +578,36 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		"inStock": inStock,
 		"stock":   payload.Stock,
 	}})
+}
+
+// catalogRefsOwned rejects a brand or category id that does not belong to the
+// tenant with the same 400 as an unknown id (the FKs alone accept any tenant's
+// rows). Invalid (unset) ids are not checked. It writes the error response and
+// returns false when the request must stop.
+func (h *CatalogHandler) catalogRefsOwned(w http.ResponseWriter, ctx context.Context, tenantID, brandID, categoryID pgtype.UUID) bool {
+	if brandID.Valid {
+		ok, err := h.Q.AdminBrandBelongsToTenant(ctx, dbgen.AdminBrandBelongsToTenantParams{ID: brandID, TenantID: tenantID})
+		if err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to check brand", nil)
+			return false
+		}
+		if !ok {
+			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "unknown brand or category", nil)
+			return false
+		}
+	}
+	if categoryID.Valid {
+		ok, err := h.Q.AdminCategoryBelongsToTenant(ctx, dbgen.AdminCategoryBelongsToTenantParams{ID: categoryID, TenantID: tenantID})
+		if err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to check category", nil)
+			return false
+		}
+		if !ok {
+			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "unknown brand or category", nil)
+			return false
+		}
+	}
+	return true
 }
 
 func (h *CatalogHandler) resolveProductID(ctx context.Context, raw string) (pgtype.UUID, error) {

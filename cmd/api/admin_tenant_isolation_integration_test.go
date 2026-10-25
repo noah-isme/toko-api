@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/noah-isme/backend-toko/internal/admin"
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -79,6 +80,8 @@ func newIsolationITest(t *testing.T) *isolationITest {
 			`DELETE FROM carts WHERE tenant_id = ANY($1::uuid[])`,
 			`DELETE FROM vouchers WHERE tenant_id = ANY($1::uuid[])`,
 			`DELETE FROM products WHERE tenant_id = ANY($1::uuid[])`,
+			`DELETE FROM brands WHERE tenant_id = ANY($1::uuid[])`,
+			`DELETE FROM categories WHERE tenant_id = ANY($1::uuid[])`,
 			`DELETE FROM tenants WHERE id = ANY($1::uuid[])`,
 		} {
 			if _, err := pool.Exec(cctx, stmt, tenants); err != nil {
@@ -117,6 +120,7 @@ func newIsolationITest(t *testing.T) *isolationITest {
 		Shipping:      &shipping.Handler{Svc: &shipping.Service{Q: e.q}, Q: e.q},
 		Vouchers:      &voucher.Handler{Q: e.q, Svc: &voucher.Service{Q: e.q}, Pool: pool},
 		Staff:         &rbac.StaffHandler{Pool: pool, Q: e.q},
+		Catalog:       &admin.CatalogHandler{Q: e.q},
 		// Platform handlers stay nil: they are nil-safe (500) and only the
 		// guard outcome matters here.
 	}
@@ -205,6 +209,27 @@ func TestIntegrationAdminTenantIsolation(t *testing.T) {
 
 		rec = e.do(http.MethodPost, "/api/v1/admin/vouchers/preview", e.owner, e.tenA, `{"code":"`+codeB+`","cartTotal":10000,"items":[{"subtotal":10000}]}`)
 		assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	})
+
+	t.Run("product cannot reference another tenant's brand or category", func(t *testing.T) {
+		sfx := randSuffix()
+		brandB := e.scalar(`INSERT INTO brands(name,slug,tenant_id) VALUES($1,$1,$2) RETURNING id::text`, "iso-brand-b-"+sfx, e.tenB)
+		categoryB := e.scalar(`INSERT INTO categories(name,slug,tenant_id) VALUES($1,$1,$2) RETURNING id::text`, "iso-cat-b-"+sfx, e.tenB)
+		brandA := e.scalar(`INSERT INTO brands(name,slug,tenant_id) VALUES($1,$1,$2) RETURNING id::text`, "iso-brand-a-"+sfx, e.tenA)
+
+		rec := e.do(http.MethodPost, "/api/v1/admin/products", e.owner, e.tenA, `{"title":"Iso P `+sfx+`","price":1000,"brandId":"`+brandB+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		rec = e.do(http.MethodPost, "/api/v1/admin/products", e.owner, e.tenA, `{"title":"Iso P `+sfx+`","price":1000,"categoryId":"`+categoryB+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "0", e.scalar(`SELECT COUNT(*)::text FROM products WHERE tenant_id=$1`, e.tenA))
+
+		rec = e.do(http.MethodPost, "/api/v1/admin/products", e.owner, e.tenA, `{"title":"Iso P `+sfx+`","price":1000,"brandId":"`+brandA+`"}`)
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		productA := e.scalar(`SELECT id::text FROM products WHERE tenant_id=$1`, e.tenA)
+
+		rec = e.do(http.MethodPatch, "/api/v1/admin/products/"+productA, e.owner, e.tenA, `{"categoryId":"`+categoryB+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "", e.scalar(`SELECT COALESCE(category_id::text,'') FROM products WHERE id=$1`, productA))
 	})
 
 	t.Run("positive controls in own tenant", func(t *testing.T) {
