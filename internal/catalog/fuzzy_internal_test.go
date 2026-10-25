@@ -71,7 +71,9 @@ func TestIntegrationPoolFuzzyRunnerLimits(t *testing.T) {
 
 	var tx pgx.Tx
 	runner := PoolFuzzyRunner{Pool: capturingBeginner{pool: pool, tx: &tx}}
-	require.NoError(t, runner.RunFuzzy(ctx, func(q QueryProvider) error {
+	require.NoError(t, runner.RunFuzzy(ctx, func(ctx context.Context, q QueryProvider) error {
+		_, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline, "fn runs under the pass deadline")
 		var timeout, threshold string
 		require.NoError(t, tx.QueryRow(ctx,
 			"SELECT current_setting('statement_timeout'), current_setting('pg_trgm.word_similarity_threshold')").Scan(&timeout, &threshold))
@@ -89,21 +91,57 @@ func TestIntegrationPoolFuzzyRunnerLimits(t *testing.T) {
 	require.Equal(t, "0", after)
 
 	// The transaction is read-only.
-	err = runner.RunFuzzy(ctx, func(QueryProvider) error {
+	err = runner.RunFuzzy(ctx, func(ctx context.Context, _ QueryProvider) error {
 		_, err := tx.Exec(ctx, "CREATE TEMP TABLE fuzzy_ro_probe (i int)")
 		return err
 	})
 	var pgErr *pgconn.PgError
 	require.ErrorAs(t, err, &pgErr)
 	require.Equal(t, "25006", pgErr.Code) // read_only_sql_transaction
+	require.NotErrorIs(t, err, ErrFuzzyTimeout)
 
 	// A statement over the limit is cancelled server-side with 57014.
 	short := PoolFuzzyRunner{Pool: capturingBeginner{pool: pool, tx: &tx}, StatementTimeout: 50 * time.Millisecond}
 	started := time.Now()
-	err = short.RunFuzzy(ctx, func(QueryProvider) error {
+	err = short.RunFuzzy(ctx, func(ctx context.Context, _ QueryProvider) error {
 		_, err := tx.Exec(ctx, "SELECT pg_sleep(2)")
 		return err
 	})
 	require.True(t, isStatementTimeout(err), "got %v", err)
+	require.ErrorIs(t, err, ErrFuzzyTimeout)
 	require.Less(t, time.Since(started), time.Second)
+
+	// The pass deadline caps the whole pass even when every statement stays under
+	// statement_timeout.
+	bounded := PoolFuzzyRunner{Pool: capturingBeginner{pool: pool, tx: &tx}, StatementTimeout: 2 * time.Second, PassTimeout: 150 * time.Millisecond}
+	started = time.Now()
+	statements := 0
+	err = bounded.RunFuzzy(ctx, func(ctx context.Context, _ QueryProvider) error {
+		for i := 0; i < 10; i++ {
+			if _, err := tx.Exec(ctx, "SELECT pg_sleep(0.06)"); err != nil {
+				return err
+			}
+			statements++
+		}
+		return nil
+	})
+	require.ErrorIs(t, err, ErrFuzzyTimeout, "got %v", err)
+	require.Less(t, statements, 10)
+	require.Less(t, time.Since(started), time.Second)
+
+	// A caller that goes away is not a timeout: the error must not be degraded.
+	pool.Reset() // the deadline above may have closed the only connection
+	parent, cancelParent := context.WithCancel(ctx)
+	time.AfterFunc(50*time.Millisecond, cancelParent)
+	err = bounded.RunFuzzy(parent, func(ctx context.Context, _ QueryProvider) error {
+		_, err := tx.Exec(ctx, "SELECT pg_sleep(1)")
+		return err
+	})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrFuzzyTimeout)
+
+	// The pool still serves queries afterwards.
+	pool.Reset()
+	var one int
+	require.NoError(t, pool.QueryRow(context.Background(), "SELECT 1").Scan(&one))
 }

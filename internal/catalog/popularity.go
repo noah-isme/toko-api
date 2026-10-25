@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
@@ -30,7 +31,9 @@ type PopularityRefresher struct {
 
 // PopularityRefreshStats summarises one RefreshAll pass.
 type PopularityRefreshStats struct {
-	Tenants  int
+	Tenants int
+	// Skipped counts tenants left for the next run (advisory lock held elsewhere, or a
+	// product deleted during the refresh).
 	Skipped  int
 	Upserted int64
 	Deleted  int64
@@ -69,7 +72,7 @@ func (r PopularityRefresher) runOnce(ctx context.Context) {
 	r.Logger.Info().
 		Str("job", "product_sales_refresh").
 		Int("tenants", stats.Tenants).
-		Int("skipped_locked", stats.Skipped).
+		Int("skipped", stats.Skipped).
 		Int64("upserted", stats.Upserted).
 		Int64("deleted", stats.Deleted).
 		Dur("duration", time.Since(started)).
@@ -111,7 +114,8 @@ func (r PopularityRefresher) RefreshAll(ctx context.Context) (PopularityRefreshS
 }
 
 // RefreshTenant recomputes one tenant's counters in a single transaction. It returns
-// refreshed=false without changes when another refresher holds the tenant's advisory lock.
+// refreshed=false without changes when another refresher holds the tenant's advisory lock
+// or a product was deleted concurrently (SQLSTATE 23503); either way the next run retries.
 func (r PopularityRefresher) RefreshTenant(ctx context.Context, tenantID pgtype.UUID) (refreshed bool, upserted, deleted int64, err error) {
 	tx, err := r.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -127,6 +131,16 @@ func (r PopularityRefresher) RefreshTenant(ctx context.Context, tenantID pgtype.
 		return false, 0, 0, nil
 	}
 	if upserted, err = q.UpsertProductSalesForTenant(ctx, tenantID); err != nil {
+		if isForeignKeyViolation(err) {
+			// A product was deleted while the refresh ran (the upsert takes no row lock
+			// on products). Leave the tenant's counters as they were; the next run
+			// recomputes them without the deleted product.
+			if r.Logger != nil {
+				r.Logger.Info().Str("job", "product_sales_refresh").Str("tenant_id", uuidString(tenantID)).
+					Msg("product deleted during popularity refresh; tenant deferred to next run")
+			}
+			return false, 0, 0, nil
+		}
 		return false, 0, 0, fmt.Errorf("upsert product_sales: %w", err)
 	}
 	if deleted, err = q.DeleteStaleProductSalesForTenant(ctx, tenantID); err != nil {
@@ -136,4 +150,12 @@ func (r PopularityRefresher) RefreshTenant(ctx context.Context, tenantID pgtype.
 		return false, 0, 0, fmt.Errorf("commit product_sales refresh: %w", err)
 	}
 	return true, upserted, deleted, nil
+}
+
+// pgForeignKeyViolation is SQLSTATE 23503.
+const pgForeignKeyViolation = "23503"
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolation
 }

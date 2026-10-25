@@ -373,6 +373,12 @@ func TestIntegrationPopularitySortAndRefresh(t *testing.T) {
 	require.Len(t, res.Items, 3)
 
 	// Refresh is idempotent.
+	productXmax := func() string {
+		var xmax string
+		require.NoError(t, f.pool.QueryRow(context.Background(), `SELECT xmax::text FROM products WHERE id = $1`, f.ids["kaos"]).Scan(&xmax))
+		return xmax
+	}
+	xmaxBefore := productXmax()
 	r := catalog.PopularityRefresher{Pool: f.pool}
 	var tenA pgtype.UUID
 	require.NoError(t, tenA.Scan(f.tenA))
@@ -381,6 +387,9 @@ func TestIntegrationPopularitySortAndRefresh(t *testing.T) {
 	require.True(t, refreshed)
 	require.Zero(t, upserted)
 	require.Zero(t, deleted)
+	// An unchanged refresh takes no row lock on products (a lock would stamp a new xmax
+	// and dirty the page).
+	require.Equal(t, xmaxBefore, productXmax())
 
 	// A concurrent refresher holding the tenant lock makes RefreshTenant skip.
 	tx, err := f.pool.Begin(context.Background())
@@ -403,8 +412,9 @@ func TestIntegrationPopularitySortAndRefresh(t *testing.T) {
 	require.EqualValues(t, -1, f.unitsSold("kaos"))
 }
 
-// A product deleted while the refresher runs must be skipped, not fail the FK check and
-// roll back the tenant's whole refresh (UpsertProductSalesForTenant locks FOR KEY SHARE).
+// A product deleted while the refresher runs fails the upsert's FK check (the upsert takes
+// no row lock on products). RefreshTenant must defer the tenant without an error, and the
+// next run must succeed without the deleted product.
 func TestIntegrationPopularityRefreshToleratesConcurrentProductDelete(t *testing.T) {
 	f := newSearchFixture(t)
 	ctx := context.Background()
@@ -440,10 +450,15 @@ func TestIntegrationPopularityRefreshToleratesConcurrentProductDelete(t *testing
 	select {
 	case res := <-done:
 		require.NoError(t, res.err)
-		require.True(t, res.refreshed)
+		require.False(t, res.refreshed, "tenant deferred to the next run")
 	case <-time.After(10 * time.Second):
 		t.Fatal("refresher did not finish")
 	}
+	require.EqualValues(t, -1, f.unitsSold("kaos"), "deferred refresh wrote nothing")
+
+	refreshed, _, _, err := catalog.PopularityRefresher{Pool: f.pool}.RefreshTenant(ctx, tenantID)
+	require.NoError(t, err)
+	require.True(t, refreshed)
 	require.EqualValues(t, -1, f.unitsSold("kemeja"))
 	require.EqualValues(t, 1, f.unitsSold("kaos"))
 }

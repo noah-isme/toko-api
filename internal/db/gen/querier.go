@@ -280,9 +280,10 @@ type Querier interface {
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
 	UpsertOrderProductPair(ctx context.Context, arg UpsertOrderProductPairParams) (OrderProductPair, error)
-	// KEY SHARE is the lock the FK check takes anyway; taking it here (in p.id order) means a
-	// product deleted after this statement's snapshot is skipped instead of failing the FK
-	// check and rolling back the whole tenant's refresh.
+	// No row lock on products: locking every sold product on every run would dirty and
+	// WAL-log hot products pages even when nothing changed. A product deleted after this
+	// statement's snapshot makes the FK check fail with 23503; RefreshTenant then skips the
+	// tenant until the next run.
 	UpsertProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	UpsertPushPreferences(ctx context.Context, arg UpsertPushPreferencesParams) (PushPreference, error)
 	UpsertUserProductView(ctx context.Context, arg UpsertUserProductViewParams) (UserProductView, error)

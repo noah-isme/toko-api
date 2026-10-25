@@ -102,8 +102,6 @@ FROM (
 ) agg
 JOIN products p ON p.id = agg.product_id AND p.tenant_id = $1
 WHERE agg.units > 0
-ORDER BY p.id
-FOR KEY SHARE OF p
 ON CONFLICT (product_id) DO UPDATE
    SET units_sold = EXCLUDED.units_sold,
        tenant_id  = EXCLUDED.tenant_id,
@@ -112,9 +110,10 @@ ON CONFLICT (product_id) DO UPDATE
     OR product_sales.tenant_id IS DISTINCT FROM EXCLUDED.tenant_id
 `
 
-// KEY SHARE is the lock the FK check takes anyway; taking it here (in p.id order) means a
-// product deleted after this statement's snapshot is skipped instead of failing the FK
-// check and rolling back the whole tenant's refresh.
+// No row lock on products: locking every sold product on every run would dirty and
+// WAL-log hot products pages even when nothing changed. A product deleted after this
+// statement's snapshot makes the FK check fail with 23503; RefreshTenant then skips the
+// tenant until the next run.
 func (q *Queries) UpsertProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertProductSalesForTenant, tenantID)
 	if err != nil {

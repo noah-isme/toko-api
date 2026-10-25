@@ -400,8 +400,8 @@ func (s *Service) ListCategories(ctx context.Context) ([]Category, error) {
 // same count/list/facets with pg_trgm word similarity on the title (via FuzzyRunner, in
 // one read-only transaction with a statement timeout). When both find nothing, the same
 // transaction returns up to suggestionLimit closest titles. Without a FuzzyRunner there
-// is neither fuzzy fallback nor suggestions. If the fuzzy transaction times out, the FTS
-// result is returned unchanged.
+// is neither fuzzy fallback nor suggestions. If the fuzzy transaction times out (per
+// statement or for the whole pass), the FTS result is returned unchanged.
 func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductListResult, error) {
 	key, shouldUseCache := s.listCacheKey(ctx, params)
 	if shouldUseCache && s.cache != nil {
@@ -419,13 +419,13 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 	facetsDone := false
 	if result.Total == 0 && fuzzyEligible(params.Query) && s.fuzzy != nil {
 		ftsResult := result
-		err := s.fuzzy.RunFuzzy(ctx, func(q QueryProvider) error {
-			fuzzyResult, err := s.searchPage(ctx, q, params, SearchModeFuzzy)
+		err := s.fuzzy.RunFuzzy(ctx, func(fctx context.Context, q QueryProvider) error {
+			fuzzyResult, err := s.searchPage(fctx, q, params, SearchModeFuzzy)
 			if err != nil {
 				return err
 			}
 			if fuzzyResult.Total == 0 {
-				suggestions, err := s.suggest(ctx, q, params.Query)
+				suggestions, err := s.suggest(fctx, q, params.Query)
 				if err != nil {
 					return err
 				}
@@ -433,7 +433,7 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 				return nil
 			}
 			if params.IncludeFacets {
-				facets, err := s.computeFacets(ctx, q, params, SearchModeFuzzy)
+				facets, err := s.computeFacets(fctx, q, params, SearchModeFuzzy)
 				if err != nil {
 					return err
 				}
@@ -444,12 +444,12 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 			return nil
 		})
 		if err != nil {
-			if !isStatementTimeout(err) || ctx.Err() != nil {
+			if !(errors.Is(err, ErrFuzzyTimeout) || isStatementTimeout(err)) || ctx.Err() != nil {
 				return ProductListResult{}, fmt.Errorf("fuzzy search: %w", err)
 			}
-			// The fuzzy pass hit its statement_timeout: answer with the (empty) FTS result
-			// instead of failing the request. The response is still valid, just without
-			// typo tolerance or suggestions.
+			// The fuzzy pass hit its statement timeout or pass deadline: answer with the
+			// (empty) FTS result instead of failing the request. The response is still
+			// valid, just without typo tolerance or suggestions.
 			zerolog.Ctx(ctx).Warn().Err(err).Int("q_runes", utf8.RuneCountInString(params.Query)).Msg("catalog fuzzy search timed out; returning full-text result")
 			result = ftsResult
 			facetsDone = false

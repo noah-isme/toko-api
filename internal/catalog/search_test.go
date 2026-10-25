@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,11 +23,16 @@ import (
 type fakeFuzzyRunner struct {
 	q     *fakeCatalogQueries
 	calls int
+	// passErr, when set, is returned after fn ran (simulates the pass deadline expiring).
+	passErr error
 }
 
-func (f *fakeFuzzyRunner) RunFuzzy(ctx context.Context, fn func(catalog.QueryProvider) error) error {
+func (f *fakeFuzzyRunner) RunFuzzy(ctx context.Context, fn func(context.Context, catalog.QueryProvider) error) error {
 	f.calls++
-	return fn(f.q)
+	if err := fn(ctx, f.q); err != nil {
+		return err
+	}
+	return f.passErr
 }
 
 type searchResponse struct {
@@ -376,6 +382,18 @@ func TestCatalogSearchFuzzyTimeoutDegradesToFTS(t *testing.T) {
 	require.NotNil(t, resp.Facets)
 	// Facets are recomputed in FTS mode so they match data.
 	require.Equal(t, catalog.SearchModeFTS, queries.lastFacetStock.MatchMode)
+}
+
+func TestCatalogSearchFuzzyPassDeadlineDegradesToFTS(t *testing.T) {
+	h, queries, runner := newSearchHarness(t)
+	queries.fuzzyProducts = []dbgen.ListProductsPublicRow{queries.productList[1]}
+	runner.passErr = fmt.Errorf("%w: %w", catalog.ErrFuzzyTimeout, context.DeadlineExceeded)
+
+	rec, _, resp := doProducts(t, h, "?q=spatu")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, runner.calls)
+	require.Equal(t, catalog.SearchModeFTS, resp.Meta.SearchMode)
+	require.Empty(t, resp.Data, "the partial fuzzy result is discarded")
 }
 
 func TestCatalogSearchSuggestionTimeoutDegrades(t *testing.T) {
