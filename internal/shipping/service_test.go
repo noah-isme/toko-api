@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/shipping"
 )
 
@@ -64,4 +65,86 @@ func TestCreateRejectsInvalidStatus(t *testing.T) {
 	svc := &shipping.Service{Q: queries}
 	_, err := svc.Create(ctx, toPGUUID(orderID), "jne", "TRACK123")
 	require.ErrorIs(t, err, shipping.ErrOrderNotEligible)
+}
+
+func TestSyncOrderStatusIgnoresExpiredOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), UserID: toPGUUID(uuid.New()), Status: dbgen.OrderStatusEXPIRED}, "buyer@example.com")
+	queries.storeShipment(dbgen.Shipment{
+		ID:         toPGUUID(uuid.New()),
+		OrderID:    toPGUUID(orderID),
+		Status:     dbgen.ShipmentStatusSHIPPED,
+		LastStatus: dbgen.NullShipmentStatus{ShipmentStatus: dbgen.ShipmentStatusSHIPPED, Valid: true},
+	})
+	svc := &shipping.Service{Q: queries}
+
+	_, _, err := svc.AppendEvent(ctx, toPGUUID(orderID), dbgen.ShipmentStatusDELIVERED, nil, nil, nil, []byte(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, dbgen.OrderStatusEXPIRED, queries.orders[orderID.String()].Status)
+	require.Empty(t, queries.statusUpdates, "an expired order must never be advanced")
+}
+
+func TestSyncOrderStatusStepsThroughSkippedStates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), UserID: toPGUUID(uuid.New()), Status: dbgen.OrderStatusSHIPPED}, "")
+	queries.storeShipment(dbgen.Shipment{
+		ID:         toPGUUID(uuid.New()),
+		OrderID:    toPGUUID(orderID),
+		Status:     dbgen.ShipmentStatusSHIPPED,
+		LastStatus: dbgen.NullShipmentStatus{ShipmentStatus: dbgen.ShipmentStatusSHIPPED, Valid: true},
+	})
+	svc := &shipping.Service{Q: queries}
+
+	_, _, err := svc.AppendEvent(ctx, toPGUUID(orderID), dbgen.ShipmentStatusDELIVERED, nil, nil, nil, []byte(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, dbgen.OrderStatusDELIVERED, queries.orders[orderID.String()].Status)
+	require.Equal(t, []dbgen.OrderStatus{dbgen.OrderStatusOUTFORDELIVERY, dbgen.OrderStatusDELIVERED}, queries.statusUpdates)
+}
+
+func TestAppendEventOptsSilentSkipsNotifyAndEmit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), UserID: toPGUUID(uuid.New()), Status: dbgen.OrderStatusOUTFORDELIVERY}, "buyer@example.com")
+	queries.storeShipment(dbgen.Shipment{
+		ID:         toPGUUID(uuid.New()),
+		OrderID:    toPGUUID(orderID),
+		Status:     dbgen.ShipmentStatusOUTFORDELIVERY,
+		LastStatus: dbgen.NullShipmentStatus{ShipmentStatus: dbgen.ShipmentStatusOUTFORDELIVERY, Valid: true},
+	})
+	mailer := &recordingMailer{}
+	store := &recordingEventStore{}
+	svc := &shipping.Service{Q: queries, Mail: mailer, NotifyOnDelivered: true, Events: &events.Bus{Store: store}}
+
+	_, _, err := svc.AppendEventOpts(ctx, toPGUUID(orderID), dbgen.ShipmentStatusDELIVERED, nil, nil, nil, []byte(`{}`), shipping.AppendOptions{Silent: true})
+	require.NoError(t, err)
+	require.Len(t, queries.events, 1)
+	require.Equal(t, dbgen.OrderStatusDELIVERED, queries.orders[orderID.String()].Status)
+	require.Empty(t, mailer.Subjects())
+	require.Empty(t, store.topics)
+
+	// Non-silent appends still notify (same-status event is allowed).
+	_, _, err = svc.AppendEvent(ctx, toPGUUID(orderID), dbgen.ShipmentStatusDELIVERED, nil, nil, nil, []byte(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{"Terkirim"}, mailer.Subjects())
+	require.Equal(t, []string{events.TopicShipmentDelivered}, store.topics)
+}
+
+type recordingEventStore struct {
+	topics []string
+}
+
+func (r *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
+	r.topics = append(r.topics, arg.Topic)
+	return dbgen.InsertDomainEventRow{ID: arg.AggregateID, Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
 }

@@ -185,6 +185,8 @@ func (s *Service) ConsolidatedStatus(ctx context.Context, orderID string) (strin
 		return "PAID", nil
 	case dbgen.OrderStatusCANCELLED:
 		return "FAILED", nil
+	case dbgen.OrderStatusEXPIRED:
+		return "EXPIRED", nil
 	case dbgen.OrderStatusPENDINGPAYMENT:
 		fallthrough
 	default:

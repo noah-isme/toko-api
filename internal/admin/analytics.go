@@ -37,6 +37,7 @@ type analyticsOverviewDTO struct {
 	ShippedOrders     int64                    `json:"shippedOrders"`
 	DeliveredOrders   int64                    `json:"deliveredOrders"`
 	CancelledOrders   int64                    `json:"cancelledOrders"`
+	ExpiredOrders     int64                    `json:"expiredOrders"`
 	TopProducts       []analyticsTopProductDTO `json:"topProducts"`
 }
 
@@ -119,6 +120,7 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		ShippedOrders:     stats.ShippedOrders,
 		DeliveredOrders:   stats.DeliveredOrders,
 		CancelledOrders:   stats.CancelledOrders,
+		ExpiredOrders:     stats.ExpiredOrders,
 		TopProducts:       top,
 	}})
 }

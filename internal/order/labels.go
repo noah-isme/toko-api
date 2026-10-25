@@ -16,6 +16,8 @@ func statusLabel(status string) string {
 		return "Selesai"
 	case "cancelled":
 		return "Dibatalkan"
+	case "expired":
+		return "Kedaluwarsa"
 	default:
 		return status
 	}
