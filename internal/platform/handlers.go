@@ -305,7 +305,10 @@ func (h *Handler) ReturnGet(w http.ResponseWriter, r *http.Request) {
 	var status, reason string
 	var notes pgtype.Text
 	var created, updated time.Time
-	err = h.Pool.QueryRow(r.Context(), `SELECT order_id,status,reason,notes,created_at,updated_at FROM returns WHERE id=$1 AND tenant_id=$2 AND user_id=$3`, id, tenantID, userID).Scan(&orderID, &status, &reason, &notes, &created, &updated)
+	var refund refundSummaryRow
+	err = h.Pool.QueryRow(r.Context(), `SELECT r.order_id,r.status,r.reason,r.notes,r.created_at,r.updated_at,`+refundSummaryColumns+`
+	    FROM returns r LEFT JOIN refunds f ON f.return_id=r.id AND f.tenant_id=r.tenant_id
+	   WHERE r.id=$1 AND r.tenant_id=$2 AND r.user_id=$3`, id, tenantID, userID).Scan(append([]any{&orderID, &status, &reason, &notes, &created, &updated}, refund.dest()...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
@@ -314,7 +317,7 @@ func (h *Handler) ReturnGet(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated}})
+	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated, "refund": refund.customerView()}})
 }
 
 func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +325,9 @@ func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Pool.Query(r.Context(), `SELECT id,order_id,user_id,status,reason,notes,created_at,updated_at FROM returns WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	rows, err := h.Pool.Query(r.Context(), `SELECT r.id,r.order_id,r.user_id,r.status,r.reason,r.notes,r.created_at,r.updated_at,`+refundSummaryColumns+`
+	    FROM returns r LEFT JOIN refunds f ON f.return_id=r.id AND f.tenant_id=r.tenant_id
+	   WHERE r.tenant_id=$1 ORDER BY r.created_at DESC`, tenantID)
 	if err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to list returns", nil)
 		return
@@ -334,93 +339,14 @@ func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
 		var status, reason string
 		var notes pgtype.Text
 		var created, updated time.Time
-		if err := rows.Scan(&id, &orderID, &userID, &status, &reason, &notes, &created, &updated); err != nil {
+		var refund refundSummaryRow
+		if err := rows.Scan(append([]any{&id, &orderID, &userID, &status, &reason, &notes, &created, &updated}, refund.dest()...)...); err != nil {
 			common.JSONError(w, 500, "INTERNAL", "failed to read returns", nil)
 			return
 		}
-		items = append(items, map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "userId": cart.UUIDString(userID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated})
+		items = append(items, map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "userId": cart.UUIDString(userID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated, "refund": refund.adminView()})
 	}
 	common.JSON(w, 200, map[string]any{"data": items})
-}
-
-func (h *Handler) AdminReturnStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID, _, ok := h.identity(w, r)
-	if !ok {
-		return
-	}
-	id, err := cart.ToUUID(chi.URLParam(r, "returnId"))
-	if err != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid return id", nil)
-		return
-	}
-	var input statusInput
-	if json.NewDecoder(r.Body).Decode(&input) != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid payload", nil)
-		return
-	}
-	status := strings.ToUpper(strings.TrimSpace(input.Status))
-	allowed := map[string]bool{"APPROVED": true, "REJECTED": true, "RECEIVED": true, "CANCELLED": true}
-	if !allowed[status] {
-		common.JSONError(w, 400, "BAD_REQUEST", "unsupported return status", nil)
-		return
-	}
-	var updated time.Time
-	if err := h.Pool.QueryRow(r.Context(), `UPDATE returns SET status=$1,updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING updated_at`, status, id, tenantID).Scan(&updated); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
-		} else {
-			common.JSONError(w, 500, "INTERNAL", "failed to update return", nil)
-		}
-		return
-	}
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "status": status, "updatedAt": updated}})
-}
-
-func (h *Handler) AdminRefund(w http.ResponseWriter, r *http.Request) {
-	tenantID, _, ok := h.identity(w, r)
-	if !ok {
-		return
-	}
-	returnID, err := cart.ToUUID(chi.URLParam(r, "returnId"))
-	if err != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid return id", nil)
-		return
-	}
-	var orderID pgtype.UUID
-	var status, provider string
-	var amount int64
-	err = h.Pool.QueryRow(r.Context(), `SELECT r.order_id,r.status::text,COALESCE(p.provider,'midtrans'),o.pricing_total FROM returns r JOIN orders o ON o.id=r.order_id LEFT JOIN payments p ON p.order_id=o.id AND p.status='PAID' WHERE r.id=$1 AND r.tenant_id=$2 ORDER BY p.created_at DESC LIMIT 1`, returnID, tenantID).Scan(&orderID, &status, &provider, &amount)
-	if err != nil {
-		common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
-		return
-	}
-	if status != "APPROVED" && status != "RECEIVED" {
-		common.JSONError(w, 409, "REFUND_NOT_ALLOWED", "return must be approved or received", nil)
-		return
-	}
-	gateway, exists := h.Providers[strings.ToLower(provider)]
-	if !exists {
-		common.JSONError(w, 409, "REFUND_UNSUPPORTED", "payment provider does not support refunds", nil)
-		return
-	}
-	refundGateway, ok := gateway.(payment.RefundProvider)
-	if !ok {
-		common.JSONError(w, 409, "REFUND_UNSUPPORTED", "payment provider does not support refunds", nil)
-		return
-	}
-	providerRef, err := refundGateway.Refund(r.Context(), cart.UUIDString(orderID), amount, "customer return")
-	if err != nil {
-		common.JSONError(w, 502, "REFUND_FAILED", err.Error(), nil)
-		return
-	}
-	var refundID pgtype.UUID
-	if err := h.Pool.QueryRow(r.Context(), `INSERT INTO refunds(tenant_id,return_id,order_id,provider,provider_ref,amount,reason) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(return_id) DO UPDATE SET provider_ref=EXCLUDED.provider_ref RETURNING id`, tenantID, returnID, orderID, provider, providerRef, amount, "customer return").Scan(&refundID); err != nil {
-		common.JSONError(w, 500, "INTERNAL", "failed to record refund", nil)
-		return
-	}
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE returns SET status='REFUNDED',updated_at=now() WHERE id=$1 AND tenant_id=$2`, returnID, tenantID)
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE payments SET status='REFUNDED',updated_at=now() WHERE order_id=$1 AND status='PAID'`, orderID)
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(refundID), "returnId": cart.UUIDString(returnID), "orderId": cart.UUIDString(orderID), "provider": provider, "providerRef": providerRef, "amount": amount, "status": "SUCCEEDED"}})
 }
 
 func (h *Handler) TicketCreate(w http.ResponseWriter, r *http.Request) {

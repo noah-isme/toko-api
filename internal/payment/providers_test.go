@@ -39,6 +39,7 @@ func TestMidtransCreateIntentUsesSnapAPI(t *testing.T) {
 }
 
 func TestMidtransRefundUsesIdempotentSnapPayload(t *testing.T) {
+	var payloads []string
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/v2/order-1/refund" || r.Method != http.MethodPost {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -47,18 +48,25 @@ func TestMidtransRefundUsesIdempotentSnapPayload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload := string(body)
-		if !strings.Contains(payload, `"refund_key":"order-1-refund"`) || !strings.Contains(payload, `"amount":12500`) {
-			t.Fatalf("unexpected refund payload: %s", payload)
-		}
+		payloads = append(payloads, string(body))
 		if r.Header.Get("transaction-source") != "SNAP_API" {
 			t.Fatalf("transaction-source = %q", r.Header.Get("transaction-source"))
 		}
-		return jsonResponse(`{"refund_key":"order-1-refund","status_code":"200"}`), nil
+		return jsonResponse(`{"refund_key":"rf-abc-0","status_code":"200","transaction_status":"partial_refund"}`), nil
 	})}
-	ref, err := (Midtrans{ServerKey: "server-key", BaseURL: "https://provider.test", HTTPClient: client}).Refund(context.Background(), "order-1", 12500, "customer return")
-	if err != nil || ref != "order-1-refund" {
-		t.Fatalf("refund = %q err=%v", ref, err)
+	m := Midtrans{ServerKey: "server-key", BaseURL: "https://provider.test", HTTPClient: client}
+	res, err := m.Refund(context.Background(), RefundRequest{OrderID: "order-1", RefundKey: "rf-abc-0", Amount: 12500, Reason: "customer return"})
+	if err != nil || res.ProviderRef != "rf-abc-0" || res.Status != RefundStatusSucceeded {
+		t.Fatalf("refund = %+v err=%v", res, err)
+	}
+	if !strings.Contains(payloads[0], `"refund_key":"rf-abc-0"`) || !strings.Contains(payloads[0], `"amount":12500`) {
+		t.Fatalf("unexpected refund payload: %s", payloads[0])
+	}
+	if _, err := m.Refund(context.Background(), RefundRequest{OrderID: "order-1", RefundKey: "rf-abc-1", Amount: 12500, Reason: "customer return"}); err != nil {
+		t.Fatal(err)
+	}
+	if payloads[0] == payloads[1] || !strings.Contains(payloads[1], `"refund_key":"rf-abc-1"`) {
+		t.Fatalf("different keys must produce different payloads: %v", payloads)
 	}
 }
 

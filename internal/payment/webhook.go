@@ -145,6 +145,31 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newStatus := normaliseWebhookStatus(result.Status)
+	if isRefundWebhookStatus(newStatus) {
+		// Refund notifications are recorded as events only: the admin refund flow
+		// is the single writer of payments.status and payments.refunded_amount, so a
+		// webhook can neither regress the payment nor race the refund finalisation.
+		span.SetAttributes(attribute.String("payment.webhook.status", string(newStatus)), attribute.Bool("payment.webhook.refund_event_only", true))
+		if err := q.InsertPaymentEvent(ctx, dbgen.InsertPaymentEventParams{
+			PaymentID: payment.ID,
+			Status:    newStatus,
+			Payload:   result.ProviderPayload,
+		}); err != nil {
+			span.RecordError(err)
+			common.JSONError(w, http.StatusInternalServerError, "PAYMENT_EVENT_ERROR", "failed to record payment event", nil)
+			return
+		}
+		if tx != nil {
+			if err := tx.Commit(ctx); err != nil {
+				span.RecordError(err)
+				common.JSONError(w, http.StatusInternalServerError, "TX_COMMIT_ERROR", err.Error(), nil)
+				return
+			}
+		}
+		outcome = "success"
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	shouldSettle := newStatus == dbgen.PaymentStatusPAID && payment.Status != dbgen.PaymentStatusPAID
 	span.SetAttributes(attribute.String("payment.webhook.status", string(newStatus)))
 
@@ -325,7 +350,17 @@ func normaliseWebhookStatus(status string) dbgen.PaymentStatus {
 		return dbgen.PaymentStatusFAILED
 	case "EXPIRED":
 		return dbgen.PaymentStatusEXPIRED
+	case "REFUNDED", "REFUND":
+		return dbgen.PaymentStatusREFUNDED
+	case "PARTIALLY_REFUNDED", "PARTIAL_REFUND":
+		return dbgen.PaymentStatusPARTIALLYREFUNDED
 	default:
 		return dbgen.PaymentStatusPENDING
 	}
+}
+
+// isRefundWebhookStatus reports whether a normalised webhook status is a refund
+// notification, which is recorded as a payment event without changing the payment.
+func isRefundWebhookStatus(s dbgen.PaymentStatus) bool {
+	return s == dbgen.PaymentStatusREFUNDED || s == dbgen.PaymentStatusPARTIALLYREFUNDED
 }
