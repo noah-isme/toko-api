@@ -936,7 +936,7 @@ POST /api/v1/admin/products/bulk/stock
 { "items": [ { "variantId": "v-uuid-1", "stock": 40 }, { "variantId": "v-uuid-2", "delta": -3 } ] }
 ```
 
-Each item sends exactly one of `stock` (absolute, ≥ 0) or `delta`. Deltas apply against the **live** stock after the row is locked, so concurrent checkouts are respected (stock 10, a checkout reserves 3, `delta +5` → 12). A result below zero rejects the row (`NEGATIVE_RESULT`); nothing is clamped. A result above 2147483647 is `OUT_OF_RANGE`. Products are locked before their variants (the same order as bulk price and import), so concurrent catalog writers do not deadlock. `inStock` of each touched product is recomputed.
+Each item sends exactly one of `stock` (absolute, ≥ 0) or `delta`. Deltas apply against the **live** stock after the row is locked, so concurrent checkouts are respected (stock 10, a checkout reserves 3, `delta +5` → 12). A result below zero rejects the row (`NEGATIVE_RESULT`); nothing is clamped. A result above 2147483647 is `OUT_OF_RANGE`. Products are locked before their variants (the same order as bulk price and import), so concurrent catalog writers do not deadlock; see the lock rules below for how this interacts with checkout. `inStock` of each touched product is recomputed.
 
 **Response:** `200 OK` — `{"data": {"updated": 2, "items": [{"variantId", "productId", "sku", "stock", "inStock"}]}}` (`stock` after the update; `inStock` is `null` for products that did not change).
 
@@ -954,6 +954,8 @@ POST /api/v1/admin/products/bulk/status
 
 - All-or-nothing; 1..500 items; body ≤ 1 MiB; unknown JSON fields are rejected.
 - Targets are locked in id order with a 5 s lock timeout, so a bulk request never stalls checkout for longer.
+- Lock order and strength (bulk price, bulk stock and import alike): products first, then variants, each in id order, all with `FOR NO KEY UPDATE`. Catalog writers therefore serialize against each other, but the product and variant locks do not conflict with the `FOR KEY SHARE` locks that foreign-key checks take. Checkout reserves stock (row-locks the variant) and then inserts `inventory_reservations` (key-share on the product), and add-to-cart inserts `cart_items` (key-share on product and variant). Add-to-cart never waits on a running catalog write; checkout waits only when it reserves a variant the catalog write already holds (and vice versa, bounded by the 5 s timeout), and checkout's variant-then-product order cannot form a cycle with the catalog writer's product-then-variant order.
+- Residual cases, bounded by the 5 s lock timeout and answered as `409 CONFLICT` (retry): an import that changes a product's `slug` or a variant's `sku` (unique columns) upgrades that row lock to `FOR UPDATE` strength when it writes, which conflicts with key-share again for that row; a multi-item checkout that locks two variants in the opposite order to the catalog writer's id order can deadlock with it (as two such checkouts already can with each other). Postgres aborts one side; a checkout that loses gets `409 CONFLICT` with `details.retryable: true` (see the checkout contract) instead of the raw driver error.
 - Errors (nothing is changed in any error case):
   - `400 BAD_REQUEST` (malformed, empty `items`) or `400 TOO_MANY_ROWS` (`details: {max, got}`)
   - `413 PAYLOAD_TOO_LARGE` (JSON envelope; the global `SECURITY_BODY_LIMIT_BYTES` cap, 1 MiB by default, answers in the same shape)

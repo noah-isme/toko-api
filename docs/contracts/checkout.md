@@ -105,6 +105,8 @@ Status values are returned in **lowercase** (e.g. `pending_payment`, not `PENDIN
 | 400 | `BAD_REQUEST` | `shippingCost` is negative |
 | 400 | `BAD_REQUEST` | `cartId` or `shippingAddressId` is not a valid UUID |
 | 401 | `UNAUTHORIZED` | Missing or invalid auth token |
+| 409 | `PRODUCT_UNAVAILABLE` | A cart line's product is no longer published (`details: {productId, slug}`) |
+| 409 | `CONFLICT` | Lost a row-lock race (deadlock, lock timeout, serialization failure) with another checkout or an admin catalog write; nothing was committed, retry (`details: {retryable: true}`) |
 | 500 | `INTERNAL` | `shippingAddressId` does not exist or belongs to another user |
 | 500 | `INTERNAL` | Cart is empty or does not belong to the user |
 | 500 | `INTERNAL` | Tenant context missing |

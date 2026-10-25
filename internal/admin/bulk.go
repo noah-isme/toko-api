@@ -520,8 +520,10 @@ func (h *CatalogHandler) BulkStock(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, t.variantID)
 	}
 	// Products first (id order), then variants, matching import and bulk price
-	// so concurrent catalog writers cannot deadlock. Checkout locks only
-	// variants, so this adds no cycle with reservations.
+	// so concurrent catalog writers cannot deadlock. Checkout locks a variant
+	// and then takes FOR KEY SHARE on its product (inventory_reservations FK
+	// check); the product lock is FOR NO KEY UPDATE, which does not conflict
+	// with KEY SHARE, so checkout never waits on it and no cycle forms.
 	if _, err := q.AdminLockProductsOfVariants(ctx, dbgen.AdminLockProductsOfVariantsParams{TenantID: tenantID, Ids: ids}); err != nil {
 		writeTxError(w, err, "failed to lock products")
 		return

@@ -1022,9 +1022,11 @@ func firstValid(rows []*importRow) *importRow {
 }
 
 // sameCSVText compares a file cell with a stored value the way a CSV round trip
-// sees them: the export writes CRLF records and encoding/csv turns a CRLF
-// inside a quoted field into LF and drops a lone CR, so stored text with CR
-// characters must not look edited when the file is re-imported unchanged.
+// sees them. The export's csv.Writer (UseCRLF) writes a CRLF inside a quoted
+// field and drops a lone CR when writing, and the reader turns the quoted CRLF
+// back into LF, so CR characters never survive the trip. The loss happens on
+// the writer side; the reader is correct. Stored text with CR characters must
+// not look edited when the file is re-imported unchanged.
 func sameCSVText(file, stored string) bool {
 	return strings.ReplaceAll(file, "\r", "") == strings.ReplaceAll(stored, "\r", "")
 }

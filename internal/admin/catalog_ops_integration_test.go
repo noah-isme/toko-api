@@ -526,6 +526,94 @@ func TestIntegrationBulkStock(t *testing.T) {
 	require.EqualValues(t, 4, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, v2))
 }
 
+// TestIntegrationCatalogLocksFollowCheckoutOrder replays checkout's lock order
+// against bulk stock and bulk price (the latter uses the same product lock
+// query as import). Checkout row-locks the variant (ReserveVariantStock) and
+// then a foreign-key insert takes FOR KEY SHARE on the product
+// (inventory_reservations / cart_items). The catalog writer locks the product
+// first and then waits for the variant. With a FOR UPDATE product lock this
+// is a deadlock cycle (40P01); with FOR NO KEY UPDATE both must complete.
+func TestIntegrationCatalogLocksFollowCheckoutOrder(t *testing.T) {
+	e := newOpsEnv(t)
+	bg := context.Background()
+	tctx := tenant.WithTenant(bg, e.tenA)
+	userID := e.user
+	cartSvc := &cart.Service{Q: e.q, Pool: e.pool}
+	c, err := cartSvc.EnsureCart(tctx, &userID, nil)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		req  func(productID, variantID string) (string, map[string]any)
+		want func(t *testing.T, productID, variantID string)
+	}{
+		{
+			name: "bulk stock",
+			req: func(_, variantID string) (string, map[string]any) {
+				return "/admin/products/bulk/stock", map[string]any{"items": []map[string]any{{"variantId": variantID, "delta": 5}}}
+			},
+			want: func(t *testing.T, _, variantID string) {
+				// 10 - 3 reserved + 5: the delta applied after the checkout committed.
+				require.EqualValues(t, 12, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, variantID))
+			},
+		},
+		{
+			name: "bulk price (import's product lock)",
+			req: func(productID, _ string) (string, map[string]any) {
+				return "/admin/products/bulk/price", map[string]any{"items": []map[string]any{{"productId": productID, "price": 1500, "applyTo": "both"}}}
+			},
+			want: func(t *testing.T, productID, variantID string) {
+				require.EqualValues(t, 1500, e.scalar(`SELECT price FROM products WHERE id=$1`, productID))
+				require.EqualValues(t, 1500, e.scalar(`SELECT price FROM product_variants WHERE id=$1`, variantID))
+				require.EqualValues(t, 7, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, variantID))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := e.product(e.tenA, "Lock "+tc.name, 1000)
+			v := e.variant(p.ID, e.sku("LCK"+randHex(2)), 1000, 10)
+
+			// Checkout step 1: reserve stock (row-locks the variant).
+			co, err := e.pool.Begin(bg)
+			require.NoError(t, err)
+			defer func() { _ = co.Rollback(bg) }()
+			_, err = dbgen.New(co).ReserveVariantStock(bg, dbgen.ReserveVariantStockParams{ID: mustUUID(v), Qty: 3})
+			require.NoError(t, err)
+
+			// The catalog writer locks the product, then blocks on the variant.
+			path, body := tc.req(p.ID, v)
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- e.postJSON(path, e.tenA, body) }()
+			select {
+			case rec := <-done:
+				t.Fatalf("catalog writer must wait for checkout's variant lock, got %d %s", rec.Code, rec.Body.String())
+			case <-time.After(400 * time.Millisecond):
+			}
+
+			// Checkout step 2: foreign-key inserts take FOR KEY SHARE on the
+			// product. Wait past deadlock_timeout (1s) so a cycle would be
+			// detected and reported as 40P01 here or in the writer.
+			stepCtx, cancel := context.WithTimeout(bg, 3*time.Second)
+			defer cancel()
+			_, err = co.Exec(stepCtx, `SELECT pg_sleep(1.2)`)
+			require.NoError(t, err)
+			_, err = co.Exec(stepCtx, `INSERT INTO cart_items(cart_id,product_id,variant_id,title,slug,qty,unit_price,subtotal)
+				VALUES($1,$2,$3,'lock test',$4,1,1000,1000)`, cart.UUIDString(c.ID), p.ID, v, p.Slug)
+			require.NoError(t, err, "checkout's FK insert must not block on or deadlock with the product lock")
+			_, err = co.Exec(stepCtx, `SELECT 1 FROM products WHERE id=$1 FOR KEY SHARE`, p.ID)
+			require.NoError(t, err)
+			require.NoError(t, co.Commit(bg))
+
+			rec := <-done
+			require.Equal(t, 200, rec.Code, rec.Body.String())
+			tc.want(t, p.ID, v)
+			_, err = e.pool.Exec(bg, `DELETE FROM cart_items WHERE cart_id=$1 AND product_id=$2`, cart.UUIDString(c.ID), p.ID)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func mustUUID(s string) pgtype.UUID {
 	return pgtype.UUID{Bytes: uuid.MustParse(s), Valid: true}
 }

@@ -63,7 +63,12 @@ type Querier interface {
 	// Admin catalog operations: bulk updates, CSV import lookups, CSV export and
 	// low-stock settings. product_variants has no tenant_id, so every variant query
 	// scopes through products.tenant_id.
-	// Locks the target products in id order so concurrent bulk requests cannot deadlock.
+	// Locks the target products in id order so concurrent catalog writers cannot
+	// deadlock. FOR NO KEY UPDATE (not FOR UPDATE) still serializes catalog writers
+	// against each other but stays compatible with the FOR KEY SHARE locks that
+	// foreign-key checks take (inventory_reservations, cart_items,
+	// user_product_views), so checkout and add-to-cart neither block on
+	// nor deadlock with a running import or bulk request.
 	AdminGetProductsByIDsForUpdate(ctx context.Context, arg AdminGetProductsByIDsForUpdateParams) ([]AdminGetProductsByIDsForUpdateRow, error)
 	AdminInsertProductImage(ctx context.Context, arg AdminInsertProductImageParams) error
 	AdminInsertProductSpec(ctx context.Context, arg AdminInsertProductSpecParams) error
@@ -75,8 +80,14 @@ type Querier interface {
 	AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error)
 	// Locks the products owning the listed variants, in product id order. Bulk
 	// stock takes these before AdminLockVariantsByIDs so every catalog writer
-	// (import, bulk price, bulk stock) locks products before variants.
+	// (import, bulk price, bulk stock) locks products before variants. It must be
+	// FOR NO KEY UPDATE: checkout holds a variant row lock and then takes FOR KEY
+	// SHARE on the product (inventory_reservations.product_id FK check), which
+	// FOR UPDATE would conflict with and turn into a deadlock cycle.
 	AdminLockProductsOfVariants(ctx context.Context, arg AdminLockProductsOfVariantsParams) ([]pgtype.UUID, error)
+	// FOR NO KEY UPDATE: serializes against checkout's ReserveVariantStock and
+	// other catalog writers, but not against FK checks (cart_items.variant_id,
+	// inventory_reservations.variant_id), so add-to-cart does not block on it.
 	AdminLockVariantsByIDs(ctx context.Context, arg AdminLockVariantsByIDsParams) ([]AdminLockVariantsByIDsRow, error)
 	// Locks the listed variants plus every variant of the listed products, in one
 	// statement and in id order (bulk price with applyTo=both|variants).

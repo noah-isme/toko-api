@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/noah-isme/backend-toko/internal/common"
 )
 
@@ -76,5 +78,25 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 		common.JSONError(w, status, code, appErr.Message, appErr.Details)
 		return
 	}
+	if isLockConflict(err) {
+		// A concurrent checkout or admin catalog write held the rows: nothing
+		// was committed, so the client can safely retry. Never leak the raw
+		// driver message (it carries the SQLSTATE and relation names).
+		common.JSONError(w, http.StatusConflict, "CONFLICT", "checkout is busy, please retry", map[string]any{"retryable": true})
+		return
+	}
 	common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+}
+
+// isLockConflict reports deadlock (40P01), lock timeout (55P03) and
+// serialization (40001) failures, which are transient and retryable.
+func isLockConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "40P01", "55P03", "40001":
+			return true
+		}
+	}
+	return false
 }

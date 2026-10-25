@@ -1356,6 +1356,11 @@ paths:
             `PRODUCT_UNAVAILABLE`: a cart line's product was set to draft or
             archived (or deleted) after it was added. Nothing is reserved or
             ordered. `details: {productId, slug}`.
+
+            `CONFLICT`: the checkout lost a row-lock race (deadlock, lock
+            timeout or serialization failure) with another checkout or an
+            admin catalog write. Nothing was committed; retry the request.
+            `details: {retryable: true}`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }

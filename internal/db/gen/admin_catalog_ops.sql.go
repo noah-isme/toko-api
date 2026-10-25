@@ -347,7 +347,7 @@ FROM products
 WHERE id = ANY($1::uuid[])
   AND tenant_id = $2
 ORDER BY id
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 type AdminGetProductsByIDsForUpdateParams struct {
@@ -371,7 +371,12 @@ type AdminGetProductsByIDsForUpdateRow struct {
 // Admin catalog operations: bulk updates, CSV import lookups, CSV export and
 // low-stock settings. product_variants has no tenant_id, so every variant query
 // scopes through products.tenant_id.
-// Locks the target products in id order so concurrent bulk requests cannot deadlock.
+// Locks the target products in id order so concurrent catalog writers cannot
+// deadlock. FOR NO KEY UPDATE (not FOR UPDATE) still serializes catalog writers
+// against each other but stays compatible with the FOR KEY SHARE locks that
+// foreign-key checks take (inventory_reservations, cart_items,
+// user_product_views), so checkout and add-to-cart neither block on
+// nor deadlock with a running import or bulk request.
 func (q *Queries) AdminGetProductsByIDsForUpdate(ctx context.Context, arg AdminGetProductsByIDsForUpdateParams) ([]AdminGetProductsByIDsForUpdateRow, error) {
 	rows, err := q.db.Query(ctx, adminGetProductsByIDsForUpdate, arg.Ids, arg.TenantID)
 	if err != nil {
@@ -411,7 +416,7 @@ WHERE p.tenant_id = $1
     SELECT v.product_id FROM product_variants v WHERE v.id = ANY($2::uuid[])
   )
 ORDER BY p.id
-FOR UPDATE OF p
+FOR NO KEY UPDATE OF p
 `
 
 type AdminLockProductsOfVariantsParams struct {
@@ -421,7 +426,10 @@ type AdminLockProductsOfVariantsParams struct {
 
 // Locks the products owning the listed variants, in product id order. Bulk
 // stock takes these before AdminLockVariantsByIDs so every catalog writer
-// (import, bulk price, bulk stock) locks products before variants.
+// (import, bulk price, bulk stock) locks products before variants. It must be
+// FOR NO KEY UPDATE: checkout holds a variant row lock and then takes FOR KEY
+// SHARE on the product (inventory_reservations.product_id FK check), which
+// FOR UPDATE would conflict with and turn into a deadlock cycle.
 func (q *Queries) AdminLockProductsOfVariants(ctx context.Context, arg AdminLockProductsOfVariantsParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, adminLockProductsOfVariants, arg.TenantID, arg.Ids)
 	if err != nil {
@@ -449,7 +457,7 @@ JOIN products p ON p.id = v.product_id
 WHERE v.id = ANY($1::uuid[])
   AND p.tenant_id = $2
 ORDER BY v.id
-FOR UPDATE OF v
+FOR NO KEY UPDATE OF v
 `
 
 type AdminLockVariantsByIDsParams struct {
@@ -467,6 +475,9 @@ type AdminLockVariantsByIDsRow struct {
 	Slug       string      `json:"slug"`
 }
 
+// FOR NO KEY UPDATE: serializes against checkout's ReserveVariantStock and
+// other catalog writers, but not against FK checks (cart_items.variant_id,
+// inventory_reservations.variant_id), so add-to-cart does not block on it.
 func (q *Queries) AdminLockVariantsByIDs(ctx context.Context, arg AdminLockVariantsByIDsParams) ([]AdminLockVariantsByIDsRow, error) {
 	rows, err := q.db.Query(ctx, adminLockVariantsByIDs, arg.Ids, arg.TenantID)
 	if err != nil {
@@ -502,7 +513,7 @@ JOIN products p ON p.id = v.product_id
 WHERE (v.id = ANY($1::uuid[]) OR v.product_id = ANY($2::uuid[]))
   AND p.tenant_id = $3
 ORDER BY v.id
-FOR UPDATE OF v
+FOR NO KEY UPDATE OF v
 `
 
 type AdminLockVariantsByIDsOrProductsParams struct {

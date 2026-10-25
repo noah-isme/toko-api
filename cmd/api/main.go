@@ -904,6 +904,12 @@ func main() {
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
 
+	// Fail fast if a body-limit override no longer names a mounted route
+	// (e.g. the admin prefix moved): CSV imports would silently get 413.
+	if err := checkBodyLimitOverrides(r, admin.BodyLimitOverrides()); err != nil {
+		logger.Fatal().Err(err).Msg("body limit overrides")
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr(),
 		Handler: r,
