@@ -200,6 +200,7 @@ export type ProductSortOption =
   | 'rating:desc';
 
 export interface ProductFilters {
+  /** Trimmed; max 200 characters (400 with details.field = "q" above). Fuzzy fallback + suggestions for 3-64. */
   q?: string;
   category?: string;
   brand?: string;
@@ -245,6 +246,12 @@ export interface ProductFacets {
   brands: FacetTerm[];
   price: { buckets: PriceBucket[] };
   inStock: { true: number; false: number };
+}
+
+/** GET /api/v1/products response. `meta` and `facets` are additive and optional. */
+export interface ProductListResponse extends PaginatedResponse<Product> {
+  meta?: ProductSearchMeta;
+  facets?: ProductFacets;
 }
 
 // ============================================================================

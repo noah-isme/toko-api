@@ -79,7 +79,7 @@ GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&incl
 
 **Query Parameters:**
 
-- `q` (string): Search query (websearch syntax: words are ANDed, `"phrase"`, `-exclude`). Matches title and description with the `simple` text-search config (case-insensitive, no English stemming, so Indonesian words match as typed). If nothing matches and `q` has at least 3 characters, the API retries with typo-tolerant trigram matching on the title (for example `spatu` finds `Sepatu Lari`); see `meta.searchMode`.
+- `q` (string): Search query (websearch syntax: words are ANDed, `"phrase"`, `-exclude`). Matches title and description with the `simple` text-search config (case-insensitive, no English stemming, so Indonesian words match as typed). Leading/trailing whitespace is trimmed; at most **200 characters** (Unicode code points) after trimming, longer values return `400 BAD_REQUEST` with `error.details.field = "q"`. If nothing matches and `q` has **3 to 64 characters**, the API retries with typo-tolerant trigram matching on the title (for example `spatu` finds `Sepatu Lari`); see `meta.searchMode`. Queries of 65-200 characters get full-text matching only (no fuzzy fallback, no suggestions). The fuzzy pass and suggestions run under a short server-side time limit (500 ms per statement); if it is exceeded the API returns the empty full-text result (`searchMode: "fts"`, no `suggestions`) instead of an error.
 - `category` (string): Category slug filter
 - `brand` (string): Brand slug filter
 - `minPrice` (integer): Minimum price filter
@@ -157,7 +157,7 @@ GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&incl
 ```
 
 - `meta.searchMode`: `"fts"` when full-text search matched, or when nothing matched at all. `"fuzzy"` when full-text search found nothing and `data` holds typo-tolerant title matches; show a hint such as "showing results for similar products".
-- `meta.suggestions`: up to 5 `{title, slug}` closest titles. Present only when `pagination.totalItems` is 0, `q` has at least 3 characters, and at least one title is similar enough. Omitted otherwise (never an empty array).
+- `meta.suggestions`: up to 5 `{title, slug}` closest titles. Present only when `pagination.totalItems` is 0, `q` has 3 to 64 characters, and at least one title is similar enough. Omitted otherwise (never an empty array).
 - `facets.categories` / `facets.brands`: top 50 terms by count desc, then name; empty arrays when nothing matches (never `null`).
 - `facets.price.buckets`: always all 9 buckets in ascending order with zero counts included. A bucket covers `min <= price < max`, and the last bucket has `max: null`. Edges (IDR): 50 000, 100 000, 250 000, 500 000, 1 000 000, 2 500 000, 5 000 000, 10 000 000.
 - `facets.inStock`: counts keyed `"true"` / `"false"`.
@@ -168,7 +168,7 @@ GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&incl
 
 - `X-Total-Count`: Total number of items (same as `pagination.totalItems`)
 
-**Errors:** `400 BAD_REQUEST` for an invalid `page`, `limit`, `minPrice`, `maxPrice`, price range, `inStock` or `include`; `error.details.field` names the parameter.
+**Errors:** `400 BAD_REQUEST` for a `q` longer than 200 characters, or an invalid `page`, `limit`, `minPrice`, `maxPrice`, price range, `inStock` or `include`; `error.details.field` names the parameter.
 
 Returns filtered product list with pagination metadata.
 
