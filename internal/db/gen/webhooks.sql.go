@@ -238,16 +238,24 @@ func (q *Queries) InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqPara
 	return i, err
 }
 
-const listActiveEndpointsForTopic = `-- name: ListActiveEndpointsForTopic :many
+const listActiveEndpointsForTopicAndTenant = `-- name: ListActiveEndpointsForTopicAndTenant :many
 SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
-WHERE active = true
-  AND (coalesce(array_length(topics, 1), 0) = 0 OR $1::text = ANY(topics))
+WHERE tenant_id = $1
+  AND active = true
+  AND (coalesce(array_length(topics, 1), 0) = 0 OR $2::text = ANY(topics))
 ORDER BY created_at ASC
 `
 
-func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error) {
-	rows, err := q.db.Query(ctx, listActiveEndpointsForTopic, topic)
+type ListActiveEndpointsForTopicAndTenantParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Topic    string      `json:"topic"`
+}
+
+// Endpoints are tenant-owned: an event is only delivered to the endpoints of
+// the tenant that produced it.
+func (q *Queries) ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg ListActiveEndpointsForTopicAndTenantParams) ([]WebhookEndpoint, error) {
+	rows, err := q.db.Query(ctx, listActiveEndpointsForTopicAndTenant, arg.TenantID, arg.Topic)
 	if err != nil {
 		return nil, err
 	}

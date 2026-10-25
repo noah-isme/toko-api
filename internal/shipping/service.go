@@ -12,6 +12,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 var (
@@ -224,6 +225,12 @@ func (s *Service) emit(ctx context.Context, orderID, shipmentID pgtype.UUID, sta
 		}
 	}
 	if order, err := s.Q.GetOrderByID(ctx, orderID); err == nil {
+		// Outbound webhooks are routed by the tenant in ctx. Carrier callbacks
+		// and the tracking job do not run under the order's tenant, so set it
+		// from the order itself.
+		if order.TenantID.Valid {
+			ctx = tenant.WithTenant(ctx, uuidString(order.TenantID))
+		}
 		if user, err := s.Q.GetUserByID(ctx, order.UserID); err == nil && user.Email != "" {
 			data["email"] = user.Email
 		}

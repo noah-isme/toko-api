@@ -18,6 +18,7 @@ import (
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/resilience"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 func toUUID(u uuid.UUID) pgtype.UUID {
@@ -106,7 +107,7 @@ func (r *retryStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookEndp
 
 func (r *retryStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
 
-func (r *retryStore) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
+func (r *retryStore) ListActiveEndpointsForTopicAndTenant(context.Context, dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error) {
 	return nil, nil
 }
 
@@ -204,8 +205,11 @@ func TestRetryAndDLQ(t *testing.T) {
 }
 
 type scheduleStore struct {
-	endpoints []dbgen.WebhookEndpoint
-	enqueued  int
+	endpoints     []dbgen.WebhookEndpoint
+	enqueued      int
+	enqueuedFor   []pgtype.UUID
+	askedTenants  []pgtype.UUID
+	duplicateOnce bool
 }
 
 func (s *scheduleStore) CreateWebhookEndpoint(context.Context, dbgen.CreateWebhookEndpointParams) (dbgen.WebhookEndpoint, error) {
@@ -226,13 +230,21 @@ func (s *scheduleStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookE
 
 func (s *scheduleStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
 
-func (s *scheduleStore) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
-	return s.endpoints, nil
+func (s *scheduleStore) ListActiveEndpointsForTopicAndTenant(_ context.Context, arg dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error) {
+	s.askedTenants = append(s.askedTenants, arg.TenantID)
+	out := make([]dbgen.WebhookEndpoint, 0, len(s.endpoints))
+	for _, ep := range s.endpoints {
+		if ep.TenantID == arg.TenantID {
+			out = append(out, ep)
+		}
+	}
+	return out, nil
 }
 
 func (s *scheduleStore) EnqueueDelivery(_ context.Context, arg dbgen.EnqueueDeliveryParams) (dbgen.WebhookDelivery, error) {
 	s.enqueued++
-	if s.enqueued == 1 {
+	s.enqueuedFor = append(s.enqueuedFor, arg.EndpointID)
+	if s.duplicateOnce && s.enqueued == 1 {
 		return dbgen.WebhookDelivery{}, &pgconn.PgError{Code: "23505"}
 	}
 	return dbgen.WebhookDelivery{ID: toUUID(uuid.New()), MaxAttempt: arg.MaxAttempt}, nil
@@ -267,8 +279,52 @@ func (s *scheduleStore) GetDomainEvent(context.Context, pgtype.UUID) (dbgen.Doma
 	return dbgen.DomainEvent{}, nil
 }
 
+func newScheduleDispatcher(store *scheduleStore) *notify.Dispatcher {
+	return &notify.Dispatcher{
+		Store: store,
+		HTTP: &resilience.HTTPClient{
+			Client:      http.DefaultClient,
+			Breaker:     resilience.NewBreaker(1, 1, time.Second),
+			MaxAttempts: 1,
+			Timeout:     time.Second,
+			Target:      "webhook-delivery",
+		},
+		Enabled: true,
+	}
+}
+
+func TestScheduleFiltersEndpointsByTenant(t *testing.T) {
+	tenantA := toUUID(uuid.New())
+	tenantB := toUUID(uuid.New())
+	epA := dbgen.WebhookEndpoint{ID: toUUID(uuid.New()), TenantID: tenantA}
+	epB := dbgen.WebhookEndpoint{ID: toUUID(uuid.New()), TenantID: tenantB}
+	store := &scheduleStore{endpoints: []dbgen.WebhookEndpoint{epA, epB}}
+	dispatcher := newScheduleDispatcher(store)
+	event := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "payment.expired"}
+
+	ctx := tenant.WithTenant(context.Background(), uuidString(tenantA))
+	require.NoError(t, dispatcher.Schedule(ctx, event))
+	require.Equal(t, []pgtype.UUID{tenantA}, store.askedTenants)
+	require.Equal(t, []pgtype.UUID{epA.ID}, store.enqueuedFor)
+}
+
+func TestScheduleSkipsWithoutTenant(t *testing.T) {
+	store := &scheduleStore{endpoints: []dbgen.WebhookEndpoint{{ID: toUUID(uuid.New()), TenantID: toUUID(uuid.New())}}}
+	dispatcher := newScheduleDispatcher(store)
+	event := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.created"}
+
+	require.NoError(t, dispatcher.Schedule(context.Background(), event))
+	require.Empty(t, store.askedTenants)
+	require.Zero(t, store.enqueued)
+
+	// A tenant value that is not a UUID is treated like a missing tenant.
+	require.NoError(t, dispatcher.Schedule(tenant.WithTenant(context.Background(), "not-a-uuid"), event))
+	require.Zero(t, store.enqueued)
+}
+
 func TestIdempotencyUniqueDelivery(t *testing.T) {
-	store := &scheduleStore{endpoints: []dbgen.WebhookEndpoint{{ID: toUUID(uuid.New())}, {ID: toUUID(uuid.New())}}}
+	tenantID := toUUID(uuid.New())
+	store := &scheduleStore{duplicateOnce: true, endpoints: []dbgen.WebhookEndpoint{{ID: toUUID(uuid.New()), TenantID: tenantID}, {ID: toUUID(uuid.New()), TenantID: tenantID}}}
 	dispatcher := &notify.Dispatcher{
 		Store: store,
 		HTTP: &resilience.HTTPClient{
@@ -282,7 +338,7 @@ func TestIdempotencyUniqueDelivery(t *testing.T) {
 	}
 	event := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.created"}
 
-	err := dispatcher.Schedule(context.Background(), event)
+	err := dispatcher.Schedule(tenant.WithTenant(context.Background(), uuidString(tenantID)), event)
 	require.NoError(t, err)
 	require.Equal(t, 2, store.enqueued)
 }

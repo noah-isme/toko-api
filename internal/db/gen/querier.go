@@ -168,7 +168,9 @@ type Querier interface {
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
 	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
-	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
+	// Endpoints are tenant-owned: an event is only delivered to the endpoints of
+	// the tenant that produced it.
+	ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg ListActiveEndpointsForTopicAndTenantParams) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Filtered variants back the admin audit-log screen. Each filter is skipped when

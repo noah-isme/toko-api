@@ -757,10 +757,6 @@ func (f *fakeQueries) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlqPa
 	return dbgen.WebhookDlq{}, errNotImplemented
 }
 
-func (f *fakeQueries) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
-	return nil, errNotImplemented
-}
-
 func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.ListDomainEventsByTopicRow, error) {
 	return nil, errNotImplemented
 }
