@@ -44,9 +44,29 @@ type Querier interface {
 	AdminListOrders(ctx context.Context, arg AdminListOrdersParams) ([]AdminListOrdersRow, error)
 	AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error)
 	AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error)
+	// Revenue rule (docs/contracts/analytics.md): total_revenue is net of
+	// non-FAILED refunds over revenue orders; average_order_value =
+	// total_revenue / revenue_orders. Status counters count every order.
 	AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams) (AdminOrderStatsRow, error)
 	AdminReplaceProductImages(ctx context.Context, arg AdminReplaceProductImagesParams) error
+	// Aggregate without GROUP BY: always exactly one row, zeros for an empty range.
+	AdminReportConversion(ctx context.Context, arg AdminReportConversionParams) (AdminReportConversionRow, error)
+	AdminReportCustomersDaily(ctx context.Context, arg AdminReportCustomersDailyParams) ([]AdminReportCustomersDailyRow, error)
+	// The guest figures are scalar subqueries so the statement still returns one
+	// row (all zeros) when the range has no customer orders.
+	AdminReportCustomersSummary(ctx context.Context, arg AdminReportCustomersSummaryParams) (AdminReportCustomersSummaryRow, error)
+	// Admin reports (docs/contracts/analytics.md sections 9.4-9.7).
+	// Every statement is tenant-scoped on each orders/carts/products/categories/
+	// refunds reference and uses the half-open range [start_at, end_at).
+	// Revenue rule: see analytics.sql. Item-level figures (category/product) sum
+	// gross order_items.subtotal of revenue orders, so partially refunded orders
+	// keep their full item value and fully refunded orders are excluded.
+	// Order-level figures (conversion, customers) use net pricing_total.
+	AdminReportSalesByCategory(ctx context.Context, arg AdminReportSalesByCategoryParams) ([]AdminReportSalesByCategoryRow, error)
+	AdminReportSalesByProduct(ctx context.Context, arg AdminReportSalesByProductParams) ([]AdminReportSalesByProductRow, error)
+	AdminReportSalesByProductCount(ctx context.Context, arg AdminReportSalesByProductCountParams) (int64, error)
 	AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error
+	// Item-level gross subtotal of revenue orders (fully refunded orders excluded).
 	AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error)
 	AdminUpdateBrand(ctx context.Context, arg AdminUpdateBrandParams) (AdminUpdateBrandRow, error)
 	AdminUpdateCategory(ctx context.Context, arg AdminUpdateCategoryParams) (AdminUpdateCategoryRow, error)
@@ -144,10 +164,19 @@ type Querier interface {
 	GetQuestion(ctx context.Context, id pgtype.UUID) (ProductQuestion, error)
 	GetQuestionVoteCount(ctx context.Context, id pgtype.UUID) (int32, error)
 	GetReviewStats(ctx context.Context, arg GetReviewStatsParams) (GetReviewStatsRow, error)
+	// Revenue rule (docs/contracts/analytics.md "Revenue rule"), shared by every
+	// analytics/admin revenue query:
+	//   refunded = non-FAILED refunds (PENDING and SUCCEEDED) summed per order;
+	//   revenue order iff status IN (PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY,
+	//   DELIVERED) AND it is not fully refunded (no refund, or refunded < total);
+	//   order-level revenue = pricing_total - refunded (net).
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
-	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
+	GetTenantTimezone(ctx context.Context, id pgtype.UUID) (string, error)
+	// Item-level: gross order_items.subtotal of revenue orders (partially refunded
+	// orders keep their full item value; fully refunded orders are excluded).
+	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]GetTopProductsRow, error)
 	GetTopViewedProductsByUser(ctx context.Context, arg GetTopViewedProductsByUserParams) ([]GetTopViewedProductsByUserRow, error)
 	GetTrendingProducts(ctx context.Context, arg GetTrendingProductsParams) ([]GetTrendingProductsRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
@@ -209,8 +238,6 @@ type Querier interface {
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
 	MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (MarkUserEmailVerifiedRow, error)
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
-	RefreshSalesDaily(ctx context.Context) error
-	RefreshTopProducts(ctx context.Context) error
 	// Release quota reserved by an unpaid, expired, or cancelled order.
 	ReleaseFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	ReleaseVariantStock(ctx context.Context, arg ReleaseVariantStockParams) error

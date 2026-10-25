@@ -509,19 +509,6 @@ type LoyaltyTransaction struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
-type MvSalesDaily struct {
-	Day        pgtype.Interval `json:"day"`
-	PaidOrders int64           `json:"paid_orders"`
-	Revenue    int64           `json:"revenue"`
-	AllOrders  int64           `json:"all_orders"`
-}
-
-type MvTopProduct struct {
-	ProductID pgtype.UUID `json:"product_id"`
-	QtySold   int64       `json:"qty_sold"`
-	Gross     int64       `json:"gross"`
-}
-
 type NewsletterSubscriber struct {
 	ID        pgtype.UUID        `json:"id"`
 	TenantID  pgtype.UUID        `json:"tenant_id"`

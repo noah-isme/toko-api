@@ -28,6 +28,7 @@ type analyticsTopProductDTO struct {
 type analyticsOverviewDTO struct {
 	Range             string                   `json:"range"`
 	TotalRevenue      int64                    `json:"totalRevenue"`
+	RevenueOrders     int64                    `json:"revenueOrders"`
 	TotalOrders       int64                    `json:"totalOrders"`
 	TotalCustomers    int64                    `json:"totalCustomers"`
 	TotalProducts     int64                    `json:"totalProducts"`
@@ -40,14 +41,17 @@ type analyticsOverviewDTO struct {
 	TopProducts       []analyticsTopProductDTO `json:"topProducts"`
 }
 
-// rangeWindow maps a UI range token (7d, 30d, 90d, all) to a start timestamp.
-func rangeWindow(raw string) (string, pgtype.Timestamptz) {
+// rangeWindow maps a UI range token (7d, 30d, 90d, all) to a [start, end)
+// window. The windows are rolling (start = now - N days, UTC), so end is left
+// invalid (NULL = unbounded); the handler still passes it to every query so a
+// bounded window is honored if one is added.
+func rangeWindow(raw string) (string, pgtype.Timestamptz, pgtype.Timestamptz) {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if normalized == "" {
 		normalized = "30d"
 	}
 	if normalized == "all" {
-		return "all", pgtype.Timestamptz{}
+		return "all", pgtype.Timestamptz{}, pgtype.Timestamptz{}
 	}
 	days := 30
 	if strings.HasSuffix(normalized, "d") {
@@ -60,7 +64,7 @@ func rangeWindow(raw string) (string, pgtype.Timestamptz) {
 		normalized = "30d"
 	}
 	start := time.Now().UTC().AddDate(0, 0, -days)
-	return normalized, pgtype.Timestamptz{Time: start, Valid: true}
+	return normalized, pgtype.Timestamptz{Time: start, Valid: true}, pgtype.Timestamptz{}
 }
 
 // Overview handles GET /api/v1/admin/analytics/overview.
@@ -69,11 +73,11 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "admin queries not configured", nil)
 		return
 	}
-	label, startAt := rangeWindow(r.URL.Query().Get("range"))
+	label, startAt, endAt := rangeWindow(r.URL.Query().Get("range"))
 
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
-	stats, err := h.Q.AdminOrderStats(ctx, dbgen.AdminOrderStatsParams{TenantID: tenantID, StartAt: startAt})
+	stats, err := h.Q.AdminOrderStats(ctx, dbgen.AdminOrderStatsParams{TenantID: tenantID, StartAt: startAt, EndAt: endAt})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load order stats", nil)
 		return
@@ -91,6 +95,7 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	topRows, err := h.Q.AdminTopProductsByRevenue(ctx, dbgen.AdminTopProductsByRevenueParams{
 		TenantID:   tenantID,
 		StartAt:    startAt,
+		EndAt:      endAt,
 		LimitValue: 5,
 	})
 	if err != nil {
@@ -110,6 +115,7 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": analyticsOverviewDTO{
 		Range:             label,
 		TotalRevenue:      stats.TotalRevenue,
+		RevenueOrders:     stats.RevenueOrders,
 		TotalOrders:       stats.TotalOrders,
 		TotalCustomers:    customers,
 		TotalProducts:     products,

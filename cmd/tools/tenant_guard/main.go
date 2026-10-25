@@ -44,9 +44,6 @@ var exemptTables = map[string]bool{
 	"cart_items": true,
 	// Implicitly tenant-scoped via user_id (users -> tenant mapping exists)
 	"addresses": true,
-	// Materialized views (no direct table access)
-	"mv_sales_daily":  true,
-	"mv_top_products": true,
 	// Webhook tables (scoped by endpoint which has tenant_id)
 	"webhook_endpoints":  true,
 	"webhook_deliveries": true,
@@ -79,7 +76,9 @@ var requiresTenantIDTables = map[string]bool{
 }
 
 var (
-	reSelect   = regexp.MustCompile(`(?i)^\s*select\b`)
+	// reSelect also matches statements that open with a CTE (WITH ... SELECT),
+	// otherwise every CTE-based admin read would skip the check entirely.
+	reSelect   = regexp.MustCompile(`(?i)^\s*(?:with|select)\b`)
 	reUpdate   = regexp.MustCompile(`(?i)^\s*update\b`)
 	reDelete   = regexp.MustCompile(`(?i)^\s*delete\b`)
 	reTenant   = regexp.MustCompile(`(?i)\b(?:\w+\.)?tenant_id\s*=\s*(?:\$[0-9]+|sqlc\.(?:n?arg)\([^)]*\)|(?:\w+\.)?tenant_id|\w+)`)
@@ -180,6 +179,11 @@ func requiresTenantID(query string) bool {
 	return false
 }
 
+// hasTenantID accepts a statement on the first `tenant_id = ...` match. It does
+// not verify that every table reference (each CTE, subquery or join) carries
+// its own filter; that needs a real SQL parser. The Postgres integration tests
+// (for example internal/admin/reports_integration_test.go) are the proof of
+// isolation, this guard is a lint.
 func hasTenantID(query string) bool {
 	return reTenant.MatchString(query)
 }
