@@ -76,6 +76,9 @@ var requiresTenantIDTables = map[string]bool{
 	"orders":     true,
 	"products":   true,
 	"vouchers":   true,
+	// Staff RBAC: tenant roles are authorization data and must never be read
+	// or written across tenants.
+	"tenant_memberships": true,
 }
 
 var (

@@ -11,6 +11,8 @@ import (
 )
 
 type Querier interface {
+	// Used by staff assignment: grants the role and reactivates a SUSPENDED membership.
+	ActivateTenantMembershipRole(ctx context.Context, arg ActivateTenantMembershipRoleParams) (TenantMembership, error)
 	AddFavorite(ctx context.Context, arg AddFavoriteParams) error
 	AdminCountCustomers(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	// Admin order and voucher management queries. These power the admin dashboard
@@ -33,6 +35,8 @@ type Querier interface {
 	AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error)
 	AdminDeleteVoucher(ctx context.Context, arg AdminDeleteVoucherParams) (int64, error)
 	AdminGetOrder(ctx context.Context, arg AdminGetOrderParams) (AdminGetOrderRow, error)
+	// Tenant-scoped order status transitions for the admin API.
+	AdminGetOrderStatus(ctx context.Context, arg AdminGetOrderStatusParams) (OrderStatus, error)
 	AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimaryVariantParams) (ProductVariant, error)
 	AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error)
 	AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error)
@@ -50,8 +54,10 @@ type Querier interface {
 	AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error)
 	AdminUpdateBrand(ctx context.Context, arg AdminUpdateBrandParams) (AdminUpdateBrandRow, error)
 	AdminUpdateCategory(ctx context.Context, arg AdminUpdateCategoryParams) (AdminUpdateCategoryRow, error)
+	AdminUpdateOrderStatusIfAllowed(ctx context.Context, arg AdminUpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
 	AdminUpdateProduct(ctx context.Context, arg AdminUpdateProductParams) (pgtype.UUID, error)
 	AdminUpdateProductVariant(ctx context.Context, arg AdminUpdateProductVariantParams) (ProductVariant, error)
+	AdminVoucherExistsForTenant(ctx context.Context, arg AdminVoucherExistsForTenantParams) (bool, error)
 	AdminVoucherStats(ctx context.Context, tenantID pgtype.UUID) (AdminVoucherStatsRow, error)
 	AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) (ProductQuestion, error)
 	CheckFavorite(ctx context.Context, arg CheckFavoriteParams) (int32, error)
@@ -66,6 +72,8 @@ type Querier interface {
 	CountOrdersForDay(ctx context.Context, arg CountOrdersForDayParams) (int64, error)
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
+	CountTenantOwners(ctx context.Context, tenantID pgtype.UUID) (int64, error)
+	CountTenantStaff(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, arg CountUnreadNotificationsParams) (int64, error)
 	CountVoucherUsageByUser(ctx context.Context, arg CountVoucherUsageByUserParams) (int64, error)
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
@@ -87,6 +95,7 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateShipment(ctx context.Context, arg CreateShipmentParams) (CreateShipmentRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	// Tenant-scoped voucher writes for the admin API (moved from voucher_rules.sql).
 	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
@@ -147,6 +156,14 @@ type Querier interface {
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
+	// Resolves an email to a user only when that user already has a membership in
+	// the tenant, so staff assignment cannot probe or enrol accounts platform-wide.
+	GetTenantMemberUserIDByEmail(ctx context.Context, arg GetTenantMemberUserIDByEmailParams) (pgtype.UUID, error)
+	GetTenantMembershipForUpdate(ctx context.Context, arg GetTenantMembershipForUpdateParams) (TenantMembership, error)
+	// Staff RBAC queries. Every statement is scoped by tenant_id; this file is
+	// scanned by cmd/tools/tenant_guard (admin_ prefix).
+	GetTenantMembershipRole(ctx context.Context, arg GetTenantMembershipRoleParams) (string, error)
+	GetTenantStaffMember(ctx context.Context, arg GetTenantStaffMemberParams) (GetTenantStaffMemberRow, error)
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
 	GetTopViewedProductsByUser(ctx context.Context, arg GetTopViewedProductsByUserParams) ([]GetTopViewedProductsByUserRow, error)
 	GetTrendingProducts(ctx context.Context, arg GetTrendingProductsParams) ([]GetTrendingProductsRow, error)
@@ -198,9 +215,12 @@ type Querier interface {
 	ListSessions(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID) ([]ShipmentEvent, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductSpec, error)
+	ListTenantStaff(ctx context.Context, arg ListTenantStaffParams) ([]ListTenantStaffRow, error)
 	ListVariantsByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductVariant, error)
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
+	// Transaction-scoped advisory lock serializing staff mutations per tenant.
+	LockTenantStaff(ctx context.Context, tenantID pgtype.UUID) error
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error
 	MarkDelivering(ctx context.Context, id pgtype.UUID) error
@@ -239,6 +259,7 @@ type Querier interface {
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
 	UpdateQuestionVoteCount(ctx context.Context, questionID pgtype.UUID) (int32, error)
 	UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentStatusParams) (pgtype.UUID, error)
+	UpdateTenantMembershipRole(ctx context.Context, arg UpdateTenantMembershipRoleParams) (TenantMembership, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (UpdateUserPasswordRow, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)

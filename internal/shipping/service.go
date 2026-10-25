@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,7 @@ var (
 
 type queryProvider interface {
 	GetOrderByID(ctx context.Context, id pgtype.UUID) (dbgen.Order, error)
+	GetOrderByTenant(ctx context.Context, arg dbgen.GetOrderByTenantParams) (dbgen.GetOrderByTenantRow, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.GetShipmentByOrderRow, error)
 	CreateShipment(ctx context.Context, arg dbgen.CreateShipmentParams) (dbgen.CreateShipmentRow, error)
 	UpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
@@ -45,15 +47,21 @@ type Service struct {
 	Events                 *events.Bus
 }
 
-// Create initialises a shipment for the provided order and records courier metadata.
-func (s *Service) Create(ctx context.Context, orderID pgtype.UUID, courier, tracking string) (dbgen.Shipment, error) {
+// Create initialises a shipment for the provided order and records courier
+// metadata. The order must belong to tenantID; an order of another tenant is
+// reported as pgx.ErrNoRows, exactly like a missing one.
+func (s *Service) Create(ctx context.Context, tenantID, orderID pgtype.UUID, courier, tracking string) (dbgen.Shipment, error) {
 	if s.Q == nil {
 		return dbgen.Shipment{}, errors.New("shipment queries not configured")
 	}
-	// Ensure the order exists and is in a state that can transition to PACKED.
-	order, err := s.Q.GetOrderByID(ctx, orderID)
+	if !tenantID.Valid {
+		return dbgen.Shipment{}, errors.New("tenant is required")
+	}
+	// Ensure the order exists in this tenant and is in a state that can
+	// transition to PACKED.
+	order, err := s.Q.GetOrderByTenant(ctx, dbgen.GetOrderByTenantParams{TenantID: tenantID, ID: orderID})
 	if err != nil {
-		return dbgen.Shipment{}, err
+		return dbgen.Shipment{}, fmt.Errorf("load order: %w", err)
 	}
 	if order.Status != dbgen.OrderStatusPAID && order.Status != dbgen.OrderStatusPACKED {
 		return dbgen.Shipment{}, ErrOrderNotEligible

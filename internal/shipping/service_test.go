@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -30,7 +32,7 @@ func TestStatusTransitions(t *testing.T) {
 		NotifyOnDelivered:      true,
 	}
 
-	shipment, err := svc.Create(ctx, toPGUUID(orderID), "jne", "TRACK123")
+	shipment, err := svc.Create(ctx, testTenantID, toPGUUID(orderID), "jne", "TRACK123")
 	require.NoError(t, err)
 	require.Equal(t, dbgen.ShipmentStatusPENDING, shipment.Status)
 	require.Equal(t, dbgen.OrderStatusPACKED, queries.orders[orderID.String()].Status)
@@ -62,6 +64,35 @@ func TestCreateRejectsInvalidStatus(t *testing.T) {
 	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), Status: dbgen.OrderStatusPENDINGPAYMENT}, "")
 
 	svc := &shipping.Service{Q: queries}
-	_, err := svc.Create(ctx, toPGUUID(orderID), "jne", "TRACK123")
+	_, err := svc.Create(ctx, testTenantID, toPGUUID(orderID), "jne", "TRACK123")
 	require.ErrorIs(t, err, shipping.ErrOrderNotEligible)
+}
+
+func TestCreateRejectsOrderOfOtherTenant(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), Status: dbgen.OrderStatusPAID}, "")
+
+	svc := &shipping.Service{Q: queries}
+	otherTenant := toPGUUID(uuid.New())
+	_, err := svc.Create(ctx, otherTenant, toPGUUID(orderID), "jne", "TRACK123")
+	require.ErrorIs(t, err, pgx.ErrNoRows)
+	require.Empty(t, queries.shipments, "no shipment may be created for another tenant's order")
+	require.Equal(t, dbgen.OrderStatusPAID, queries.orders[orderID.String()].Status)
+}
+
+func TestCreateRequiresTenant(t *testing.T) {
+	t.Parallel()
+
+	orderID := uuid.New()
+	queries := newMockQueries()
+	queries.addOrder(dbgen.Order{ID: toPGUUID(orderID), Status: dbgen.OrderStatusPAID}, "")
+
+	svc := &shipping.Service{Q: queries}
+	_, err := svc.Create(context.Background(), pgtype.UUID{}, toPGUUID(orderID), "jne", "TRACK123")
+	require.Error(t, err)
+	require.Empty(t, queries.shipments)
 }

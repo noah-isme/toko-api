@@ -88,7 +88,9 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 }
 
 // Settle records voucher usage at order payment time ensuring idempotency.
-func (s *Service) Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
+// tenantID is the order's tenant: a voucher owned by another tenant is treated
+// like an unknown code and never settled against the order.
+func (s *Service) Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
 	if s == nil || s.Q == nil {
 		return errors.New("voucher service not configured")
 	}
@@ -101,6 +103,9 @@ func (s *Service) Settle(ctx context.Context, code string, orderID pgtype.UUID, 
 			return nil
 		}
 		return err
+	}
+	if !tenantID.Valid || voucher.TenantID != tenantID {
+		return nil
 	}
 	if amount < 0 {
 		amount = 0

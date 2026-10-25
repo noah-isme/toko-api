@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
@@ -541,6 +543,10 @@ func (s *Service) itemEligible(ctx context.Context, productID pgtype.UUID, vouch
 	return false, nil
 }
 
+// errVoucherNotFound is returned for unknown codes and for codes owned by
+// another tenant alike, so the two cases are indistinguishable to callers.
+var errVoucherNotFound = common.NewAppError("NOT_FOUND", "voucher not found", http.StatusNotFound, nil)
+
 func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code string) (int64, dbgen.Voucher, error) {
 	if code == "" {
 		return 0, dbgen.Voucher{}, fmt.Errorf("voucher code required: %w", ErrInvalidInput)
@@ -551,7 +557,17 @@ func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code str
 	}
 	voucher, err := s.Q.GetVoucherByCode(ctx, code)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, dbgen.Voucher{}, errVoucherNotFound
+		}
 		return 0, dbgen.Voucher{}, err
+	}
+	// Voucher codes are globally unique but each voucher belongs to one tenant.
+	// Since tenant owners can create vouchers, a code minted in another tenant
+	// must read exactly like an unknown code, or it would discount this
+	// tenant's goods.
+	if !uuidEqual(voucher.TenantID, s.resolveTenant(ctx)) {
+		return 0, dbgen.Voucher{}, errVoucherNotFound
 	}
 	now := s.now()
 	if voucher.ValidFrom.Valid && voucher.ValidFrom.Time.After(now) {

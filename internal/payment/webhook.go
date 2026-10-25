@@ -43,7 +43,7 @@ type Webhook struct {
 
 // VoucherSettler records voucher usage as part of order settlement.
 type VoucherSettler interface {
-	Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error
+	Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error
 }
 
 // Handle processes webhook callbacks for the configured payment provider(s).
@@ -219,7 +219,7 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 					if amount < 0 {
 						amount = 0
 					}
-					if err := h.Voucher.Settle(ctx, code, order.ID, order.UserID, amount); err != nil {
+					if err := h.Voucher.Settle(ctx, order.TenantID, code, order.ID, order.UserID, amount); err != nil {
 						span.RecordError(err)
 						common.JSONError(w, http.StatusInternalServerError, "VOUCHER_SETTLEMENT_FAILED", err.Error(), nil)
 						return
