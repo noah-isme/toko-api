@@ -18,6 +18,14 @@ import (
 
 type Handler struct {
 	Q *dbgen.Queries
+	// Alerts, when set, is kicked after a cancellation releases stock so the
+	// alerts runner drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
+}
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +302,9 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 			}); transitionErr == nil {
 				_ = h.Q.ReleaseVariantStock(r.Context(), dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty})
 			}
+		}
+		if h.Alerts != nil {
+			h.Alerts.Kick()
 		}
 	}
 	if err := h.Q.ReleaseFlashSaleReservations(r.Context(), ord.ID); err != nil {

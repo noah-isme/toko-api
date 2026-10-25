@@ -26,6 +26,14 @@ import (
 type Handler struct {
 	Pool      *pgxpool.Pool
 	Providers map[string]payment.Provider
+	// Alerts, when set, is kicked after inventory writes so the alerts runner
+	// drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
+}
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
 }
 
 type returnInput struct {
@@ -693,6 +701,9 @@ func (h *Handler) InventoryUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = h.Pool.Exec(r.Context(), `UPDATE products SET in_stock=EXISTS(SELECT 1 FROM product_variants WHERE product_id=products.id AND stock>0),updated_at=now() WHERE id=(SELECT product_id FROM product_variants WHERE id=$1)`, id)
+	if h.Alerts != nil {
+		h.Alerts.Kick()
+	}
 	common.JSON(w, 200, map[string]any{"data": map[string]any{"variantId": cart.UUIDString(id), "stock": stock}})
 }
 
