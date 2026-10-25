@@ -204,3 +204,60 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+---
+
+## 4.6 Download Invoice (PDF)
+
+```http
+GET /api/v1/orders/{orderId}/invoice
+Authorization: Bearer <token>
+```
+
+Returns the invoice for one of the caller's own orders in the active tenant, as
+a PDF. Replaces the client-side `.txt` invoice.
+
+**Response:** `200 OK`
+
+| Header                | Value |
+|-----------------------|-------|
+| `Content-Type`        | `application/pdf` |
+| `Content-Disposition` | `attachment; filename="INV-2026-000001.pdf"` |
+| `Cache-Control`       | `private, no-store` |
+| `Content-Length`      | PDF size in bytes |
+
+Body: the PDF bytes. Fetch it as a blob, for example
+`fetch(url, { headers }).then(r => r.blob())`, and take the download name from
+`Content-Disposition`.
+
+**Eligibility:** a new invoice is issued only for orders with status `paid`,
+`packed`, `shipped`, `out_for_delivery` or `delivered`. Orders in
+`pending_payment` or `cancelled` get `409 INVOICE_NOT_AVAILABLE`. Once issued,
+an invoice stays downloadable even if the order is later cancelled or refunded.
+The payment status line then shows the current state.
+
+**Invoice number:** `INV-YYYY-NNNNNN`. `YYYY` is the issue year in the tenant's
+timezone. `NNNNNN` is a per-tenant counter, zero-padded and never reset. The
+number is assigned on the first download (by the customer or an admin) and
+never changes after that. Repeated downloads return the same number.
+
+**PDF content:** store name, email, phone and description (from admin settings,
+falling back to the tenant name and contact email), invoice number and issue
+date, order number and order date, payment status and channel, order status,
+customer name and email, shipping address, line items (title, SKU, qty, unit
+price, subtotal), and subtotal, discount (with voucher code), tax, shipping and
+total. Amounts are whole rupiah formatted as `Rp 1.250.000`, the same values as
+the order detail response. Labels are in Indonesian. Characters outside Latin-1
+render as `?`.
+
+**Errors** (JSON envelope):
+
+| Status | `error.code`            | When |
+|--------|-------------------------|------|
+| 400    | `BAD_REQUEST`           | `orderId` is not a UUID. |
+| 401    | `UNAUTHORIZED`          | Missing/invalid token. |
+| 404    | `NOT_FOUND`             | Order does not exist, belongs to another user, or belongs to another tenant. |
+| 409    | `INVOICE_NOT_AVAILABLE` | Order not paid yet (or cancelled) and no invoice was issued before. |
+| 500    | `INTERNAL`              | Rendering or database failure. |
+
+Admin equivalent: `GET /api/v1/admin/orders/{id}/invoice` ([Admin 6.20](admin.md#620-download-order-invoice-pdf)).

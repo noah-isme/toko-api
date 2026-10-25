@@ -23,6 +23,7 @@
 - [Loyalty](loyalty.md)
 - [Web Push](push.md)
 - [Favorites](favorites.md)
+- [Product Alerts](alerts.md)
 - [Analytics](analytics.md)
 - [Admin](admin.md)
 - [Webhooks](webhooks.md)

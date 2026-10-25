@@ -48,6 +48,8 @@ Base path: `/api/v1/notifications`
 | `shipment_shipped`         | A shipment is handed to the courier.  |
 | `shipment_out_for_delivery`| A shipment is out for delivery.       |
 | `shipment_delivered`       | A shipment is delivered.              |
+| `back_in_stock`            | A product/variant the user subscribed to is sellable again (see [Product Alerts](alerts.md)). |
+| `price_drop`               | A subscribed product/variant price fell below the price at subscribe time (see [Product Alerts](alerts.md)). |
 
 ---
 

@@ -525,7 +525,7 @@ Registers a new webhook endpoint.
 
 - `name`, `url`, `secret` — required
 - `active` — optional, defaults to `true`
-- `topics` — optional array of topic strings; empty means all topics
+- `topics` — optional array of topic strings; empty means all topics (except `alert.back_in_stock` / `alert.price_drop`, which are never delivered to webhooks; see [Product Alerts](alerts.md))
 
 **Response:** `201 Created`
 
@@ -851,3 +851,22 @@ Note: the backend currently returns a raw array, not the standard `{ "data": ...
 ```
 
 Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `AUDIT_NOT_CONFIGURED`, `AUDIT_QUERY_FAILED`, `INTERNAL`.
+---
+
+## 6.20 Download Order Invoice (PDF)
+
+```http
+GET /api/v1/admin/orders/{id}/invoice
+Authorization: Bearer <admin_token>
+```
+
+Admin version of [Orders 4.6](orders.md#46-download-invoice-pdf) for any order
+in the active tenant. Requires the `admin` role and an active tenant
+membership. Every call is written to the audit log (`resource_type: admin`),
+like other admin routes.
+
+- Same response headers and PDF as the customer endpoint. The invoice number is
+  shared: whichever side downloads first assigns it.
+- Errors: `400 BAD_REQUEST` (invalid id), `401 UNAUTHORIZED`, `403 FORBIDDEN`
+  (not an admin or not a member), `404 NOT_FOUND` (not in this tenant),
+  `409 INVOICE_NOT_AVAILABLE` (not paid yet and no invoice issued), `500 INTERNAL`.
