@@ -14,18 +14,32 @@ import (
 	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/events"
 )
 
-// CatalogHandler serves admin product, category, and brand management.
+// CatalogHandler serves admin product, category, and brand management, plus
+// the catalog operations (bulk updates, CSV export/import).
 type CatalogHandler struct {
 	Q     dbgen.Querier
 	Cache *catalog.Cache
+	// Pool runs the transactional catalog operations (bulk, import). Optional:
+	// without it those endpoints answer 500 after validating the request.
+	Pool TxBeginner
+	// Events publishes product.* domain events. Optional.
+	Events *events.Bus
+	// AuditEnabled turns on the explicit per-operation audit rows written by
+	// bulk and import (never sampled).
+	AuditEnabled bool
+	// ExportBatchSize is the number of products fetched per export page
+	// (default 500). Tests lower it to exercise page boundaries.
+	ExportBatchSize int
 }
 
 type productDTO struct {
 	ID           string   `json:"id"`
 	Title        string   `json:"title"`
 	Slug         string   `json:"slug"`
+	Status       string   `json:"status"`
 	Price        int64    `json:"price"`
 	CompareAt    *int64   `json:"compareAt,omitempty"`
 	InStock      bool     `json:"inStock"`
@@ -39,8 +53,11 @@ type productDTO struct {
 	BrandName    *string  `json:"brandName,omitempty"`
 	VariantCount int32    `json:"variantCount"`
 	SKU          *string  `json:"sku,omitempty"`
-	CreatedAt    string   `json:"createdAt"`
-	UpdatedAt    string   `json:"updatedAt"`
+	StockStatus  string   `json:"stockStatus"`
+	// LowStockThreshold is the product override; null means the tenant default.
+	LowStockThreshold *int32 `json:"lowStockThreshold"`
+	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
 }
 
 type productImageDTO struct {
@@ -91,6 +108,9 @@ type productPayload struct {
 	Images      []string         `json:"images"`
 	Specs       []productSpecDTO `json:"specs"`
 	Variants    []variantPayload `json:"variants"`
+	Status      *string          `json:"status"`
+	// LowStockThreshold: present-and-null clears the override on PATCH.
+	LowStockThreshold *int64 `json:"lowStockThreshold"`
 	// fieldsPresent records which optional keys the client actually sent so
 	// partial updates can distinguish "clear this" from "leave unchanged".
 	fieldsPresent map[string]bool
@@ -130,32 +150,45 @@ func (h *CatalogHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, limit, offset := parseListQuery(r)
-	search := queryText(r, "search")
-	category := queryText(r, "category")
-	brand := queryText(r, "brand")
-	inStock := queryBool(r, "inStock")
+	filters, sort, err := parseProductListFilters(r)
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
 
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
+	threshold, err := catalog.ResolveTenantLowStockThreshold(ctx, h.Q, tenantID)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load inventory settings", nil)
+		return
+	}
 	total, err := h.Q.AdminCountProducts(ctx, dbgen.AdminCountProductsParams{
-		TenantID:     tenantID,
-		Search:       search,
-		CategorySlug: category,
-		BrandSlug:    brand,
-		InStock:      inStock,
+		TenantID:         tenantID,
+		Search:           filters.Search,
+		CategorySlug:     filters.Category,
+		BrandSlug:        filters.Brand,
+		InStock:          filters.InStock,
+		Status:           filters.Status,
+		StockStatus:      filters.StockStatus,
+		DefaultThreshold: threshold,
 	})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count products", nil)
 		return
 	}
 	rows, err := h.Q.AdminListProducts(ctx, dbgen.AdminListProductsParams{
-		TenantID:     tenantID,
-		Search:       search,
-		CategorySlug: category,
-		BrandSlug:    brand,
-		InStock:      inStock,
-		LimitValue:   int32(limit),
-		OffsetValue:  int32(offset),
+		TenantID:         tenantID,
+		Search:           filters.Search,
+		CategorySlug:     filters.Category,
+		BrandSlug:        filters.Brand,
+		InStock:          filters.InStock,
+		Status:           filters.Status,
+		StockStatus:      filters.StockStatus,
+		DefaultThreshold: threshold,
+		Sort:             sort,
+		LimitValue:       int32(limit),
+		OffsetValue:      int32(offset),
 	})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to list products", nil)
@@ -167,6 +200,7 @@ func (h *CatalogHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 			ID:           uuidString(row.ID),
 			Title:        row.Title,
 			Slug:         row.Slug,
+			Status:       row.Status,
 			Price:        row.Price,
 			CompareAt:    nullableInt64(row.CompareAt),
 			InStock:      row.InStock,
@@ -180,8 +214,11 @@ func (h *CatalogHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 			BrandName:    nullableString(row.BrandName),
 			VariantCount: row.VariantCount,
 			SKU:          nullableString(row.PrimarySku),
-			CreatedAt:    timestamp(row.CreatedAt).UTC().Format(timeLayout),
-			UpdatedAt:    timestamp(row.UpdatedAt).UTC().Format(timeLayout),
+			StockStatus:  row.StockStatus,
+
+			LowStockThreshold: nullableInt32(row.LowStockThreshold),
+			CreatedAt:         timestamp(row.CreatedAt).UTC().Format(timeLayout),
+			UpdatedAt:         timestamp(row.UpdatedAt).UTC().Format(timeLayout),
 		})
 	}
 	writePaginated(w, items, page, limit, total)
@@ -223,12 +260,18 @@ func (h *CatalogHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load variants", nil)
 		return
 	}
+	threshold, err := catalog.ResolveTenantLowStockThreshold(ctx, h.Q, tenantIDFromContext(ctx))
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load inventory settings", nil)
+		return
+	}
 
 	detail := productDetailDTO{
 		productDTO: productDTO{
 			ID:           uuidString(row.ID),
 			Title:        row.Title,
 			Slug:         row.Slug,
+			Status:       row.Status,
 			Price:        row.Price,
 			CompareAt:    nullableInt64(row.CompareAt),
 			InStock:      row.InStock,
@@ -241,8 +284,11 @@ func (h *CatalogHandler) GetProduct(w http.ResponseWriter, r *http.Request) {
 			BrandID:      nullableUUID(row.BrandID),
 			BrandName:    nullableString(row.BrandName),
 			VariantCount: int32(len(variants)),
-			CreatedAt:    timestamp(row.CreatedAt).UTC().Format(timeLayout),
-			UpdatedAt:    timestamp(row.UpdatedAt).UTC().Format(timeLayout),
+			StockStatus: catalog.StockStatus(int32(len(variants)), row.TotalStock,
+				catalog.EffectiveThreshold(row.LowStockThreshold, threshold), row.InStock),
+			LowStockThreshold: nullableInt32(row.LowStockThreshold),
+			CreatedAt:         timestamp(row.CreatedAt).UTC().Format(timeLayout),
+			UpdatedAt:         timestamp(row.UpdatedAt).UTC().Format(timeLayout),
 		},
 		Images:   make([]productImageDTO, 0, len(images)),
 		Specs:    make([]productSpecDTO, 0, len(specs)),
@@ -312,6 +358,20 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	if payload.InStock != nil {
 		inStock = *payload.InStock
 	}
+	status := productStatusPublished
+	if payload.Status != nil {
+		parsed, err := parseProductStatus(*payload.Status)
+		if err != nil || !parsed.Valid {
+			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "status must be draft, published or archived", nil)
+			return
+		}
+		status = parsed.String
+	}
+	threshold, err := payloadLowStockThreshold(payload)
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
 
 	ctx := r.Context()
 	tenantID := tenantIDFromContext(ctx)
@@ -327,6 +387,9 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		Badges:      payload.Badges,
 		Description: optionalText(payload.Description),
 		TenantID:    tenantID,
+		Status:      status,
+
+		LowStockThreshold: threshold,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -385,6 +448,27 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid categoryId", nil)
 		return
 	}
+	var status pgtype.Text
+	if payload.has("status") {
+		if payload.Status == nil {
+			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "status must be draft, published or archived", nil)
+			return
+		}
+		status, err = parseProductStatus(*payload.Status)
+		if err != nil || !status.Valid {
+			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "status must be draft, published or archived", nil)
+			return
+		}
+	}
+	threshold, err := payloadLowStockThreshold(payload)
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
+	if payload.Price != nil && *payload.Price < 0 {
+		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "price must be zero or greater", nil)
+		return
+	}
 	var slug pgtype.Text
 	if payload.has("slug") {
 		normalized := slugify(derefString(payload.Slug))
@@ -411,8 +495,19 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		Badges:         payload.Badges,
 		SetDescription: payload.has("description"),
 		Description:    optionalText(payload.Description),
+		Status:         status,
 		ID:             id,
 		TenantID:       tenantID,
+
+		SetLowStockThreshold: payload.has("lowStockThreshold"),
+		LowStockThreshold:    threshold,
+	}
+	var oldVariants []dbgen.ProductVariant
+	if len(payload.Variants) > 0 {
+		if oldVariants, err = h.Q.ListVariantsByProduct(ctx, id); err != nil {
+			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load variants", nil)
+			return
+		}
 	}
 	if _, err := h.Q.AdminUpdateProduct(ctx, params); err != nil {
 		if isUniqueViolation(err) {
@@ -434,10 +529,18 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "product updated but child rows failed: "+err.Error(), nil)
 		return
 	}
-	h.invalidate(ctx, existing.Slug)
-	if slug.Valid && slug.String != existing.Slug {
-		h.invalidate(ctx, slug.String)
+	newSlug := existing.Slug
+	if slug.Valid {
+		newSlug = slug.String
 	}
+	changes := productUpdateChanges(existing, params, newSlug)
+	if len(oldVariants) > 0 {
+		newVariants, err := h.Q.ListVariantsByProduct(ctx, id)
+		if err == nil {
+			changes = append(changes, variantChanges(id, newSlug, oldVariants, newVariants)...)
+		}
+	}
+	h.afterProductChanges(ctx, catalog.ChangeSourceSingle, changes, existing.Slug, newSlug)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -514,6 +617,7 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "stock or inStock is required", nil)
 		return
 	}
+	var changes []catalog.ProductChange
 	if payload.Stock != nil {
 		if *payload.Stock < 0 {
 			common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "stock cannot be negative", nil)
@@ -522,6 +626,10 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		variant, err := h.Q.AdminGetPrimaryVariant(ctx, dbgen.AdminGetPrimaryVariantParams{ProductID: id, TenantID: tenantID})
 		switch {
 		case err == nil:
+			changes = append(changes, catalog.ProductChange{
+				ProductID: id, VariantID: variant.ID, Slug: product.Slug, SKU: variant.Sku.String,
+				Field: catalog.FieldStock, Old: variant.Stock, New: *payload.Stock,
+			})
 			if _, err := h.Q.AdminUpdateProductVariant(ctx, dbgen.AdminUpdateProductVariantParams{
 				Stock:     pgtype.Int4{Int32: *payload.Stock, Valid: true},
 				ID:        variant.ID,
@@ -532,16 +640,21 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 				return
 			}
 		case errors.Is(err, pgx.ErrNoRows):
-			if _, err := h.Q.AdminInsertProductVariant(ctx, dbgen.AdminInsertProductVariantParams{
+			variantID, err := h.Q.AdminInsertProductVariant(ctx, dbgen.AdminInsertProductVariantParams{
 				ProductID:  id,
 				Price:      product.Price,
 				Stock:      *payload.Stock,
 				Attributes: []byte(`{}`),
 				TenantID:   tenantID,
-			}); err != nil {
+			})
+			if err != nil {
 				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to create variant for stock", nil)
 				return
 			}
+			changes = append(changes, catalog.ProductChange{
+				ProductID: id, VariantID: variantID, Slug: product.Slug,
+				Field: catalog.FieldStock, Old: int32(0), New: *payload.Stock,
+			})
 		default:
 			common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load variant", nil)
 			return
@@ -559,7 +672,7 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to update stock flag", nil)
 		return
 	}
-	h.invalidate(ctx, product.Slug)
+	h.afterProductChanges(ctx, catalog.ChangeSourceSingle, changes, product.Slug)
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"id":      uuidString(id),
 		"inStock": inStock,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/cart"
+	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/payment"
@@ -207,6 +209,23 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	}
 	if len(items) == 0 {
 		return Output{}, errors.New("cart is empty")
+	}
+	// A line may have been added before its product was set to draft or
+	// archived: re-check every line's product inside the transaction so nothing
+	// is reserved or ordered for an unavailable product.
+	for _, it := range items {
+		prod, err := qtx.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: it.ProductID, TenantID: tID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return Output{}, err
+		}
+		if errors.Is(err, pgx.ErrNoRows) || prod.Status != "published" {
+			return Output{}, &common.AppError{
+				HTTPStatus: http.StatusConflict,
+				Code:       "PRODUCT_UNAVAILABLE",
+				Message:    fmt.Sprintf("%s is no longer available", it.Title),
+				Details:    map[string]any{"productId": cart.UUIDString(it.ProductID), "slug": it.Slug},
+			}
+		}
 	}
 	pricingItems := make([]pricing.Item, 0, len(items))
 	for _, it := range items {

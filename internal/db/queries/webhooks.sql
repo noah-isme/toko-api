@@ -34,6 +34,9 @@ SELECT *
 FROM webhook_endpoints
 WHERE active = true
   AND (coalesce(array_length(topics, 1), 0) = 0 OR sqlc.arg(topic)::text = ANY(topics))
+  -- An event without a tenant (legacy emitters) keeps broadcasting to every
+  -- endpoint; an event stamped with a tenant reaches only that tenant's endpoints.
+  AND (sqlc.narg(tenant_id)::uuid IS NULL OR tenant_id = sqlc.narg(tenant_id)::uuid)
 ORDER BY created_at ASC;
 
 -- name: EnqueueDelivery :one

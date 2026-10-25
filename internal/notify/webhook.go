@@ -51,7 +51,14 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 	if strings.TrimSpace(event.Topic) == "" {
 		return nil
 	}
-	endpoints, err := d.Store.ListActiveEndpointsForTopic(ctx, event.Topic)
+	// Tenant scoping: an event stamped with a tenant (events.Bus.EmitForTenant,
+	// used by the product.* topics) is delivered only to that tenant's endpoints.
+	// An event without a tenant (every legacy emitter: order, payment, shipment)
+	// keeps broadcasting to all active endpoints, as before.
+	endpoints, err := d.Store.ListActiveEndpointsForTopic(ctx, dbgen.ListActiveEndpointsForTopicParams{
+		Topic:    event.Topic,
+		TenantID: event.TenantID,
+	})
 	if err != nil {
 		return err
 	}

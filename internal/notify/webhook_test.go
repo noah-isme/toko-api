@@ -106,7 +106,7 @@ func (r *retryStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookEndp
 
 func (r *retryStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
 
-func (r *retryStore) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
+func (r *retryStore) ListActiveEndpointsForTopic(context.Context, dbgen.ListActiveEndpointsForTopicParams) ([]dbgen.WebhookEndpoint, error) {
 	return nil, nil
 }
 
@@ -204,8 +204,9 @@ func TestRetryAndDLQ(t *testing.T) {
 }
 
 type scheduleStore struct {
-	endpoints []dbgen.WebhookEndpoint
-	enqueued  int
+	endpoints  []dbgen.WebhookEndpoint
+	enqueued   int
+	lastLookup dbgen.ListActiveEndpointsForTopicParams
 }
 
 func (s *scheduleStore) CreateWebhookEndpoint(context.Context, dbgen.CreateWebhookEndpointParams) (dbgen.WebhookEndpoint, error) {
@@ -226,7 +227,8 @@ func (s *scheduleStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookE
 
 func (s *scheduleStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
 
-func (s *scheduleStore) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
+func (s *scheduleStore) ListActiveEndpointsForTopic(_ context.Context, arg dbgen.ListActiveEndpointsForTopicParams) ([]dbgen.WebhookEndpoint, error) {
+	s.lastLookup = arg
 	return s.endpoints, nil
 }
 
@@ -285,4 +287,19 @@ func TestIdempotencyUniqueDelivery(t *testing.T) {
 	err := dispatcher.Schedule(context.Background(), event)
 	require.NoError(t, err)
 	require.Equal(t, 2, store.enqueued)
+}
+
+func TestSchedulePassesTenantID(t *testing.T) {
+	store := &scheduleStore{}
+	dispatcher := &notify.Dispatcher{Store: store, Enabled: true}
+
+	tenantID := toUUID(uuid.New())
+	require.NoError(t, dispatcher.Schedule(context.Background(), dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "product.price_changed", TenantID: tenantID}))
+	require.Equal(t, "product.price_changed", store.lastLookup.Topic)
+	require.Equal(t, tenantID, store.lastLookup.TenantID)
+
+	// Legacy events carry no tenant and keep broadcasting.
+	require.NoError(t, dispatcher.Schedule(context.Background(), dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.paid"}))
+	require.Equal(t, "order.paid", store.lastLookup.Topic)
+	require.False(t, store.lastLookup.TenantID.Valid)
 }

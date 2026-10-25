@@ -23,6 +23,7 @@ WHERE p.tenant_id = $1
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND p.status = 'published'
 `
 
 type CountProductsPublicParams struct {
@@ -67,6 +68,7 @@ SELECT id,
 FROM products
 WHERE slug = $1
   AND tenant_id = $2
+  AND status = 'published'
 LIMIT 1
 `
 
@@ -119,7 +121,8 @@ SELECT id,
        price,
        category_id,
        brand_id,
-       in_stock
+       in_stock,
+       status
 FROM products
 WHERE id = $1
   AND tenant_id = $2
@@ -139,6 +142,7 @@ type GetProductForCartRow struct {
 	CategoryID pgtype.UUID `json:"category_id"`
 	BrandID    pgtype.UUID `json:"brand_id"`
 	InStock    bool        `json:"in_stock"`
+	Status     string      `json:"status"`
 }
 
 func (q *Queries) GetProductForCart(ctx context.Context, arg GetProductForCartParams) (GetProductForCartRow, error) {
@@ -152,6 +156,7 @@ func (q *Queries) GetProductForCart(ctx context.Context, arg GetProductForCartPa
 		&i.CategoryID,
 		&i.BrandID,
 		&i.InStock,
+		&i.Status,
 	)
 	return i, err
 }
@@ -254,6 +259,7 @@ WHERE p.tenant_id = $1
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND p.status = 'published'
 ORDER BY CASE WHEN $8::text = 'price:asc' THEN p.price END ASC,
          CASE WHEN $8::text = 'price:desc' THEN p.price END DESC,
          CASE WHEN $8::text = 'title:asc' THEN p.title END ASC,
@@ -357,6 +363,7 @@ FROM products p
 WHERE p.category_id = $1
   AND p.slug <> $2
   AND p.tenant_id = $3
+  AND p.status = 'published'
 ORDER BY p.created_at DESC
 LIMIT 8
 `

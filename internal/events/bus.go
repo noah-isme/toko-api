@@ -34,8 +34,23 @@ type Bus struct {
 	Notifiers []Notifier
 }
 
-// Emit records the event and dispatches it to all configured handlers.
+// Emit records the event without a tenant and dispatches it to all configured
+// handlers. Events without a tenant are broadcast to every active webhook
+// endpoint subscribed to the topic (the historical behaviour, kept for the
+// order/payment/shipment emitters, some of which run under a request context
+// whose tenant is not the order's tenant, e.g. payment provider callbacks).
+//
+// The tenant is deliberately NOT taken from ctx: use EmitForTenant when the
+// caller knows the owning tenant and wants deliveries scoped to it.
 func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, payload any) (dbgen.DomainEvent, error) {
+	return b.EmitForTenant(ctx, pgtype.UUID{}, topic, aggregateID, payload)
+}
+
+// EmitForTenant records the event stamped with tenantID (domain_events.tenant_id)
+// and dispatches it. A valid tenantID restricts webhook deliveries to that
+// tenant's endpoints (see notify.Dispatcher.Schedule); an invalid (zero)
+// tenantID behaves exactly like Emit.
+func (b *Bus) EmitForTenant(ctx context.Context, tenantID pgtype.UUID, topic string, aggregateID pgtype.UUID, payload any) (dbgen.DomainEvent, error) {
 	if b == nil || b.Store == nil {
 		return dbgen.DomainEvent{}, errors.New("events: store not configured")
 	}
@@ -54,6 +69,7 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 		Topic:       topic,
 		AggregateID: aggregateID,
 		Payload:     encoded,
+		TenantID:    tenantID,
 	})
 	if err != nil {
 		return dbgen.DomainEvent{}, fmt.Errorf("events: persist event: %w", err)
@@ -64,6 +80,7 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 		AggregateID: row.AggregateID,
 		Payload:     row.Payload,
 		OccurredAt:  row.OccurredAt,
+		TenantID:    tenantID,
 	}
 	var joined error
 	if b.Scheduler != nil {

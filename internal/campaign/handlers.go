@@ -71,7 +71,7 @@ func (h *Handler) Public(w http.ResponseWriter, r *http.Request) {
 		       CASE WHEN p.price > 0 THEN ((p.price-i.sale_price)*10000/p.price)::int ELSE 0 END
 		FROM flash_sale_campaigns c
 		JOIN flash_sale_items i ON i.campaign_id=c.id
-		JOIN products p ON p.id=i.product_id AND p.tenant_id=c.tenant_id
+		JOIN products p ON p.id=i.product_id AND p.tenant_id=c.tenant_id AND p.status='published'
 		WHERE c.tenant_id=$1 AND c.status IN ('SCHEDULED','ACTIVE')
 		  AND c.starts_at <= now() + interval '90 days' AND c.ends_at > now()
 		ORDER BY c.starts_at ASC, i.created_at ASC`, tenantID)

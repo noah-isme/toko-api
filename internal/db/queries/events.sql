@@ -1,6 +1,6 @@
 -- name: InsertDomainEvent :one
-INSERT INTO domain_events (topic, aggregate_id, payload)
-VALUES ($1, $2, $3)
+INSERT INTO domain_events (topic, aggregate_id, payload, tenant_id)
+VALUES (sqlc.arg(topic), sqlc.arg(aggregate_id), sqlc.arg(payload), sqlc.narg(tenant_id))
 RETURNING id, topic, aggregate_id, payload, occurred_at;
 
 -- name: ListDomainEventsByTopic :many

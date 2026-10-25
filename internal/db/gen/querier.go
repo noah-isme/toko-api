@@ -12,6 +12,12 @@ import (
 
 type Querier interface {
 	AddFavorite(ctx context.Context, arg AddFavoriteParams) error
+	// Applies a delta against the live stock. No row means the variant is missing
+	// or the result would be negative (the caller has already locked the row, so
+	// it distinguishes the two).
+	AdminAdjustVariantStock(ctx context.Context, arg AdminAdjustVariantStockParams) (AdminAdjustVariantStockRow, error)
+	AdminBulkSetProductStatus(ctx context.Context, arg AdminBulkSetProductStatusParams) (AdminBulkSetProductStatusRow, error)
+	AdminBulkUpdateProductPrice(ctx context.Context, arg AdminBulkUpdateProductPriceParams) (AdminBulkUpdateProductPriceRow, error)
 	AdminCountCustomers(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	// Admin order and voucher management queries. These power the admin dashboard
 	// list/detail views, which need cross-user visibility that the customer-facing
@@ -20,6 +26,11 @@ type Querier interface {
 	// Admin catalog management queries. These power the /api/v1/admin/{products,
 	// categories,brands} endpoints and are intentionally separate from the public
 	// catalog queries, which are cached and shaped for storefront consumption.
+	// The admin product list, its count and the products export share one shape:
+	// `base` applies the tenant and column filters, `classified` adds the
+	// product-level stock status (mirrors catalog.StockStatus in
+	// internal/catalog/lowstock.go: no variants -> in_stock flag; total 0 -> out;
+	// total <= effective threshold -> low; else in). Keep the three copies in sync.
 	AdminCountProducts(ctx context.Context, arg AdminCountProductsParams) (int64, error)
 	AdminCountProductsTotal(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	AdminCountVouchers(ctx context.Context, arg AdminCountVouchersParams) (int64, error)
@@ -32,10 +43,28 @@ type Querier interface {
 	AdminDeleteProductSpecs(ctx context.Context, arg AdminDeleteProductSpecsParams) error
 	AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error)
 	AdminDeleteVoucher(ctx context.Context, arg AdminDeleteVoucherParams) (int64, error)
+	// product_variants.sku is globally unique. Returns only the subset of the
+	// caller-supplied SKUs that exist anywhere (equivalent to one boolean per SKU),
+	// never another tenant's row.
+	AdminExistingSKUsAnyTenant(ctx context.Context, skus []string) ([]string, error)
+	// Keyset page (created_at DESC, id DESC) over the same filters as AdminListOrders.
+	AdminExportOrderRows(ctx context.Context, arg AdminExportOrderRowsParams) ([]AdminExportOrderRowsRow, error)
+	// One page of products (keyset on created_at DESC, id DESC) with their variants
+	// LEFT JOINed, so a product's variants never straddle a page boundary.
+	AdminExportProductPage(ctx context.Context, arg AdminExportProductPageParams) ([]AdminExportProductPageRow, error)
+	// Resolves import product ids and slugs within the tenant.
+	AdminFindProductsForImport(ctx context.Context, arg AdminFindProductsForImportParams) ([]AdminFindProductsForImportRow, error)
+	// Resolves import row keys (variant ids and SKUs) within the tenant.
+	AdminFindVariantsForImport(ctx context.Context, arg AdminFindVariantsForImportParams) ([]AdminFindVariantsForImportRow, error)
 	AdminGetOrder(ctx context.Context, arg AdminGetOrderParams) (AdminGetOrderRow, error)
 	AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimaryVariantParams) (ProductVariant, error)
 	AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error)
 	AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error)
+	// Admin catalog operations: bulk updates, CSV import lookups, CSV export and
+	// low-stock settings. product_variants has no tenant_id, so every variant query
+	// scopes through products.tenant_id.
+	// Locks the target products in id order so concurrent bulk requests cannot deadlock.
+	AdminGetProductsByIDsForUpdate(ctx context.Context, arg AdminGetProductsByIDsForUpdateParams) ([]AdminGetProductsByIDsForUpdateRow, error)
 	AdminInsertProductImage(ctx context.Context, arg AdminInsertProductImageParams) error
 	AdminInsertProductSpec(ctx context.Context, arg AdminInsertProductSpecParams) error
 	AdminInsertProductVariant(ctx context.Context, arg AdminInsertProductVariantParams) (pgtype.UUID, error)
@@ -44,9 +73,21 @@ type Querier interface {
 	AdminListOrders(ctx context.Context, arg AdminListOrdersParams) ([]AdminListOrdersRow, error)
 	AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error)
 	AdminListVouchers(ctx context.Context, arg AdminListVouchersParams) ([]AdminListVouchersRow, error)
+	AdminLockVariantsByIDs(ctx context.Context, arg AdminLockVariantsByIDsParams) ([]AdminLockVariantsByIDsRow, error)
+	// Locks the listed variants plus every variant of the listed products, in one
+	// statement and in id order (bulk price with applyTo=both|variants).
+	AdminLockVariantsByIDsOrProducts(ctx context.Context, arg AdminLockVariantsByIDsOrProductsParams) ([]AdminLockVariantsByIDsOrProductsRow, error)
 	AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams) (AdminOrderStatsRow, error)
+	AdminRecomputeProductStockFlag(ctx context.Context, arg AdminRecomputeProductStockFlagParams) (bool, error)
 	AdminReplaceProductImages(ctx context.Context, arg AdminReplaceProductImagesParams) error
 	AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error
+	AdminSetVariantPrice(ctx context.Context, arg AdminSetVariantPriceParams) (AdminSetVariantPriceRow, error)
+	AdminSetVariantStock(ctx context.Context, arg AdminSetVariantStockParams) (AdminSetVariantStockRow, error)
+	// products.slug is globally unique. Returns only the subset of the
+	// caller-supplied slugs that another tenant uses (one boolean per slug), never
+	// another tenant's row. Phrased with `tenant_id =` so the tenant guard accepts it.
+	AdminSlugsTakenByOtherTenants(ctx context.Context, arg AdminSlugsTakenByOtherTenantsParams) ([]string, error)
+	AdminStockStatusCounts(ctx context.Context, arg AdminStockStatusCountsParams) (AdminStockStatusCountsRow, error)
 	AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error)
 	AdminUpdateBrand(ctx context.Context, arg AdminUpdateBrandParams) (AdminUpdateBrandRow, error)
 	AdminUpdateCategory(ctx context.Context, arg AdminUpdateCategoryParams) (AdminUpdateCategoryRow, error)
@@ -147,6 +188,7 @@ type Querier interface {
 	GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error)
 	GetSessionByToken(ctx context.Context, refreshToken string) (Session, error)
 	GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (GetShipmentByOrderRow, error)
+	GetTenantSetting(ctx context.Context, arg GetTenantSettingParams) ([]byte, error)
 	GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error)
 	GetTopViewedProductsByUser(ctx context.Context, arg GetTopViewedProductsByUserParams) ([]GetTopViewedProductsByUserRow, error)
 	GetTrendingProducts(ctx context.Context, arg GetTrendingProductsParams) ([]GetTrendingProductsRow, error)
@@ -168,7 +210,7 @@ type Querier interface {
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
 	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
-	ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error)
+	ListActiveEndpointsForTopic(ctx context.Context, arg ListActiveEndpointsForTopicParams) ([]WebhookEndpoint, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Filtered variants back the admin audit-log screen. Each filter is skipped when

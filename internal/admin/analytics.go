@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
@@ -38,6 +39,9 @@ type analyticsOverviewDTO struct {
 	DeliveredOrders   int64                    `json:"deliveredOrders"`
 	CancelledOrders   int64                    `json:"cancelledOrders"`
 	TopProducts       []analyticsTopProductDTO `json:"topProducts"`
+	// Catalog-ops: products whose stock status is low/out (catalog.StockStatus).
+	LowStockProducts   int64 `json:"lowStockProducts"`
+	OutOfStockProducts int64 `json:"outOfStockProducts"`
 }
 
 // rangeWindow maps a UI range token (7d, 30d, 90d, all) to a start timestamp.
@@ -97,6 +101,11 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load top products", nil)
 		return
 	}
+	stockCounts, err := h.stockStatusCounts(r)
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to count low-stock products", nil)
+		return
+	}
 	top := make([]analyticsTopProductDTO, 0, len(topRows))
 	for _, row := range topRows {
 		top = append(top, analyticsTopProductDTO{
@@ -120,5 +129,20 @@ func (h *AnalyticsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		DeliveredOrders:   stats.DeliveredOrders,
 		CancelledOrders:   stats.CancelledOrders,
 		TopProducts:       top,
+
+		LowStockProducts:   stockCounts.LowStock,
+		OutOfStockProducts: stockCounts.OutOfStock,
 	}})
+}
+
+// stockStatusCounts counts the tenant's low and out-of-stock products with the
+// same classification as the admin product list.
+func (h *AnalyticsHandler) stockStatusCounts(r *http.Request) (dbgen.AdminStockStatusCountsRow, error) {
+	ctx := r.Context()
+	tenantID := tenantIDFromContext(ctx)
+	threshold, err := catalog.ResolveTenantLowStockThreshold(ctx, h.Q, tenantID)
+	if err != nil {
+		return dbgen.AdminStockStatusCountsRow{}, err
+	}
+	return h.Q.AdminStockStatusCounts(ctx, dbgen.AdminStockStatusCountsParams{TenantID: tenantID, DefaultThreshold: threshold})
 }

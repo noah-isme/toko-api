@@ -12,8 +12,8 @@ import (
 )
 
 const insertDomainEvent = `-- name: InsertDomainEvent :one
-INSERT INTO domain_events (topic, aggregate_id, payload)
-VALUES ($1, $2, $3)
+INSERT INTO domain_events (topic, aggregate_id, payload, tenant_id)
+VALUES ($1, $2, $3, $4)
 RETURNING id, topic, aggregate_id, payload, occurred_at
 `
 
@@ -21,6 +21,7 @@ type InsertDomainEventParams struct {
 	Topic       string      `json:"topic"`
 	AggregateID pgtype.UUID `json:"aggregate_id"`
 	Payload     []byte      `json:"payload"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
 }
 
 type InsertDomainEventRow struct {
@@ -32,7 +33,12 @@ type InsertDomainEventRow struct {
 }
 
 func (q *Queries) InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error) {
-	row := q.db.QueryRow(ctx, insertDomainEvent, arg.Topic, arg.AggregateID, arg.Payload)
+	row := q.db.QueryRow(ctx, insertDomainEvent,
+		arg.Topic,
+		arg.AggregateID,
+		arg.Payload,
+		arg.TenantID,
+	)
 	var i InsertDomainEventRow
 	err := row.Scan(
 		&i.ID,

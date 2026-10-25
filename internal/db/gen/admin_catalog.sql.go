@@ -13,37 +13,86 @@ import (
 
 const adminCountProducts = `-- name: AdminCountProducts :one
 
+
+WITH base AS (
+    SELECT p.id,
+           p.title,
+           p.slug,
+           p.status,
+           p.price,
+           p.compare_at,
+           p.in_stock,
+           p.low_stock_threshold,
+           p.thumbnail,
+           p.badges,
+           p.description,
+           p.created_at,
+           p.updated_at,
+           c.id   AS category_id,
+           c.name AS category_name,
+           c.slug AS category_slug,
+           b.id   AS brand_id,
+           b.name AS brand_name,
+           b.slug AS brand_slug,
+           COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS total_stock,
+           COALESCE((SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS variant_count,
+           (SELECT v.sku FROM product_variants v WHERE v.product_id = p.id ORDER BY v.sku NULLS LAST LIMIT 1) AS primary_sku
+    FROM products p
+    LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+    LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+    WHERE p.tenant_id = $2
+      AND ($3::text IS NULL
+           OR p.title ILIKE '%' || $3::text || '%'
+           OR p.slug ILIKE '%' || $3::text || '%')
+      AND ($4::text IS NULL OR c.slug = $4::text)
+      AND ($5::text IS NULL OR b.slug = $5::text)
+      AND ($6::boolean IS NULL OR p.in_stock = $6::boolean)
+      AND ($7::text IS NULL OR p.status = $7::text)
+),
+classified AS (
+    SELECT base.id, base.title, base.slug, base.status, base.price, base.compare_at, base.in_stock, base.low_stock_threshold, base.thumbnail, base.badges, base.description, base.created_at, base.updated_at, base.category_id, base.category_name, base.category_slug, base.brand_id, base.brand_name, base.brand_slug, base.total_stock, base.variant_count, base.primary_sku,
+           (CASE
+                WHEN base.variant_count = 0 THEN CASE WHEN base.in_stock THEN 'in' ELSE 'out' END
+                WHEN base.total_stock <= 0 THEN 'out'
+                WHEN base.total_stock <= COALESCE(base.low_stock_threshold, $8::int) THEN 'low'
+                ELSE 'in'
+            END)::text AS stock_status
+    FROM base
+)
 SELECT COUNT(*)
-FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
-LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
-WHERE p.tenant_id = $1
-  AND ($2::text IS NULL
-       OR p.title ILIKE '%' || $2::text || '%'
-       OR p.slug ILIKE '%' || $2::text || '%')
-  AND ($3::text IS NULL OR c.slug = $3::text)
-  AND ($4::text IS NULL OR b.slug = $4::text)
-  AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
+FROM classified
+WHERE ($1::text IS NULL OR classified.stock_status = $1::text)
 `
 
 type AdminCountProductsParams struct {
-	TenantID     pgtype.UUID `json:"tenant_id"`
-	Search       pgtype.Text `json:"search"`
-	CategorySlug pgtype.Text `json:"category_slug"`
-	BrandSlug    pgtype.Text `json:"brand_slug"`
-	InStock      pgtype.Bool `json:"in_stock"`
+	StockStatus      pgtype.Text `json:"stock_status"`
+	TenantID         pgtype.UUID `json:"tenant_id"`
+	Search           pgtype.Text `json:"search"`
+	CategorySlug     pgtype.Text `json:"category_slug"`
+	BrandSlug        pgtype.Text `json:"brand_slug"`
+	InStock          pgtype.Bool `json:"in_stock"`
+	Status           pgtype.Text `json:"status"`
+	DefaultThreshold int32       `json:"default_threshold"`
 }
 
 // Admin catalog management queries. These power the /api/v1/admin/{products,
 // categories,brands} endpoints and are intentionally separate from the public
 // catalog queries, which are cached and shaped for storefront consumption.
+// The admin product list, its count and the products export share one shape:
+// `base` applies the tenant and column filters, `classified` adds the
+// product-level stock status (mirrors catalog.StockStatus in
+// internal/catalog/lowstock.go: no variants -> in_stock flag; total 0 -> out;
+// total <= effective threshold -> low; else in). Keep the three copies in sync.
 func (q *Queries) AdminCountProducts(ctx context.Context, arg AdminCountProductsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, adminCountProducts,
+		arg.StockStatus,
 		arg.TenantID,
 		arg.Search,
 		arg.CategorySlug,
 		arg.BrandSlug,
 		arg.InStock,
+		arg.Status,
+		arg.DefaultThreshold,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -134,7 +183,7 @@ func (q *Queries) AdminCreateCategory(ctx context.Context, arg AdminCreateCatego
 }
 
 const adminCreateProduct = `-- name: AdminCreateProduct :one
-INSERT INTO products (title, slug, brand_id, category_id, price, compare_at, in_stock, thumbnail, badges, description, tenant_id)
+INSERT INTO products (title, slug, brand_id, category_id, price, compare_at, in_stock, thumbnail, badges, description, tenant_id, status, low_stock_threshold)
 VALUES (
     $1,
     $2,
@@ -146,23 +195,27 @@ VALUES (
     $8,
     $9,
     $10,
-    $11
+    $11,
+    $12,
+    $13
 )
 RETURNING id
 `
 
 type AdminCreateProductParams struct {
-	Title       string      `json:"title"`
-	Slug        string      `json:"slug"`
-	BrandID     pgtype.UUID `json:"brand_id"`
-	CategoryID  pgtype.UUID `json:"category_id"`
-	Price       int64       `json:"price"`
-	CompareAt   pgtype.Int8 `json:"compare_at"`
-	InStock     bool        `json:"in_stock"`
-	Thumbnail   pgtype.Text `json:"thumbnail"`
-	Badges      []string    `json:"badges"`
-	Description pgtype.Text `json:"description"`
-	TenantID    pgtype.UUID `json:"tenant_id"`
+	Title             string      `json:"title"`
+	Slug              string      `json:"slug"`
+	BrandID           pgtype.UUID `json:"brand_id"`
+	CategoryID        pgtype.UUID `json:"category_id"`
+	Price             int64       `json:"price"`
+	CompareAt         pgtype.Int8 `json:"compare_at"`
+	InStock           bool        `json:"in_stock"`
+	Thumbnail         pgtype.Text `json:"thumbnail"`
+	Badges            []string    `json:"badges"`
+	Description       pgtype.Text `json:"description"`
+	TenantID          pgtype.UUID `json:"tenant_id"`
+	Status            string      `json:"status"`
+	LowStockThreshold pgtype.Int4 `json:"low_stock_threshold"`
 }
 
 func (q *Queries) AdminCreateProduct(ctx context.Context, arg AdminCreateProductParams) (pgtype.UUID, error) {
@@ -178,6 +231,8 @@ func (q *Queries) AdminCreateProduct(ctx context.Context, arg AdminCreateProduct
 		arg.Badges,
 		arg.Description,
 		arg.TenantID,
+		arg.Status,
+		arg.LowStockThreshold,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -270,6 +325,175 @@ func (q *Queries) AdminDeleteProductVariant(ctx context.Context, arg AdminDelete
 	return result.RowsAffected(), nil
 }
 
+const adminExportProductPage = `-- name: AdminExportProductPage :many
+WITH base AS (
+    SELECT p.id,
+           p.title,
+           p.slug,
+           p.status,
+           p.price,
+           p.compare_at,
+           p.in_stock,
+           p.low_stock_threshold,
+           p.thumbnail,
+           p.badges,
+           p.description,
+           p.created_at,
+           p.updated_at,
+           c.id   AS category_id,
+           c.name AS category_name,
+           c.slug AS category_slug,
+           b.id   AS brand_id,
+           b.name AS brand_name,
+           b.slug AS brand_slug,
+           COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS total_stock,
+           COALESCE((SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS variant_count,
+           (SELECT v.sku FROM product_variants v WHERE v.product_id = p.id ORDER BY v.sku NULLS LAST LIMIT 1) AS primary_sku
+    FROM products p
+    LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+    LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+    WHERE p.tenant_id = $1
+      AND ($2::text IS NULL
+           OR p.title ILIKE '%' || $2::text || '%'
+           OR p.slug ILIKE '%' || $2::text || '%')
+      AND ($3::text IS NULL OR c.slug = $3::text)
+      AND ($4::text IS NULL OR b.slug = $4::text)
+      AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
+      AND ($6::text IS NULL OR p.status = $6::text)
+),
+classified AS (
+    SELECT base.id, base.title, base.slug, base.status, base.price, base.compare_at, base.in_stock, base.low_stock_threshold, base.thumbnail, base.badges, base.description, base.created_at, base.updated_at, base.category_id, base.category_name, base.category_slug, base.brand_id, base.brand_name, base.brand_slug, base.total_stock, base.variant_count, base.primary_sku,
+           (CASE
+                WHEN base.variant_count = 0 THEN CASE WHEN base.in_stock THEN 'in' ELSE 'out' END
+                WHEN base.total_stock <= 0 THEN 'out'
+                WHEN base.total_stock <= COALESCE(base.low_stock_threshold, $7::int) THEN 'low'
+                ELSE 'in'
+            END)::text AS stock_status
+    FROM base
+),
+page AS (
+    SELECT classified.id, classified.title, classified.slug, classified.status, classified.price, classified.compare_at, classified.in_stock, classified.low_stock_threshold, classified.thumbnail, classified.badges, classified.description, classified.created_at, classified.updated_at, classified.category_id, classified.category_name, classified.category_slug, classified.brand_id, classified.brand_name, classified.brand_slug, classified.total_stock, classified.variant_count, classified.primary_sku, classified.stock_status
+    FROM classified
+    WHERE ($8::text IS NULL OR classified.stock_status = $8::text)
+      AND ($9::timestamptz IS NULL
+           OR (classified.created_at, classified.id) < ($9::timestamptz, $10::uuid))
+    ORDER BY classified.created_at DESC, classified.id DESC
+    LIMIT $11::int
+)
+SELECT pg.id AS product_id,
+       pg.title,
+       pg.slug,
+       pg.status,
+       pg.price,
+       pg.compare_at,
+       pg.low_stock_threshold,
+       pg.in_stock,
+       pg.description,
+       pg.created_at,
+       pg.updated_at,
+       pg.category_slug,
+       pg.brand_slug,
+       pg.stock_status,
+       v.id AS variant_id,
+       v.sku,
+       v.price AS variant_price,
+       v.stock,
+       v.attributes
+FROM page pg
+LEFT JOIN product_variants v ON v.product_id = pg.id
+ORDER BY pg.created_at DESC, pg.id DESC, v.id
+`
+
+type AdminExportProductPageParams struct {
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	Search           pgtype.Text        `json:"search"`
+	CategorySlug     pgtype.Text        `json:"category_slug"`
+	BrandSlug        pgtype.Text        `json:"brand_slug"`
+	InStock          pgtype.Bool        `json:"in_stock"`
+	Status           pgtype.Text        `json:"status"`
+	DefaultThreshold int32              `json:"default_threshold"`
+	StockStatus      pgtype.Text        `json:"stock_status"`
+	AfterCreatedAt   pgtype.Timestamptz `json:"after_created_at"`
+	AfterID          pgtype.UUID        `json:"after_id"`
+	BatchSize        int32              `json:"batch_size"`
+}
+
+type AdminExportProductPageRow struct {
+	ProductID         pgtype.UUID        `json:"product_id"`
+	Title             string             `json:"title"`
+	Slug              string             `json:"slug"`
+	Status            string             `json:"status"`
+	Price             int64              `json:"price"`
+	CompareAt         pgtype.Int8        `json:"compare_at"`
+	LowStockThreshold pgtype.Int4        `json:"low_stock_threshold"`
+	InStock           bool               `json:"in_stock"`
+	Description       pgtype.Text        `json:"description"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CategorySlug      pgtype.Text        `json:"category_slug"`
+	BrandSlug         pgtype.Text        `json:"brand_slug"`
+	StockStatus       string             `json:"stock_status"`
+	VariantID         pgtype.UUID        `json:"variant_id"`
+	Sku               pgtype.Text        `json:"sku"`
+	VariantPrice      pgtype.Int8        `json:"variant_price"`
+	Stock             pgtype.Int4        `json:"stock"`
+	Attributes        []byte             `json:"attributes"`
+}
+
+// One page of products (keyset on created_at DESC, id DESC) with their variants
+// LEFT JOINed, so a product's variants never straddle a page boundary.
+func (q *Queries) AdminExportProductPage(ctx context.Context, arg AdminExportProductPageParams) ([]AdminExportProductPageRow, error) {
+	rows, err := q.db.Query(ctx, adminExportProductPage,
+		arg.TenantID,
+		arg.Search,
+		arg.CategorySlug,
+		arg.BrandSlug,
+		arg.InStock,
+		arg.Status,
+		arg.DefaultThreshold,
+		arg.StockStatus,
+		arg.AfterCreatedAt,
+		arg.AfterID,
+		arg.BatchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminExportProductPageRow
+	for rows.Next() {
+		var i AdminExportProductPageRow
+		if err := rows.Scan(
+			&i.ProductID,
+			&i.Title,
+			&i.Slug,
+			&i.Status,
+			&i.Price,
+			&i.CompareAt,
+			&i.LowStockThreshold,
+			&i.InStock,
+			&i.Description,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CategorySlug,
+			&i.BrandSlug,
+			&i.StockStatus,
+			&i.VariantID,
+			&i.Sku,
+			&i.VariantPrice,
+			&i.Stock,
+			&i.Attributes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const adminGetPrimaryVariant = `-- name: AdminGetPrimaryVariant :one
 SELECT id, product_id, sku, price, stock, attributes
 FROM product_variants
@@ -314,7 +538,12 @@ SELECT p.id,
        c.name AS category_name,
        b.id   AS brand_id,
        b.name AS brand_name,
-       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
+       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock,
+       COALESCE((SELECT COUNT(*) FROM product_variants WHERE product_id = p.id), 0)::int AS variant_count,
+       p.status,
+       p.low_stock_threshold,
+       c.slug AS category_slug,
+       b.slug AS brand_slug
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
@@ -329,22 +558,27 @@ type AdminGetProductParams struct {
 }
 
 type AdminGetProductRow struct {
-	ID           pgtype.UUID        `json:"id"`
-	Title        string             `json:"title"`
-	Slug         string             `json:"slug"`
-	Price        int64              `json:"price"`
-	CompareAt    pgtype.Int8        `json:"compare_at"`
-	InStock      bool               `json:"in_stock"`
-	Thumbnail    pgtype.Text        `json:"thumbnail"`
-	Badges       []string           `json:"badges"`
-	Description  pgtype.Text        `json:"description"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	CategoryID   pgtype.UUID        `json:"category_id"`
-	CategoryName pgtype.Text        `json:"category_name"`
-	BrandID      pgtype.UUID        `json:"brand_id"`
-	BrandName    pgtype.Text        `json:"brand_name"`
-	TotalStock   int32              `json:"total_stock"`
+	ID                pgtype.UUID        `json:"id"`
+	Title             string             `json:"title"`
+	Slug              string             `json:"slug"`
+	Price             int64              `json:"price"`
+	CompareAt         pgtype.Int8        `json:"compare_at"`
+	InStock           bool               `json:"in_stock"`
+	Thumbnail         pgtype.Text        `json:"thumbnail"`
+	Badges            []string           `json:"badges"`
+	Description       pgtype.Text        `json:"description"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CategoryID        pgtype.UUID        `json:"category_id"`
+	CategoryName      pgtype.Text        `json:"category_name"`
+	BrandID           pgtype.UUID        `json:"brand_id"`
+	BrandName         pgtype.Text        `json:"brand_name"`
+	TotalStock        int32              `json:"total_stock"`
+	VariantCount      int32              `json:"variant_count"`
+	Status            string             `json:"status"`
+	LowStockThreshold pgtype.Int4        `json:"low_stock_threshold"`
+	CategorySlug      pgtype.Text        `json:"category_slug"`
+	BrandSlug         pgtype.Text        `json:"brand_slug"`
 }
 
 func (q *Queries) AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error) {
@@ -367,6 +601,11 @@ func (q *Queries) AdminGetProduct(ctx context.Context, arg AdminGetProductParams
 		&i.BrandID,
 		&i.BrandName,
 		&i.TotalStock,
+		&i.VariantCount,
+		&i.Status,
+		&i.LowStockThreshold,
+		&i.CategorySlug,
+		&i.BrandSlug,
 	)
 	return i, err
 }
@@ -563,78 +802,121 @@ func (q *Queries) AdminListCategories(ctx context.Context, tenantID pgtype.UUID)
 }
 
 const adminListProducts = `-- name: AdminListProducts :many
-SELECT p.id,
-       p.title,
-       p.slug,
-       p.price,
-       p.compare_at,
-       p.in_stock,
-       p.thumbnail,
-       p.badges,
-       p.description,
-       p.created_at,
-       p.updated_at,
-       c.id   AS category_id,
-       c.name AS category_name,
-       b.id   AS brand_id,
-       b.name AS brand_name,
-       COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock,
-       COALESCE((SELECT COUNT(*) FROM product_variants WHERE product_id = p.id), 0)::int AS variant_count,
-       (SELECT sku FROM product_variants WHERE product_id = p.id ORDER BY sku NULLS LAST LIMIT 1) AS primary_sku
-FROM products p
-LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
-LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
-WHERE p.tenant_id = $1
-  AND ($2::text IS NULL
-       OR p.title ILIKE '%' || $2::text || '%'
-       OR p.slug ILIKE '%' || $2::text || '%')
-  AND ($3::text IS NULL OR c.slug = $3::text)
-  AND ($4::text IS NULL OR b.slug = $4::text)
-  AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
-ORDER BY p.created_at DESC, p.id
-LIMIT $7 OFFSET $6
+WITH base AS (
+    SELECT p.id,
+           p.title,
+           p.slug,
+           p.status,
+           p.price,
+           p.compare_at,
+           p.in_stock,
+           p.low_stock_threshold,
+           p.thumbnail,
+           p.badges,
+           p.description,
+           p.created_at,
+           p.updated_at,
+           c.id   AS category_id,
+           c.name AS category_name,
+           c.slug AS category_slug,
+           b.id   AS brand_id,
+           b.name AS brand_name,
+           b.slug AS brand_slug,
+           COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS total_stock,
+           COALESCE((SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS variant_count,
+           (SELECT v.sku FROM product_variants v WHERE v.product_id = p.id ORDER BY v.sku NULLS LAST LIMIT 1) AS primary_sku
+    FROM products p
+    LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+    LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+    WHERE p.tenant_id = $5
+      AND ($6::text IS NULL
+           OR p.title ILIKE '%' || $6::text || '%'
+           OR p.slug ILIKE '%' || $6::text || '%')
+      AND ($7::text IS NULL OR c.slug = $7::text)
+      AND ($8::text IS NULL OR b.slug = $8::text)
+      AND ($9::boolean IS NULL OR p.in_stock = $9::boolean)
+      AND ($10::text IS NULL OR p.status = $10::text)
+),
+classified AS (
+    SELECT base.id, base.title, base.slug, base.status, base.price, base.compare_at, base.in_stock, base.low_stock_threshold, base.thumbnail, base.badges, base.description, base.created_at, base.updated_at, base.category_id, base.category_name, base.category_slug, base.brand_id, base.brand_name, base.brand_slug, base.total_stock, base.variant_count, base.primary_sku,
+           (CASE
+                WHEN base.variant_count = 0 THEN CASE WHEN base.in_stock THEN 'in' ELSE 'out' END
+                WHEN base.total_stock <= 0 THEN 'out'
+                WHEN base.total_stock <= COALESCE(base.low_stock_threshold, $11::int) THEN 'low'
+                ELSE 'in'
+            END)::text AS stock_status
+    FROM base
+)
+SELECT id, title, slug, status, price, compare_at, in_stock, low_stock_threshold, thumbnail, badges,
+       description, created_at, updated_at, category_id, category_name, brand_id, brand_name,
+       total_stock, variant_count, primary_sku, stock_status
+FROM classified
+WHERE ($1::text IS NULL OR classified.stock_status = $1::text)
+ORDER BY CASE WHEN $2::text = 'name:asc' THEN classified.title END ASC,
+         CASE WHEN $2::text = 'name:desc' THEN classified.title END DESC,
+         CASE WHEN $2::text = 'price:asc' THEN classified.price END ASC,
+         CASE WHEN $2::text = 'price:desc' THEN classified.price END DESC,
+         CASE WHEN $2::text = 'stock:asc' THEN classified.total_stock END ASC,
+         CASE WHEN $2::text = 'stock:desc' THEN classified.total_stock END DESC,
+         CASE WHEN $2::text = 'created:asc' THEN classified.created_at END ASC,
+         CASE WHEN $2::text = 'updated:asc' THEN classified.updated_at END ASC,
+         CASE WHEN $2::text = 'updated:desc' THEN classified.updated_at END DESC,
+         classified.created_at DESC,
+         classified.id
+LIMIT $4 OFFSET $3
 `
 
 type AdminListProductsParams struct {
-	TenantID     pgtype.UUID `json:"tenant_id"`
-	Search       pgtype.Text `json:"search"`
-	CategorySlug pgtype.Text `json:"category_slug"`
-	BrandSlug    pgtype.Text `json:"brand_slug"`
-	InStock      pgtype.Bool `json:"in_stock"`
-	OffsetValue  int32       `json:"offset_value"`
-	LimitValue   int32       `json:"limit_value"`
+	StockStatus      pgtype.Text `json:"stock_status"`
+	Sort             string      `json:"sort"`
+	OffsetValue      int32       `json:"offset_value"`
+	LimitValue       int32       `json:"limit_value"`
+	TenantID         pgtype.UUID `json:"tenant_id"`
+	Search           pgtype.Text `json:"search"`
+	CategorySlug     pgtype.Text `json:"category_slug"`
+	BrandSlug        pgtype.Text `json:"brand_slug"`
+	InStock          pgtype.Bool `json:"in_stock"`
+	Status           pgtype.Text `json:"status"`
+	DefaultThreshold int32       `json:"default_threshold"`
 }
 
 type AdminListProductsRow struct {
-	ID           pgtype.UUID        `json:"id"`
-	Title        string             `json:"title"`
-	Slug         string             `json:"slug"`
-	Price        int64              `json:"price"`
-	CompareAt    pgtype.Int8        `json:"compare_at"`
-	InStock      bool               `json:"in_stock"`
-	Thumbnail    pgtype.Text        `json:"thumbnail"`
-	Badges       []string           `json:"badges"`
-	Description  pgtype.Text        `json:"description"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	CategoryID   pgtype.UUID        `json:"category_id"`
-	CategoryName pgtype.Text        `json:"category_name"`
-	BrandID      pgtype.UUID        `json:"brand_id"`
-	BrandName    pgtype.Text        `json:"brand_name"`
-	TotalStock   int32              `json:"total_stock"`
-	VariantCount int32              `json:"variant_count"`
-	PrimarySku   pgtype.Text        `json:"primary_sku"`
+	ID                pgtype.UUID        `json:"id"`
+	Title             string             `json:"title"`
+	Slug              string             `json:"slug"`
+	Status            string             `json:"status"`
+	Price             int64              `json:"price"`
+	CompareAt         pgtype.Int8        `json:"compare_at"`
+	InStock           bool               `json:"in_stock"`
+	LowStockThreshold pgtype.Int4        `json:"low_stock_threshold"`
+	Thumbnail         pgtype.Text        `json:"thumbnail"`
+	Badges            []string           `json:"badges"`
+	Description       pgtype.Text        `json:"description"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CategoryID        pgtype.UUID        `json:"category_id"`
+	CategoryName      pgtype.Text        `json:"category_name"`
+	BrandID           pgtype.UUID        `json:"brand_id"`
+	BrandName         pgtype.Text        `json:"brand_name"`
+	TotalStock        int32              `json:"total_stock"`
+	VariantCount      int32              `json:"variant_count"`
+	PrimarySku        pgtype.Text        `json:"primary_sku"`
+	StockStatus       string             `json:"stock_status"`
 }
 
 func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsParams) ([]AdminListProductsRow, error) {
 	rows, err := q.db.Query(ctx, adminListProducts,
+		arg.StockStatus,
+		arg.Sort,
+		arg.OffsetValue,
+		arg.LimitValue,
 		arg.TenantID,
 		arg.Search,
 		arg.CategorySlug,
 		arg.BrandSlug,
 		arg.InStock,
-		arg.OffsetValue,
-		arg.LimitValue,
+		arg.Status,
+		arg.DefaultThreshold,
 	)
 	if err != nil {
 		return nil, err
@@ -647,9 +929,11 @@ func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsPa
 			&i.ID,
 			&i.Title,
 			&i.Slug,
+			&i.Status,
 			&i.Price,
 			&i.CompareAt,
 			&i.InStock,
+			&i.LowStockThreshold,
 			&i.Thumbnail,
 			&i.Badges,
 			&i.Description,
@@ -662,6 +946,7 @@ func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsPa
 			&i.TotalStock,
 			&i.VariantCount,
 			&i.PrimarySku,
+			&i.StockStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -704,6 +989,87 @@ type AdminSetProductStockFlagParams struct {
 func (q *Queries) AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error {
 	_, err := q.db.Exec(ctx, adminSetProductStockFlag, arg.InStock, arg.ID, arg.TenantID)
 	return err
+}
+
+const adminStockStatusCounts = `-- name: AdminStockStatusCounts :one
+WITH base AS (
+    SELECT p.id,
+           p.title,
+           p.slug,
+           p.status,
+           p.price,
+           p.compare_at,
+           p.in_stock,
+           p.low_stock_threshold,
+           p.thumbnail,
+           p.badges,
+           p.description,
+           p.created_at,
+           p.updated_at,
+           c.id   AS category_id,
+           c.name AS category_name,
+           c.slug AS category_slug,
+           b.id   AS brand_id,
+           b.name AS brand_name,
+           b.slug AS brand_slug,
+           COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS total_stock,
+           COALESCE((SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id), 0)::int AS variant_count,
+           (SELECT v.sku FROM product_variants v WHERE v.product_id = p.id ORDER BY v.sku NULLS LAST LIMIT 1) AS primary_sku
+    FROM products p
+    LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+    LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+    WHERE p.tenant_id = $1
+      AND ($2::text IS NULL
+           OR p.title ILIKE '%' || $2::text || '%'
+           OR p.slug ILIKE '%' || $2::text || '%')
+      AND ($3::text IS NULL OR c.slug = $3::text)
+      AND ($4::text IS NULL OR b.slug = $4::text)
+      AND ($5::boolean IS NULL OR p.in_stock = $5::boolean)
+      AND ($6::text IS NULL OR p.status = $6::text)
+),
+classified AS (
+    SELECT base.id, base.title, base.slug, base.status, base.price, base.compare_at, base.in_stock, base.low_stock_threshold, base.thumbnail, base.badges, base.description, base.created_at, base.updated_at, base.category_id, base.category_name, base.category_slug, base.brand_id, base.brand_name, base.brand_slug, base.total_stock, base.variant_count, base.primary_sku,
+           (CASE
+                WHEN base.variant_count = 0 THEN CASE WHEN base.in_stock THEN 'in' ELSE 'out' END
+                WHEN base.total_stock <= 0 THEN 'out'
+                WHEN base.total_stock <= COALESCE(base.low_stock_threshold, $7::int) THEN 'low'
+                ELSE 'in'
+            END)::text AS stock_status
+    FROM base
+)
+SELECT COUNT(*) FILTER (WHERE classified.stock_status = 'low')::bigint AS low_stock,
+       COUNT(*) FILTER (WHERE classified.stock_status = 'out')::bigint AS out_of_stock
+FROM classified
+`
+
+type AdminStockStatusCountsParams struct {
+	TenantID         pgtype.UUID `json:"tenant_id"`
+	Search           pgtype.Text `json:"search"`
+	CategorySlug     pgtype.Text `json:"category_slug"`
+	BrandSlug        pgtype.Text `json:"brand_slug"`
+	InStock          pgtype.Bool `json:"in_stock"`
+	Status           pgtype.Text `json:"status"`
+	DefaultThreshold int32       `json:"default_threshold"`
+}
+
+type AdminStockStatusCountsRow struct {
+	LowStock   int64 `json:"low_stock"`
+	OutOfStock int64 `json:"out_of_stock"`
+}
+
+func (q *Queries) AdminStockStatusCounts(ctx context.Context, arg AdminStockStatusCountsParams) (AdminStockStatusCountsRow, error) {
+	row := q.db.QueryRow(ctx, adminStockStatusCounts,
+		arg.TenantID,
+		arg.Search,
+		arg.CategorySlug,
+		arg.BrandSlug,
+		arg.InStock,
+		arg.Status,
+		arg.DefaultThreshold,
+	)
+	var i AdminStockStatusCountsRow
+	err := row.Scan(&i.LowStock, &i.OutOfStock)
+	return i, err
 }
 
 const adminUpdateBrand = `-- name: AdminUpdateBrand :one
@@ -811,31 +1177,36 @@ SET title       = COALESCE($1, title),
     thumbnail   = CASE WHEN $11::boolean THEN $12 ELSE thumbnail END,
     badges      = CASE WHEN $13::boolean THEN $14::text[] ELSE badges END,
     description = CASE WHEN $15::boolean THEN $16 ELSE description END,
+    status      = COALESCE($17, status),
+    low_stock_threshold = CASE WHEN $18::boolean THEN $19 ELSE low_stock_threshold END,
     updated_at  = now()
-WHERE id = $17
-  AND tenant_id = $18
+WHERE id = $20
+  AND tenant_id = $21
 RETURNING id
 `
 
 type AdminUpdateProductParams struct {
-	Title          pgtype.Text `json:"title"`
-	Slug           pgtype.Text `json:"slug"`
-	SetBrand       bool        `json:"set_brand"`
-	BrandID        pgtype.UUID `json:"brand_id"`
-	SetCategory    bool        `json:"set_category"`
-	CategoryID     pgtype.UUID `json:"category_id"`
-	Price          pgtype.Int8 `json:"price"`
-	SetCompareAt   bool        `json:"set_compare_at"`
-	CompareAt      pgtype.Int8 `json:"compare_at"`
-	InStock        pgtype.Bool `json:"in_stock"`
-	SetThumbnail   bool        `json:"set_thumbnail"`
-	Thumbnail      pgtype.Text `json:"thumbnail"`
-	SetBadges      bool        `json:"set_badges"`
-	Badges         []string    `json:"badges"`
-	SetDescription bool        `json:"set_description"`
-	Description    pgtype.Text `json:"description"`
-	ID             pgtype.UUID `json:"id"`
-	TenantID       pgtype.UUID `json:"tenant_id"`
+	Title                pgtype.Text `json:"title"`
+	Slug                 pgtype.Text `json:"slug"`
+	SetBrand             bool        `json:"set_brand"`
+	BrandID              pgtype.UUID `json:"brand_id"`
+	SetCategory          bool        `json:"set_category"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	Price                pgtype.Int8 `json:"price"`
+	SetCompareAt         bool        `json:"set_compare_at"`
+	CompareAt            pgtype.Int8 `json:"compare_at"`
+	InStock              pgtype.Bool `json:"in_stock"`
+	SetThumbnail         bool        `json:"set_thumbnail"`
+	Thumbnail            pgtype.Text `json:"thumbnail"`
+	SetBadges            bool        `json:"set_badges"`
+	Badges               []string    `json:"badges"`
+	SetDescription       bool        `json:"set_description"`
+	Description          pgtype.Text `json:"description"`
+	Status               pgtype.Text `json:"status"`
+	SetLowStockThreshold bool        `json:"set_low_stock_threshold"`
+	LowStockThreshold    pgtype.Int4 `json:"low_stock_threshold"`
+	ID                   pgtype.UUID `json:"id"`
+	TenantID             pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) AdminUpdateProduct(ctx context.Context, arg AdminUpdateProductParams) (pgtype.UUID, error) {
@@ -856,6 +1227,9 @@ func (q *Queries) AdminUpdateProduct(ctx context.Context, arg AdminUpdateProduct
 		arg.Badges,
 		arg.SetDescription,
 		arg.Description,
+		arg.Status,
+		arg.SetLowStockThreshold,
+		arg.LowStockThreshold,
 		arg.ID,
 		arg.TenantID,
 	)

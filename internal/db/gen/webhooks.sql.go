@@ -243,11 +243,19 @@ SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
 WHERE active = true
   AND (coalesce(array_length(topics, 1), 0) = 0 OR $1::text = ANY(topics))
+  -- An event without a tenant (legacy emitters) keeps broadcasting to every
+  -- endpoint; an event stamped with a tenant reaches only that tenant's endpoints.
+  AND ($2::uuid IS NULL OR tenant_id = $2::uuid)
 ORDER BY created_at ASC
 `
 
-func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error) {
-	rows, err := q.db.Query(ctx, listActiveEndpointsForTopic, topic)
+type ListActiveEndpointsForTopicParams struct {
+	Topic    string      `json:"topic"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, arg ListActiveEndpointsForTopicParams) ([]WebhookEndpoint, error) {
+	rows, err := q.db.Query(ctx, listActiveEndpointsForTopic, arg.Topic, arg.TenantID)
 	if err != nil {
 		return nil, err
 	}
