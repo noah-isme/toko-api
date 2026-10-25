@@ -275,6 +275,8 @@ type Querier interface {
 	UpdateCartVoucher(ctx context.Context, arg UpdateCartVoucherParams) error
 	UpdateLoyaltyProfilePoints(ctx context.Context, arg UpdateLoyaltyProfilePointsParams) (UpdateLoyaltyProfilePointsRow, error)
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
+	// The status guard. The parameter is cast explicitly: without the cast
+	// PostgreSQL infers it as text from the IN lists and rejects the SET.
 	UpdateOrderStatusIfAllowed(ctx context.Context, arg UpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
 	UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error
 	UpdateQuestionVoteCount(ctx context.Context, questionID pgtype.UUID) (int32, error)

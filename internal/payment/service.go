@@ -10,18 +10,27 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/noah-isme/backend-toko/internal/cart"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/db/txretry"
 	"github.com/noah-isme/backend-toko/internal/obs"
 )
 
+// ErrOrderNotPayable is returned by CreateIntent when the order is no longer
+// PENDING_PAYMENT (expired, cancelled or paid while the intent was created).
+var ErrOrderNotPayable = errors.New("order is no longer pending payment")
+
 // Service coordinates payment intents and status retrieval.
 type Service struct {
-	Q               *dbgen.Queries
+	Q *dbgen.Queries
+	// Pool lets CreateIntent store the new payment under the order row lock.
+	// Without it (unit tests) the payment is inserted without the lock.
+	Pool            *pgxpool.Pool
 	Provider        Provider
 	IntentTTL       time.Duration
 	CallbackBaseURL string
@@ -68,7 +77,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		return zero, err
 	}
 	if order.Status != dbgen.OrderStatusPENDINGPAYMENT {
-		return zero, fmt.Errorf("order status %s does not allow new intents", order.Status)
+		return zero, fmt.Errorf("%w: status %s does not allow new intents", ErrOrderNotPayable, order.Status)
 	}
 	expectedAmount := order.PricingTotal
 	if amount > 0 && amount != expectedAmount {
@@ -137,7 +146,7 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		expiresAt.Valid = true
 		expiresAt.Time = time.Now().Add(ttl)
 	}
-	payment, err := s.Q.CreatePayment(ctx, dbgen.CreatePaymentParams{
+	params := dbgen.CreatePaymentParams{
 		OrderID:         orderUUID,
 		Provider:        pgtype.Text{String: providerName, Valid: providerName != ""},
 		Channel:         pgtype.Text{String: channel, Valid: strings.TrimSpace(channel) != ""},
@@ -148,16 +157,61 @@ func (s *Service) CreateIntent(ctx context.Context, orderID string, amount int64
 		Amount:          pgtype.Int8{Int64: expectedAmount, Valid: true},
 		ExpiresAt:       expiresAt,
 		TenantID:        order.TenantID,
-	})
+	}
+	payment, err := s.storePayment(ctx, params, payload)
 	if err != nil {
+		if errors.Is(err, ErrOrderNotPayable) {
+			result = "not_payable"
+		}
 		return zero, err
 	}
-	_ = s.Q.InsertPaymentEvent(ctx, dbgen.InsertPaymentEventParams{
-		PaymentID: payment.ID,
-		Status:    dbgen.PaymentStatusPENDING,
-		Payload:   payload,
-	})
 	return payment, nil
+}
+
+// storePayment inserts the new intent. The provider call above can take
+// seconds, so the order is locked and re-checked here: an order that the
+// checkout-expiry job, a webhook or a cancel moved out of PENDING_PAYMENT in
+// the meantime gets no live payment link.
+func (s *Service) storePayment(ctx context.Context, params dbgen.CreatePaymentParams, payload []byte) (dbgen.Payment, error) {
+	insert := func(ctx context.Context, q *dbgen.Queries) (dbgen.Payment, error) {
+		payment, err := q.CreatePayment(ctx, params)
+		if err != nil {
+			return dbgen.Payment{}, err
+		}
+		if err := q.InsertPaymentEvent(ctx, dbgen.InsertPaymentEventParams{
+			PaymentID: payment.ID,
+			Status:    dbgen.PaymentStatusPENDING,
+			Payload:   payload,
+		}); err != nil {
+			return dbgen.Payment{}, err
+		}
+		return payment, nil
+	}
+	if s.Pool == nil {
+		return insert(ctx, s.Q)
+	}
+	var payment dbgen.Payment
+	err := txretry.Run(ctx, txretry.DefaultAttempts, func(ctx context.Context) error {
+		tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		q := s.Q.WithTx(tx)
+		order, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+		if err != nil {
+			return fmt.Errorf("lock order: %w", err)
+		}
+		if order.Status != dbgen.OrderStatusPENDINGPAYMENT {
+			return fmt.Errorf("%w: status %s", ErrOrderNotPayable, order.Status)
+		}
+		payment, err = insert(ctx, q)
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+	return payment, err
 }
 
 // ConsolidatedStatus returns the best-known status for an order payment.

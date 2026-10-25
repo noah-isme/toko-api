@@ -14,6 +14,9 @@ var (
 	PaymentIntentTotal *prometheus.CounterVec
 	// PaymentWebhookTotal counts inbound payment webhook processing outcomes.
 	PaymentWebhookTotal *prometheus.CounterVec
+	// PaymentLateTotal counts PAID callbacks for orders that were no longer
+	// payable (EXPIRED/CANCELLED); each one needs a manual refund.
+	PaymentLateTotal *prometheus.CounterVec
 	// ShippingWebhookTotal counts inbound shipping webhook processing outcomes.
 	ShippingWebhookTotal *prometheus.CounterVec
 	// WebhookDeliveriesTotal tracks webhook dispatch outcomes.
@@ -42,6 +45,11 @@ func MustRegisterDomainMetrics(namespace string, reg prometheus.Registerer) {
 			Name:      "payment_webhook_total",
 			Help:      "Count of processed payment webhooks by outcome.",
 		}, []string{"provider", "result"})
+		PaymentLateTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "payment_late_total",
+			Help:      "Count of payments received for orders that had already expired or been cancelled.",
+		}, []string{"provider"})
 		ShippingWebhookTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "shipping_webhook_total",
@@ -77,6 +85,11 @@ func MustRegisterDomainMetrics(namespace string, reg prometheus.Registerer) {
 		mustRegisterCollector(reg, PaymentWebhookTotal, func(existing prometheus.Collector) {
 			if v, ok := existing.(*prometheus.CounterVec); ok {
 				PaymentWebhookTotal = v
+			}
+		})
+		mustRegisterCollector(reg, PaymentLateTotal, func(existing prometheus.Collector) {
+			if v, ok := existing.(*prometheus.CounterVec); ok {
+				PaymentLateTotal = v
 			}
 		})
 		mustRegisterCollector(reg, ShippingWebhookTotal, func(existing prometheus.Collector) {

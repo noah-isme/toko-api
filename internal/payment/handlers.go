@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -79,6 +80,10 @@ func (h *Handler) Intent(w http.ResponseWriter, r *http.Request) {
 	}
 	payment, err := h.Svc.CreateIntent(r.Context(), req.OrderID, order.PricingTotal, req.Channel, h.Svc.CallbackBaseURL)
 	if err != nil {
+		if errors.Is(err, ErrOrderNotPayable) {
+			common.JSONError(w, http.StatusConflict, "INVALID_STATE", "order is no longer pending payment", nil)
+			return
+		}
 		status := http.StatusBadRequest
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			status = http.StatusGatewayTimeout
@@ -191,8 +196,15 @@ func (h *Handler) UploadProof(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 401, "UNAUTHORIZED", "invalid user", nil)
 		return
 	}
-	if _, err := h.Q.GetOrderByIDForUser(r.Context(), dbgen.GetOrderByIDForUserParams{ID: orderID, UserID: userUUID}); err != nil {
+	order, err := h.Q.GetOrderByIDForUser(r.Context(), dbgen.GetOrderByIDForUserParams{ID: orderID, UserID: userUUID})
+	if err != nil {
 		common.JSONError(w, 404, "NOT_FOUND", "order not found", nil)
+		return
+	}
+	// A proof keeps an order from expiring for the proof hold window, so it is
+	// only accepted while the order can still be paid.
+	if order.Status != dbgen.OrderStatusPENDINGPAYMENT {
+		common.JSONError(w, http.StatusConflict, "INVALID_STATE", "payment proof can only be uploaded for pending orders", nil)
 		return
 	}
 	if err := r.ParseMultipartForm(5 << 20); err != nil {
@@ -214,10 +226,27 @@ func (h *Handler) UploadProof(w http.ResponseWriter, r *http.Request) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
+	// Insert under the order row lock, re-checking the status, so a proof can
+	// never land on an order the checkout-expiry job is expiring right now.
 	var proofID pgtype.UUID
-	err = h.Pool.QueryRow(r.Context(), `INSERT INTO payment_proofs(order_id,user_id,filename,content_type,content) VALUES($1,$2,$3,$4,$5) RETURNING id`, orderID, userUUID, header.Filename, contentType, content).Scan(&proofID)
+	stillPending := true
+	err = pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(r.Context(), `SELECT status::text FROM orders WHERE id = $1 FOR UPDATE`, orderID).Scan(&status); err != nil {
+			return err
+		}
+		if status != string(dbgen.OrderStatusPENDINGPAYMENT) {
+			stillPending = false
+			return nil
+		}
+		return tx.QueryRow(r.Context(), `INSERT INTO payment_proofs(order_id,user_id,filename,content_type,content) VALUES($1,$2,$3,$4,$5) RETURNING id`, orderID, userUUID, header.Filename, contentType, content).Scan(&proofID)
+	})
 	if err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to store payment proof", nil)
+		return
+	}
+	if !stillPending {
+		common.JSONError(w, http.StatusConflict, "INVALID_STATE", "payment proof can only be uploaded for pending orders", nil)
 		return
 	}
 	common.JSON(w, http.StatusCreated, map[string]any{"data": map[string]any{"id": cart.UUIDString(proofID), "orderId": cart.UUIDString(orderID), "filename": header.Filename}})
