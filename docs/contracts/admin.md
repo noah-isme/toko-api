@@ -1,6 +1,6 @@
 # Admin Endpoints
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
 All admin endpoints require **admin authentication**.
 
@@ -447,7 +447,7 @@ Advances the order status using state-machine validation. The `{id}` path parame
 
 **Typical transitions:**
 
-- `PENDING_PAYMENT` → `PAID`, `CANCELLED`
+- `PENDING_PAYMENT` → `CANCELLED` (to mark a pending order paid, use 6.8a, which also settles stock)
 - `PAID` → `PACKED`, `CANCELLED`
 - `PACKED` → `SHIPPED`
 - `SHIPPED` → `OUT_FOR_DELIVERY`
@@ -455,9 +455,76 @@ Advances the order status using state-machine validation. The `{id}` path parame
 
 The backend rejects transitions to an equal or previous state in the status rank.
 
+`EXPIRED` is a system-only terminal status (set by the worker when the payment deadline passed, or
+by a provider-reported expiry). It is not a valid target here and nothing transitions out of it
+(`400 BAD_REQUEST` for the target, `409 INVALID_STATE` from it). Admin order objects return
+`"status": "EXPIRED"`; `GET /api/v1/admin/orders?status=EXPIRED` filters on it. An `EXPIRED` order
+whose `paymentStatus` is `PAID` received a late payment and needs a manual refund (RUNBOOK
+"Late payments").
+
 **Response:** `204 No Content`
 
 Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `NOT_FOUND`, `INVALID_STATE` (transition not allowed), `INTERNAL`.
+
+---
+
+## 6.8a Confirm Manual Payment
+
+```http
+POST /api/v1/admin/orders/{id}/confirm-payment
+Content-Type: application/json
+Authorization: Bearer <admin_token>
+```
+
+Marks a `PENDING_PAYMENT` order as paid after an admin has verified a manual bank transfer
+(usually from the customer's uploaded payment proof). It settles the order exactly like a provider
+`PAID` callback, under the order row lock: the latest payment becomes `PAID` (a `manual` payment is
+created when the order has none) with a `payment_events` row
+`{source: "admin", reason: "manual_confirmation", actorId, note}`, the order moves
+`PENDING_PAYMENT` → `PAID` through the status guard, reservations and flash-sale quota are
+committed, the voucher is settled and `order.paid` is emitted (customer email, in-app
+`order_paid`, outbound webhooks). Admin role required; the call is audit-logged like other admin
+routes. Only orders of the caller's tenant can be confirmed.
+
+**Request** (body optional):
+
+```json
+{ "note": "BCA transfer verified, ref 123456" }
+```
+
+- `note` — optional, at most 500 characters, stored on the payment event.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": {
+    "orderId": "order-uuid",
+    "orderStatus": "PAID",
+    "paymentId": "payment-uuid",
+    "paymentStatus": "PAID"
+  }
+}
+```
+
+**Errors:**
+
+- `400 BAD_REQUEST` — invalid order id or malformed JSON; `400 VALIDATION_ERROR` — note too long;
+  `400 TENANT_REQUIRED` — no tenant resolved.
+- `404 NOT_FOUND` — order does not exist or belongs to another tenant.
+- `409 INVALID_STATE` — the order is not `PENDING_PAYMENT` (e.g. already `PAID`, `CANCELLED` or
+  `EXPIRED`; expired orders have had their stock released and cannot be revived), or the latest
+  payment was refunded.
+- `401 UNAUTHORIZED`, `403 FORBIDDEN`, `500 INTERNAL`.
+
+---
+
+## 6.8b Order Stats and Analytics Overview
+
+`GET /api/v1/admin/orders/stats` and `GET /api/v1/admin/analytics/overview` gain
+`"expiredOrders": <int>` (orders in `EXPIRED`). `cancelledOrders` no longer includes
+provider-expired orders (those are now `EXPIRED`). Revenue and top-products figures exclude
+`EXPIRED` orders exactly like `CANCELLED` ones.
 
 ---
 

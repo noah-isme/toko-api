@@ -30,7 +30,7 @@ Toko API is a Go modular monolith backed by PostgreSQL and Redis. The repository
 | Binary | Source | Purpose |
 |--------|--------|---------|
 | `api` | `cmd/api` | HTTP API server — all REST endpoints |
-| `worker` | `cmd/worker` | Background webhook-delivery consumer |
+| `worker` | `cmd/worker` | Background webhook-delivery consumer and periodic jobs (checkout expiry, shipment tracking) |
 | `migrate` | `cmd/migrate` | Schema migration runner (embeds SQL files) |
 | tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`) |
 
@@ -57,6 +57,7 @@ internal/
 ├── favorites/      # Wishlist / favorites
 ├── health/         # Liveness and readiness probes
 ├── http/           # HTTP-layer helpers
+├── jobs/           # Worker periodic jobs: runner, checkout expiry, shipment tracking
 ├── lock/           # Distributed locking (Redis)
 ├── loyalty/        # Points-based loyalty program
 ├── notifications/  # In-app notification centre
@@ -71,12 +72,13 @@ internal/
 ├── queue/          # Redis-based task queue with DLQ and visibility timeouts
 ├── ratelimit/      # Sliding-window rate limiter (global, IP, user, login)
 ├── recommendations/# Collaborative-filtering recommendation engine
+├── reservation/    # Lock-ordered inventory reservation release helpers
 ├── repo/           # Repository pattern helpers
 ├── resilience/     # Circuit breakers, jittered retry, HTTP client wrapper
 ├── reviews/        # Product reviews with aggregated stats
 ├── security/       # CORS, CSRF, HSTS, body-size limits
 ├── services/       # Cross-domain service adapters (tenant-scoped repos)
-├── shipping/       # Shipping cost estimation (RajaOngkir), tracking webhooks
+├── shipping/       # Shipping cost estimation (RajaOngkir), tracking webhooks and waybill tracker
 ├── tenant/         # Multi-tenant resolver (header / subdomain)
 ├── user/           # User profile and address management
 └── voucher/        # Voucher engine (percentage, fixed, free-shipping, per-user limits)
@@ -101,8 +103,37 @@ internal/
 | Shipping webhook replay | `shwh:{courier}:{sha256(body)}` |
 | Outbound webhook replay | `wh:{endpoint_uuid}:{event_uuid}` |
 | Distributed delivery locks | `lock:delivery:{delivery_uuid}` |
+| Periodic job locks | `lock:job:{job_name}` (`checkout_expiry`, `shipment_tracking`) |
 | Task queue | `{QUEUE_REDIS_PREFIX}:queue:{kind}`, `{QUEUE_REDIS_PREFIX}:{kind}:processing`, and `{QUEUE_REDIS_PREFIX}:dedup:{kind}:{key}` (default prefix: `q`) |
 | Rate limiting | `{RATE_LIMIT_REDIS_PREFIX}{scope}:{key}` (default prefix: `rl:`) |
+
+## Periodic Jobs
+
+`cmd/worker` runs `internal/jobs.Runner` beside the webhook queue worker when
+`WORKER_JOBS_ENABLED=true` (default `false` for the release that introduced it; see the RUNBOOK).
+Each job runs on its own ticker; every tick takes the Redis lock `lock:job:<name>` once
+(`lock.Locker.TryLock`, TTL `JOB_LOCK_TTL_SEC`) so only one replica runs it, and every write is
+conditional so an overlapping run is harmless. Each run logs a `job run` line with counters and the
+runner logs `jobs heartbeat` every `WORKER_HEARTBEAT_SEC`; metrics `worker_job_runs_total`,
+`worker_job_duration_seconds`, `worker_job_last_success_timestamp_seconds` and
+`worker_job_items_total` are registered (the standalone worker has no `/metrics` listener yet, so
+logs are the primary signal there).
+
+- `checkout_expiry` (`JOB_CHECKOUT_EXPIRY_*`): per active tenant, expires `PENDING_PAYMENT` orders
+  past payment deadline + grace to `EXPIRED` (one order per transaction, order row locked with
+  `SKIP LOCKED`), releases stock and flash-sale quota, emits `payment.expired` + `order.canceled`
+  (silently for backlog), then releases expired reservations left on `CANCELLED`/`EXPIRED` orders.
+- `shipment_tracking` (`JOB_SHIPMENT_TRACKING_INTERVAL_SEC`, `SHIPMENT_TRACK_*`): polls RajaOngkir
+  for `SHIPPED`/`OUT_FOR_DELIVERY` shipments through a circuit breaker with per-shipment backoff
+  (`shipments.track_*` columns) and a per-tick call cap, applying forward status changes through
+  `shipping.Service`.
+
+**Settlement lock order** (worker, payment webhook, admin payment confirmation, customer cancel,
+payment intent creation, checkout): `orders` row → `payments` → `inventory_reservations` (ascending
+`variant_id`) → `product_variants` (ascending id) → `flash_sale_order_items` / `flash_sale_items`
+(ascending id) → `vouchers`. Checkout reserves all variants in ascending id before any flash-sale
+row, and checkout, the webhook, cancel and the per-order expiry transaction retry on deadlock
+(`internal/db/txretry`).
 
 ## Request Flow
 
@@ -160,7 +191,7 @@ Both paths expect PostgreSQL and Redis configuration from the deployment environ
 | Multi-tenancy | Header/subdomain resolver + membership middleware |
 | Rate limiting | Redis sliding-window (global, IP, user, login) |
 | Idempotency | Redis-backed `Idem` middleware |
-| Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client; payment and shipping clients currently use their own HTTP clients |
+| Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client and the worker's shipment-tracking calls; payment and shipping-rate clients currently use their own HTTP clients |
 | Audit trail | Sampled HTTP recorder on selected auth/admin routes writing to `audit_logs` |
 | Observability | Prometheus counters/histograms, OTLP traces, zerolog |
 | Graceful shutdown | Readiness toggle → drain in-flight → close pools |
