@@ -79,6 +79,10 @@ func subjectFor(topic string) string {
 		return "Pesanan dalam perjalanan"
 	case events.TopicShipmentDelivered:
 		return "Pesanan telah diterima"
+	case events.TopicAlertBackInStock:
+		return "Stok kembali tersedia"
+	case events.TopicAlertPriceDrop:
+		return "Harga turun"
 	default:
 		return fmt.Sprintf("Notifikasi %s", topic)
 	}

@@ -81,3 +81,17 @@ func TestEmitPersistsEvent(t *testing.T) {
 	require.NoError(t, json.Unmarshal(event.Payload, &decoded))
 	require.Equal(t, "123", decoded["orderId"])
 }
+
+func TestDeliverDoesNotPersistAgain(t *testing.T) {
+	store := &stubStore{}
+	notifier := &captureNotifier{}
+	bus := &events.Bus{Store: store, Notifiers: []events.Notifier{notifier}}
+	ev := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: events.TopicAlertBackInStock, AggregateID: toUUID(uuid.New())}
+	require.NoError(t, bus.Deliver(context.Background(), ev))
+	require.Empty(t, store.lastParams.Topic, "Deliver must not insert a domain event")
+	require.Len(t, notifier.events, 1)
+	require.Equal(t, ev.ID, notifier.events[0].ID)
+
+	var nilBus *events.Bus
+	require.Error(t, nilBus.Deliver(context.Background(), ev))
+}

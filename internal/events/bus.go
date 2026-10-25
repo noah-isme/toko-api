@@ -65,6 +65,17 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 		Payload:     row.Payload,
 		OccurredAt:  row.OccurredAt,
 	}
+	return ev, b.Deliver(ctx, ev)
+}
+
+// Deliver fans an already-persisted event out to the scheduler and notifiers
+// without inserting it again. Callers that write the domain_events row inside
+// their own transaction (so the record commits atomically with their state
+// change) use it after commit.
+func (b *Bus) Deliver(ctx context.Context, ev dbgen.DomainEvent) error {
+	if b == nil {
+		return errors.New("events: bus not configured")
+	}
 	var joined error
 	if b.Scheduler != nil {
 		if schedErr := b.Scheduler.Schedule(ctx, ev); schedErr != nil {
@@ -79,7 +90,7 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 			joined = errors.Join(joined, fmt.Errorf("events: notifier: %w", notifyErr))
 		}
 	}
-	return ev, joined
+	return joined
 }
 
 func encodePayload(payload any) ([]byte, error) {
