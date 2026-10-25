@@ -1437,6 +1437,7 @@ paths:
       summary: Get shipment detail for order
   /api/v1/admin/orders/{id}/shipment:
     post:
+      x-permission: orders:write
       summary: Create shipment for order
       description: Registers courier and tracking data for an order.
       security:
@@ -1481,6 +1482,7 @@ paths:
           description: Server error
   /api/v1/admin/orders/{id}/status:
     patch:
+      x-permission: orders:write
       summary: Update order status (admin restricted)
       description: Advances the order status using state-machine validation.
       security:
@@ -1515,7 +1517,36 @@ paths:
         '500':
           description: Server error
   /api/v1/admin/vouchers:
+    get:
+      x-permission: promotions:read
+      summary: List vouchers (admin)
+      description: Paginated voucher list for the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: search, in: query, description: Match on voucher code, schema: { type: string } }
+        - { name: kind, in: query, description: Discount kind filter, schema: { type: string, enum: [fixed_amount, percent] } }
+      responses:
+        '200':
+          description: Voucher page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminVoucher' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Invalid kind filter (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
     post:
+      x-permission: promotions:write
       summary: Create voucher
       description: Creates a new voucher rule.
       security:
@@ -1549,7 +1580,24 @@ paths:
         '500':
           description: Server error
   /api/v1/admin/vouchers/{code}:
+    delete:
+      x-permission: promotions:write
+      summary: Delete voucher (admin)
+      description: Deletes an unused voucher of the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Voucher deleted }
+        '400': { description: Missing code (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Voucher not found in this tenant (`NOT_FOUND`) }
+        '409': { description: Voucher has been used and cannot be deleted (`CONFLICT`) }
+        '500': { description: Server error }
     put:
+      x-permission: promotions:write
       summary: Update voucher
       description: Updates the voucher identified by its code.
       security:
@@ -1591,6 +1639,7 @@ paths:
           description: Server error
   /api/v1/admin/vouchers/preview:
     post:
+      x-permission: promotions:read
       summary: Preview voucher discount (dry-run)
       description: Dry-run evaluation of a voucher for a given cart context.
       security:
@@ -1623,8 +1672,9 @@ paths:
           description: Server error
   /api/v1/admin/webhooks:
     post:
+      x-permission: platform-admin
       summary: Create webhook endpoint
-      description: Registers a new webhook endpoint.
+      description: Registers a new webhook endpoint. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -1649,8 +1699,9 @@ paths:
         '500':
           description: Server error
     get:
+      x-permission: platform-admin
       summary: List webhook endpoints
-      description: Returns configured webhook endpoints.
+      description: Returns configured webhook endpoints. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1690,8 +1741,9 @@ paths:
           description: Server error
   /api/v1/admin/webhooks/{id}:
     put:
+      x-permission: platform-admin
       summary: Update webhook endpoint
-      description: Updates the webhook endpoint identified by id.
+      description: Updates the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1726,8 +1778,9 @@ paths:
         '500':
           description: Server error
     delete:
+      x-permission: platform-admin
       summary: Delete webhook endpoint
-      description: Removes the webhook endpoint identified by id.
+      description: Removes the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1753,8 +1806,9 @@ paths:
           description: Server error
   /api/v1/admin/webhook-deliveries:
     get:
+      x-permission: platform-admin
       summary: List webhook deliveries
-      description: Returns webhook delivery attempts with optional filtering.
+      description: Returns webhook delivery attempts with optional filtering. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1814,8 +1868,9 @@ paths:
           description: Server error
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
+      x-permission: platform-admin
       summary: Replay a webhook delivery
-      description: Resets the delivery for retry and releases any related DLQ lock.
+      description: Resets the delivery for retry and releases any related DLQ lock. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1845,8 +1900,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq:
     get:
+      x-permission: platform-admin
       summary: List dead-letter queue items
-      description: Returns DLQ entries filtered by kind with pagination.
+      description: Returns DLQ entries filtered by kind with pagination. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1884,8 +1940,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq/replay:
     post:
+      x-permission: platform-admin
       summary: Replay DLQ items
-      description: Re-enqueues DLQ entries either by ID list or by batch kind.
+      description: Re-enqueues DLQ entries either by ID list or by batch kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -1911,8 +1968,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/stats:
     get:
+      x-permission: platform-admin
       summary: Queue depth and DLQ metrics
-      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind.
+      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1939,8 +1997,9 @@ paths:
           description: Server error
   /api/v1/admin/audit-logs:
     get:
+      x-permission: platform-admin
       summary: List audit logs (admin)
-      description: Returns a paginated list of audit logs.
+      description: Returns a paginated list of audit logs. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1975,8 +2034,9 @@ paths:
           description: Server error
   /api/v1/analytics/sales:
     get:
+      x-permission: platform-admin
       summary: Sales trend (daily)
-      description: Returns daily sales aggregates for the requested date range. Range is inclusive of `from` and exclusive of `to`.
+      description: Returns daily sales aggregates for the requested date range. Range is inclusive of `from` and exclusive of `to`. Requires the global `admin` role (`users.roles`); not granted by any tenant role. Tenant-scoped `analytics:read` once the analytics stream lands (see rec-api-analytics).
       security:
         - bearerAuth: []
       parameters:
@@ -2025,8 +2085,9 @@ paths:
           description: Analytics service error
   /api/v1/analytics/top-products:
     get:
+      x-permission: platform-admin
       summary: Top products by qty
-      description: Returns top-selling products ordered by quantity sold.
+      description: Returns top-selling products ordered by quantity sold. Requires the global `admin` role (`users.roles`); not granted by any tenant role. Tenant-scoped `analytics:read` once the analytics stream lands (see rec-api-analytics).
       security:
         - bearerAuth: []
       parameters:
@@ -2066,8 +2127,9 @@ paths:
           description: Analytics service error
   /api/v1/analytics/overview:
     get:
+      x-permission: platform-admin
       summary: Overview for dashboard
-      description: Aggregated order and revenue metrics for the requested date range.
+      description: Aggregated order and revenue metrics for the requested date range. Requires the global `admin` role (`users.roles`); not granted by any tenant role. Tenant-scoped `analytics:read` once the analytics stream lands (see rec-api-analytics).
       security:
         - bearerAuth: []
       responses:
@@ -2114,6 +2176,7 @@ paths:
           description: Invalid email format or missing body
   /api/v1/admin/newsletter/subscribers:
     get:
+      x-permission: customers:read
       summary: List newsletter subscribers
       security: [{ bearerAuth: [] }]
       parameters:
@@ -2123,7 +2186,31 @@ paths:
         '200':
           description: List of subscribers
   /api/v1/admin/flash-sales:
+    get:
+      x-permission: promotions:read
+      summary: List flash-sale campaigns
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Campaign page (each campaign includes its items)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/FlashSaleCampaign' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
     post:
+      x-permission: promotions:write
       summary: Create a flash-sale campaign
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -2150,7 +2237,28 @@ paths:
                       stockLimit: { type: integer, minimum: 1, nullable: true, description: 'null or absent means unlimited; 0 is rejected with 400' }
       responses: { '201': { description: Campaign created } }
   /api/v1/admin/flash-sales/{id}:
+    get:
+      x-permission: promotions:read
+      summary: Get a flash-sale campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The campaign with all its items
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/FlashSaleCampaign' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Campaign not found for this tenant (`NOT_FOUND`) }
+        '500': { description: Server error }
     patch:
+      x-permission: promotions:write
       summary: Update a flash-sale campaign (full or partial)
       description: >
         Partial update: absent fields are left unchanged, and a bare
@@ -2442,6 +2550,7 @@ paths:
           description: Server error
   /api/v1/admin/products:
     get:
+      x-permission: catalog:read
       summary: List products (admin)
       description: |
         Paginated product list for the admin dashboard. Unlike the public catalog
@@ -2490,6 +2599,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create product (admin)
       security:
         - bearerAuth: []
@@ -2521,6 +2631,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/products/{id}:
     get:
+      x-permission: catalog:read
       summary: Get product detail (admin)
       description: Accepts either a product UUID or a product slug.
       security:
@@ -2547,6 +2658,7 @@ paths:
         '404': { description: Product not found }
         '500': { description: Server error }
     patch:
+      x-permission: catalog:write
       summary: Update product (admin)
       description: |
         Partial update. Only keys present in the request body are changed;
@@ -2574,6 +2686,7 @@ paths:
         '409': { description: Slug already exists }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete product (admin)
       security:
         - bearerAuth: []
@@ -2592,6 +2705,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/products/{id}/stock:
     patch:
+      x-permission: inventory:write
       summary: Update product stock (admin)
       description: |
         Writes the primary variant stock, creating a variant when the product has
@@ -2636,6 +2750,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/categories:
     get:
+      x-permission: catalog:read
       summary: List categories (admin)
       security:
         - bearerAuth: []
@@ -2656,6 +2771,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create category (admin)
       security:
         - bearerAuth: []
@@ -2683,6 +2799,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/categories/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update category (admin)
       security:
         - bearerAuth: []
@@ -2715,6 +2832,7 @@ paths:
         '409': { description: Slug already exists }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete category (admin)
       description: Child categories and products have their reference set to null.
       security:
@@ -2732,6 +2850,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/brands:
     get:
+      x-permission: catalog:read
       summary: List brands (admin)
       security:
         - bearerAuth: []
@@ -2752,6 +2871,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create brand (admin)
       security:
         - bearerAuth: []
@@ -2779,6 +2899,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/brands/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update brand (admin)
       security:
         - bearerAuth: []
@@ -2811,6 +2932,7 @@ paths:
         '409': { description: Brand name or slug already exists }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete brand (admin)
       description: Products referencing the brand have their reference set to null.
       security:
@@ -2828,6 +2950,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders:
     get:
+      x-permission: orders:read
       summary: List orders (admin)
       description: Cross-user order list with customer, payment, and shipment summary fields.
       security:
@@ -2876,6 +2999,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/stats:
     get:
+      x-permission: orders:read
       summary: Order statistics (admin)
       security:
         - bearerAuth: []
@@ -2903,6 +3027,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/{id}:
     get:
+      x-permission: orders:read
       summary: Get order detail (admin)
       security:
         - bearerAuth: []
@@ -2929,6 +3054,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/vouchers/stats:
     get:
+      x-permission: promotions:read
       summary: Voucher statistics (admin)
       security:
         - bearerAuth: []
@@ -2953,6 +3079,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/analytics/overview:
     get:
+      x-permission: analytics:read
       summary: Dashboard overview (admin)
       description: Revenue, order, customer, and product counters plus top products by revenue.
       security:
@@ -3073,16 +3200,19 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/customers:
     get:
+      x-permission: customers:read
       summary: List customers for the current tenant
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Customer list } }
   /api/v1/admin/inventory:
     get:
+      x-permission: inventory:read
       summary: List variant inventory
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Inventory list } }
   /api/v1/admin/inventory/{variantId}:
     patch:
+      x-permission: inventory:write
       summary: Set or adjust variant stock
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3099,11 +3229,13 @@ paths:
       responses: { '200': { description: Inventory updated } }
   /api/v1/admin/returns:
     get:
+      x-permission: returns:read
       summary: List tenant return requests
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Return requests } }
   /api/v1/admin/returns/{returnId}:
     patch:
+      x-permission: returns:write
       summary: Update return workflow status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3116,6 +3248,7 @@ paths:
       responses: { '200': { description: Return status updated } }
   /api/v1/admin/returns/{returnId}/refund:
     post:
+      x-permission: refunds:write
       summary: Issue a provider-backed refund for a return
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3123,11 +3256,13 @@ paths:
       responses: { '200': { description: Refund issued } }
   /api/v1/admin/support/tickets:
     get:
+      x-permission: support:read
       summary: List tenant support tickets
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Support tickets } }
   /api/v1/admin/support/tickets/{ticketId}:
     patch:
+      x-permission: support:write
       summary: Update support ticket status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3140,6 +3275,7 @@ paths:
       responses: { '200': { description: Ticket status updated } }
   /api/v1/admin/support/tickets/{ticketId}/messages:
     get:
+      x-permission: support:read
       summary: List messages for a tenant support ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3156,6 +3292,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/SupportMessage' }
     post:
+      x-permission: support:write
       summary: Add an agent message to a ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3168,10 +3305,12 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/settings:
     get:
+      x-permission: settings:read
       summary: Read tenant store configuration
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Store configuration } }
     patch:
+      x-permission: settings:write
       summary: Update tenant store configuration
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -3182,6 +3321,7 @@ paths:
       responses: { '200': { description: Store configuration updated } }
   /api/v1/admin/onboarding:
     post:
+      x-permission: settings:write
       summary: Complete tenant onboarding
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -3189,6 +3329,194 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: true }
       responses: { '200': { description: Tenant onboarding saved } }
+  /api/v1/admin/roles:
+    get:
+      x-permission: staff:read
+      summary: List staff roles and their permissions
+      description: >
+        The seven staff roles in rank order (owner first) with the permissions
+        each grants. `owner` can only be granted by an owner; every other role
+        can be granted by any holder of `staff:manage`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Role matrix
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RoleDefinition' }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /api/v1/admin/staff:
+    get:
+      x-permission: staff:read
+      summary: List staff of the current tenant
+      description: >
+        Memberships of the current tenant whose role is not `customer`, ordered
+        by role rank (owner, admin, manager, then the rest) and then email.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 }, description: Values above 100 are clamped to 100 }
+      responses:
+        '200':
+          description: Staff page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/StaffMember' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Missing tenant (`MISSING_TENANT`) }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    post:
+      x-permission: staff:manage
+      summary: Grant a staff role to an existing member
+      description: >
+        Looks the user up by email (case-insensitive) among the members of the
+        current tenant only: a person must first have an account on this
+        tenant's storefront. An unknown email and a user who is not a member of
+        this tenant both return `404 USER_NOT_FOUND`. A SUSPENDED membership is
+        reactivated. Runs in a transaction serialized per tenant; the actor's
+        role is re-read inside it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffAssignRequest' }
+      responses:
+        '201':
+          description: Role granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid payload, missing email, unknown role or role `customer` (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`, `details.required = "staff:manage"`),
+            `OWNER_REQUIRED` (role `owner` requested by a non-owner) or
+            `TENANT_FORBIDDEN` (actor's membership is no longer ACTIVE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No member of this tenant has that email (`USER_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The user is already staff; use PATCH (`STAFF_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/admin/staff/{userId}:
+    patch:
+      x-permission: staff:manage
+      summary: Change a staff member's role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffRoleUpdateRequest' }
+      responses:
+        '200':
+          description: Role changed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid user id, unknown role or role `customer` (use DELETE) (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`), `OWNER_REQUIRED` (target is an owner
+            or the new role is `owner`, and the actor is not an owner) or
+            `TENANT_FORBIDDEN`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    delete:
+      x-permission: staff:manage
+      summary: Revoke a staff role
+      description: Sets the membership role back to `customer`; the membership itself is kept.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Role revoked }
+        '400':
+          description: Invalid user id (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: "`FORBIDDEN`, `OWNER_REQUIRED` or `TENANT_FORBIDDEN` (see PATCH)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
 
 components:
   securitySchemes:
@@ -4007,6 +4335,20 @@ components:
           type: array
           items:
             type: string
+          description: Legacy global roles. Containing `admin` grants the platform-admin routes.
+        role:
+          type: string
+          enum: [owner, admin, manager, catalog, fulfillment, support, analyst, customer]
+          description: >
+            Caller's role in the resolved tenant. Present on GET /auth/me only
+            (absent from login/register responses); `customer` for non-staff.
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+          description: >
+            Permissions of `role` (empty for `customer`). Present on GET /auth/me
+            only. Gate tenant-scoped UI on this list. `roles` (legacy, global)
+            containing `admin` is still what grants the platform-admin routes.
         emailVerified:
           type: boolean
         createdAt:
@@ -4454,6 +4796,44 @@ components:
               type: string
             details:
               description: Free-form additional context.
+    Role:
+      type: string
+      description: Tenant staff role slug.
+      enum: [owner, admin, manager, catalog, fulfillment, support, analyst]
+    Permission:
+      type: string
+      description: Stable permission identifier. Gate UI on these, not on the role.
+      enum: [catalog:read, catalog:write, inventory:read, inventory:write, orders:read, orders:write, returns:read, returns:write, refunds:write, customers:read, support:read, support:write, promotions:read, promotions:write, analytics:read, settings:read, settings:write, staff:read, staff:manage]
+    RoleDefinition:
+      type: object
+      required: [role, permissions]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+    StaffMember:
+      type: object
+      required: [userId, name, email, role, status, createdAt, updatedAt]
+      properties:
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [INVITED, ACTIVE, SUSPENDED], description: Membership status }
+        createdAt: { type: string, format: date-time, description: Membership creation time }
+        updatedAt: { type: string, format: date-time }
+    StaffAssignRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, description: Email of an existing member of this tenant (case-insensitive) }
+        role: { $ref: '#/components/schemas/Role' }
+    StaffRoleUpdateRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
     Pagination:
       type: object
       required: [page, perPage, totalItems]

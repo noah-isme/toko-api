@@ -1,8 +1,25 @@
 # Admin Endpoints
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
-All admin endpoints require **admin authentication**.
+All admin endpoints require a bearer token, a resolved tenant (`X-Tenant-ID` or
+subdomain), an ACTIVE membership in that tenant with a **staff role**, and the
+endpoint's **permission** (see [Permissions per endpoint](#permissions-per-endpoint)
+and [auth.md 1.12](auth.md#112-roles--permissions)). A missing permission
+returns `403 FORBIDDEN` with `details.required` naming it:
+
+```json
+{ "error": { "code": "FORBIDDEN", "message": "insufficient permissions", "details": { "required": "orders:write" } } }
+```
+
+`details.required` is `"staff"` for a member whose role is `customer` and
+`"platform-admin"` for the platform-global endpoints. Resources of another
+tenant always return `404`, never `403`.
+
+Every `/api/v1/admin/*` request (all methods, including denied ones) is audited
+with `resource_type = "admin"`, the route, actor and final status. Mutations are
+never dropped by audit sampling; staff changes also record
+`metadata.targetUserId`, `email`, `previousRole` and `newRole`.
 
 ## 6.1 List Flash Sale Campaigns
 
@@ -851,3 +868,210 @@ Note: the backend currently returns a raw array, not the standard `{ "data": ...
 ```
 
 Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `AUDIT_NOT_CONFIGURED`, `AUDIT_QUERY_FAILED`, `INTERNAL`.
+
+---
+
+## 6.20 List Roles
+
+```http
+GET /api/v1/admin/roles
+Authorization: Bearer <token>
+```
+
+Permission: `staff:read`. Returns the seven staff roles in rank order with
+their permissions (the server's matrix; render role pickers from it). `owner`
+can be granted only by an owner; every other role by any holder of
+`staff:manage`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    { "role": "owner", "permissions": ["analytics:read", "catalog:read", "..."] },
+    { "role": "admin", "permissions": ["..."] },
+    { "role": "manager", "permissions": ["..."] },
+    { "role": "catalog", "permissions": ["catalog:read", "catalog:write", "inventory:read", "inventory:write", "promotions:read"] },
+    { "role": "fulfillment", "permissions": ["..."] },
+    { "role": "support", "permissions": ["..."] },
+    { "role": "analyst", "permissions": ["..."] }
+  ]
+}
+```
+
+---
+
+## 6.21 List Staff
+
+```http
+GET /api/v1/admin/staff?page=1&limit=20
+Authorization: Bearer <token>
+```
+
+Permission: `staff:read`. Memberships of the current tenant whose role is not
+`customer`, ordered by role rank (owner, admin, manager, then the rest) and
+then email. `limit` is clamped to `100`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "userId": "user-uuid",
+      "name": "Jane",
+      "email": "jane@shop.id",
+      "role": "manager",
+      "status": "ACTIVE",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-25T00:00:00Z"
+    }
+  ],
+  "pagination": { "page": 1, "perPage": 20, "totalItems": 3 }
+}
+```
+
+`status` is the membership status (`INVITED`, `ACTIVE`, `SUSPENDED`); only
+ACTIVE members can use their role.
+
+---
+
+## 6.22 Assign Staff
+
+```http
+POST /api/v1/admin/staff
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`.
+
+```json
+{ "email": "jane@shop.id", "role": "manager" }
+```
+
+Grants a staff role to a user who is **already a member of this tenant** (they
+registered on this tenant's storefront). The email lookup is case-insensitive
+and limited to this tenant's members: an unknown email and an account that
+only exists in another tenant both return `404 USER_NOT_FOUND`, and nobody is
+enrolled into the tenant by this call. There is no invitation flow. A
+`SUSPENDED` membership is reactivated.
+
+**Response:** `201 Created` — `{ "data": StaffMember }` (shape as in 6.21).
+
+**Errors:**
+
+- `400 VALIDATION_ERROR` — invalid JSON, missing email, unknown role, or role `customer`.
+- `403 FORBIDDEN` (`details.required = "staff:manage"`) — no `staff:manage`.
+- `403 OWNER_REQUIRED` — role `owner` requested by a non-owner.
+- `403 TENANT_FORBIDDEN` — the caller's own membership stopped being ACTIVE.
+- `404 USER_NOT_FOUND` — no member of this tenant has that email.
+- `409 STAFF_EXISTS` — the user is already staff; use 6.23.
+
+---
+
+## 6.23 Change Staff Role
+
+```http
+PATCH /api/v1/admin/staff/{userId}
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`.
+
+```json
+{ "role": "support" }
+```
+
+**Response:** `200 OK` — `{ "data": StaffMember }`.
+
+**Errors:**
+
+- `400 VALIDATION_ERROR` — `userId` is not a UUID, unknown role, or role `customer` (use 6.24).
+- `403 FORBIDDEN` / `403 TENANT_FORBIDDEN` — as in 6.22.
+- `403 OWNER_REQUIRED` — the target is an `owner`, or the new role is `owner`, and the caller is not an owner.
+- `404 STAFF_NOT_FOUND` — the user has no staff membership in this tenant.
+- `409 LAST_OWNER` — the target is the only ACTIVE owner. A `SUSPENDED` owner is never protected and never counted.
+
+Callers may change their own role, subject to `LAST_OWNER`.
+
+---
+
+## 6.24 Revoke Staff
+
+```http
+DELETE /api/v1/admin/staff/{userId}
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`. Sets the membership role back to `customer`; the
+membership itself is kept so the person keeps storefront access.
+
+**Response:** `204 No Content`.
+
+**Errors:** `400 VALIDATION_ERROR`, `403 FORBIDDEN`, `403 OWNER_REQUIRED`,
+`403 TENANT_FORBIDDEN`, `404 STAFF_NOT_FOUND`, `409 LAST_OWNER` (as in 6.23).
+
+Staff mutations (6.22-6.24) run in one transaction serialized per tenant, and
+the caller's role is re-read inside it, so concurrent changes can never leave
+a tenant without an ACTIVE owner or let a just-demoted caller act on a stale
+role.
+
+---
+
+## Permissions per endpoint
+
+`owner` and `admin` hold every tenant permission. Rows marked
+**platform-admin** are outside the tenant matrix: they require the global
+`users.roles` to contain `admin` (`403 FORBIDDEN`, `details.required =
+"platform-admin"` otherwise), so no tenant role grants them.
+
+| Endpoint | Permission |
+|---|---|
+| `GET /admin/products`, `GET /admin/products/{id}`, `GET /admin/categories`, `GET /admin/brands` | `catalog:read` |
+| `POST /admin/products`, `PATCH/DELETE /admin/products/{id}`, `POST /admin/categories`, `PATCH/DELETE /admin/categories/{id}`, `POST /admin/brands`, `PATCH/DELETE /admin/brands/{id}` | `catalog:write` |
+| `GET /admin/inventory` | `inventory:read` |
+| `PATCH /admin/products/{id}/stock`, `PATCH /admin/inventory/{variantId}` | `inventory:write` |
+| `GET /admin/orders`, `GET /admin/orders/stats`, `GET /admin/orders/{id}` | `orders:read` |
+| `PATCH /admin/orders/{id}/status`, `POST /admin/orders/{id}/shipment` | `orders:write` |
+| `GET /admin/returns` | `returns:read` |
+| `PATCH /admin/returns/{returnId}` | `returns:write` |
+| `POST /admin/returns/{returnId}/refund` | `refunds:write` |
+| `GET /admin/customers`, `GET /admin/newsletter/subscribers` | `customers:read` |
+| `GET /admin/support/tickets`, `GET /admin/support/tickets/{ticketId}/messages` | `support:read` |
+| `PATCH /admin/support/tickets/{ticketId}`, `POST /admin/support/tickets/{ticketId}/messages` | `support:write` |
+| `GET /admin/vouchers`, `GET /admin/vouchers/stats`, `POST /admin/vouchers/preview`, `GET /admin/flash-sales`, `GET /admin/flash-sales/{id}` | `promotions:read` |
+| `POST /admin/vouchers`, `PUT /admin/vouchers/{code}`, `DELETE /admin/vouchers/{code}`, `POST /admin/flash-sales`, `PATCH /admin/flash-sales/{id}` | `promotions:write` |
+| `GET /admin/analytics/overview` | `analytics:read` |
+| `GET /admin/settings` | `settings:read` |
+| `PATCH /admin/settings`, `POST /admin/onboarding` | `settings:write` |
+| `GET /admin/roles`, `GET /admin/staff` | `staff:read` |
+| `POST /admin/staff`, `PATCH /admin/staff/{userId}`, `DELETE /admin/staff/{userId}` | `staff:manage` |
+| `POST/GET /admin/webhooks`, `PUT/DELETE /admin/webhooks/{id}`, `GET /admin/webhook-deliveries`, `POST /admin/webhook-deliveries/{id}/replay`, `GET /admin/queue/dlq`, `POST /admin/queue/dlq/replay`, `GET /admin/queue/stats`, `GET /admin/audit-logs` | **platform-admin** |
+| `GET /analytics/sales`, `GET /analytics/top-products`, `GET /analytics/overview` | **platform-admin** (becomes `analytics:read` once the analytics endpoints are tenant-scoped) |
+
+Each operation in `openapi.yaml` carries the same value as `x-permission`.
+
+Voucher, order-status and shipment writes are tenant-scoped: a voucher code or
+order id of another tenant returns `404`, and a voucher can only be redeemed
+(cart, checkout, payment settlement) in the tenant that created it.
+
+### Adding an admin route (backend)
+
+Register every new `/api/v1/admin` or `/api/v1/analytics` route in
+`cmd/api/routes_admin.go` with chi's `Method`, which accepts an
+`http.Handler` (`Get`/`Post`/... only accept an `http.HandlerFunc` and will not
+compile with a guard):
+
+```go
+a.Method(http.MethodGet, "/reports", rbac.Require(rbac.PermAnalyticsRead, d.Reports.List)) // tenant-scoped
+p.Method(http.MethodGet, "/system", rbac.RequirePlatform(d.System.Get))                    // platform-global, inside the platform group
+```
+
+Pick a permission from the list above (extend the matrix in
+`internal/rbac/roles.go` and this table if none fits). A route registered
+any other way is still blocked for customers by the group-level
+`rbac.RequireStaff`, and `TestAdminRoutesAreGuarded` (`cmd/api/routes_test.go`)
+fails until it is wrapped and added to the test's expected-route table. Add
+`x-permission` to its `openapi.yaml` operation.
