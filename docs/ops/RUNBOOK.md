@@ -112,3 +112,21 @@ Migration `000040_flash_sale_order_items_item_index` builds `idx_flash_sale_orde
 - Symptom: the deploy job fails with `up: migration failed: canceling statement due to lock timeout`; any later `up` reports `Dirty database version 40. Fix and force version.`. The restart steps do not run, so the old binaries keep serving. No index is left behind (the whole file runs in one implicit transaction).
 - Recovery on the host: `./bin/migrate.new force 39` (or `./bin/migrate force 39`; both work), then re-run the deploy workflow off-peak. If you run `./bin/migrate.new up` by hand instead, finish the remaining deploy steps too: `mv bin/api.new bin/api && mv bin/worker.new bin/worker && mv bin/migrate.new bin/migrate`, then `sudo systemctl restart toko-api toko-worker`.
 - Do **not** use `./bin/migrate up`: `deploy.yml` renames `migrate.new` to `migrate` only after a successful migration, so after a failed deploy `bin/migrate` is the old binary, which embeds migrations only up to 39, and `up` is a silent no-op.
+
+## Migrations 000041/000042 (analytics)
+`deploy.yml` runs `./bin/migrate.new up` before it restarts `toko-api`/`toko-worker`, so both migrations execute while the old binaries serve checkout traffic.
+
+### 000041 `idx_carts_tenant_created` (CREATE INDEX CONCURRENTLY)
+The up file is a single `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_carts_tenant_created ON carts(tenant_id, created_at)` statement (golang-migrate sends a single-statement file without `BEGIN`, which `CONCURRENTLY` requires). It does not block cart writes, but it waits for every transaction that is already open when it starts, so a stuck long transaction makes it hang rather than fail.
+- Symptom: the deploy job fails with `up: migration failed: ...` (for example `canceling statement due to statement timeout`, or a deadlock/cancel), and any later `up` reports `Dirty database version 41. Fix and force version.`. A failed concurrent build can leave an **INVALID** `idx_carts_tenant_created` behind; a later `IF NOT EXISTS` would then silently skip it and keep the unusable index.
+- Recovery on the host, in this order:
+  1. `psql "$DATABASE_URL" -c 'DROP INDEX CONCURRENTLY IF EXISTS idx_carts_tenant_created'` (removes an INVALID leftover; check with `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_carts_tenant_created'::regclass`).
+  2. `./bin/migrate.new force 40`.
+  3. Re-run the deploy workflow (off-peak if a long transaction caused it).
+
+### 000042 drop `mv_sales_daily` / `mv_top_products`
+The file starts with `SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '120s';`. `DROP MATERIALIZED VIEW` takes `ACCESS EXCLUSIVE` on views the old binaries' `/api/v1/analytics/*` endpoints still read, so a long read can make it time out.
+- Symptom: `up: migration failed: canceling statement due to lock timeout` (or `statement timeout`); later `up` reports `Dirty database version 42. Fix and force version.`. The whole file runs in one implicit transaction, so both views are still there and the old binaries keep working.
+- Recovery on the host: `./bin/migrate.new force 41`, then re-run the deploy workflow off-peak.
+
+For both: if you run `./bin/migrate.new up` by hand instead of re-running the workflow, finish the remaining deploy steps (`mv bin/api.new bin/api && mv bin/worker.new bin/worker && mv bin/migrate.new bin/migrate`, then `sudo systemctl restart toko-api toko-worker`). Do **not** use `./bin/migrate up` for the reason given in the 000040 section (after a failed deploy `bin/migrate` is the old binary and `up` is a silent no-op).
