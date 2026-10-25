@@ -23,6 +23,12 @@ type IntentResponse struct {
 	Token       string
 	RedirectURL string
 	ExpiresAt   int64
+	// ExpirySynced reports that the provider was told to close the
+	// transaction at ExpiresAt. It is stored in payments.provider_payload
+	// (response.ExpirySynced); Midtrans intents without it were created before
+	// the Snap expiry was sent and stay payable for Midtrans' default window,
+	// which the checkout-expiry job honours.
+	ExpirySynced bool
 }
 
 // WebhookVerifyResult contains the normalised data extracted from a webhook notification after signature verification.

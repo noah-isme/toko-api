@@ -208,6 +208,20 @@ func TestCheckoutExpiryIntegration_PaymentProofHoldsOrder(t *testing.T) {
 	require.Equal(t, "EXPIRED", d.OrderStatus(stale.ID))
 	require.Equal(t, 1, res["orders_expired"])
 
+	// The deadline is far past SilentAfter, but a customer with a proof very
+	// likely paid: they get the normal notifications and ops get a signal.
+	require.Zero(t, res["orders_expired_silent"])
+	require.Equal(t, 1, res["orders_expired_proof_unreviewed"])
+	require.Equal(t, 1, d.Events(stale.ID, events.TopicPaymentExpired))
+	require.Equal(t, 1, d.Events(stale.ID, events.TopicOrderCanceled))
+	require.Equal(t, 1, d.Events(stale.ID, events.TopicPaymentProofUnreviewed))
+	require.Equal(t, "false", d.Str(`SELECT payload->>'silent' FROM payment_events WHERE payment_id = $1 AND status = 'EXPIRED'`, stale.PaymentID))
+	var ops map[string]any
+	require.NoError(t, json.Unmarshal([]byte(d.Str(`SELECT payload::text FROM domain_events WHERE aggregate_id = $1 AND topic = $2`, stale.ID, events.TopicPaymentProofUnreviewed)), &ops))
+	require.Equal(t, float64(2), ops["proofCount"])
+	require.NotContains(t, ops, "email", "payment.proof_unreviewed must never carry a recipient")
+	require.Zero(t, d.Events(held.ID, events.TopicPaymentProofUnreviewed))
+
 	// The Go re-check under the lock applies the same rule.
 	outcome, err := job.expireOrder(tenant.WithTenant(context.Background(), fx.UUIDString(c.tenant)), c.tenant, held.ID)
 	require.NoError(t, err)
@@ -387,4 +401,73 @@ func TestCheckoutExpiryIntegration_ConcurrentCheckoutAndExpiry(t *testing.T) {
 		require.Equal(t, 9, d.Stock(v1), "round %d", i)
 		require.Equal(t, 9, d.Stock(v2), "round %d", i)
 	}
+}
+
+// A Midtrans intent created by the previous release carries no Snap expiry, so
+// Midtrans keeps it payable for its default window even though the local
+// expires_at is created+15min. The job must not expire such an order before
+// that window ends; intents with the ExpirySynced marker use expires_at.
+func TestCheckoutExpiryIntegration_LegacyMidtransIntentKeepsDefaultWindow(t *testing.T) {
+	c := newExpiryCase(t)
+	d := c.d
+	ctx := context.Background()
+	setProvider := func(o fx.Order, payload string) {
+		_, err := d.Pool.Exec(ctx, `UPDATE payments SET provider = 'midtrans', provider_payload = $2::jsonb WHERE id = $1`, o.PaymentID, payload)
+		require.NoError(t, err)
+	}
+	legacyPayload := `{"request":{"OrderID":"x"},"response":{"Provider":"midtrans","ExpiresAt":1}}`
+	syncedPayload := `{"request":{"OrderID":"x"},"response":{"Provider":"midtrans","ExpiresAt":1,"ExpirySynced":true}}`
+
+	// Created 2h ago: local deadline long past, Midtrans default still open.
+	legacy := c.pending(time.Now().Add(-105*time.Minute), false)
+	setProvider(legacy, legacyPayload)
+	synced := c.pending(time.Now().Add(-105*time.Minute), false)
+	setProvider(synced, syncedPayload)
+	// Created 25h ago: even the Midtrans default window (24h) plus grace is over.
+	oldLegacy := c.pending(time.Now().Add(-25*time.Hour+15*time.Minute), false)
+	setProvider(oldLegacy, legacyPayload)
+
+	job := newExpiryJob(d, c.tenant)
+	res, err := job.Run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "PENDING_PAYMENT", d.OrderStatus(legacy.ID))
+	require.Equal(t, "EXPIRED", d.OrderStatus(synced.ID))
+	require.Equal(t, "EXPIRED", d.OrderStatus(oldLegacy.ID))
+	require.Equal(t, 2, res["orders_expired"])
+
+	// The re-check under the lock applies the same floor.
+	outcome, err := job.expireOrder(tenant.WithTenant(ctx, fx.UUIDString(c.tenant)), c.tenant, legacy.ID)
+	require.NoError(t, err)
+	require.Equal(t, "skipped_renewed", outcome.counter)
+}
+
+// totalRevenue and averageOrderValue exclude CANCELLED and EXPIRED orders.
+func TestCheckoutExpiryIntegration_StatsRevenueExcludesUnpaidTerminalOrders(t *testing.T) {
+	c := newExpiryCase(t)
+	d := c.d
+	for _, o := range []struct {
+		status dbgen.OrderStatus
+		total  int64
+	}{
+		{dbgen.OrderStatusPAID, 100_000},
+		{dbgen.OrderStatusDELIVERED, 300_000},
+		{dbgen.OrderStatusCANCELLED, 900_000},
+		{dbgen.OrderStatusEXPIRED, 700_000},
+	} {
+		d.Order(fx.OrderOpts{
+			TenantID:          c.tenant,
+			UserID:            c.user,
+			Status:            o.status,
+			Total:             o.total,
+			ReservationStatus: dbgen.InventoryReservationStatusRELEASED,
+			Lines:             []fx.Line{{ProductID: c.product, VariantID: c.variant, Qty: 1}},
+		})
+	}
+	stats, err := d.Q.AdminOrderStats(context.Background(), dbgen.AdminOrderStatsParams{TenantID: c.tenant})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), stats.TotalOrders)
+	require.Equal(t, int64(400_000), stats.TotalRevenue)
+	require.Equal(t, int64(200_000), stats.AverageOrderValue)
+	require.Equal(t, int64(1), stats.CancelledOrders)
+	require.Equal(t, int64(1), stats.ExpiredOrders)
 }

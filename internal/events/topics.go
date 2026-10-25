@@ -11,7 +11,12 @@ const (
 	// already expired or was cancelled. It is an ops signal (manual refund) and
 	// deliberately not in DefaultTopics: it must never reach the customer, so
 	// its payload carries no email.
-	TopicPaymentLate            = "payment.late"
+	TopicPaymentLate = "payment.late"
+	// TopicPaymentProofUnreviewed is emitted when the checkout-expiry job
+	// expires an order whose customer uploaded a transfer proof that no admin
+	// confirmed: the money was probably sent and needs review or a refund. Ops
+	// only, like payment.late; its payload carries no email.
+	TopicPaymentProofUnreviewed = "payment.proof_unreviewed"
 	TopicShipmentShipped        = "shipment.shipped"
 	TopicShipmentOutForDelivery = "shipment.out_for_delivery"
 	TopicShipmentDelivered      = "shipment.delivered"
@@ -34,5 +39,5 @@ func DefaultTopics() []string {
 // IsCustomerSilent reports whether a topic is an internal/ops signal that must
 // never produce a customer notification, whatever its payload carries.
 func IsCustomerSilent(topic string) bool {
-	return topic == TopicPaymentLate
+	return topic == TopicPaymentLate || topic == TopicPaymentProofUnreviewed
 }

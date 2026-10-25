@@ -114,7 +114,8 @@ Common error codes: `UNAUTHORIZED`, `BAD_REQUEST`, `NOT_FOUND`, `STATUS_ERROR`.
   72 h) counted from the **first** proof (re-uploading does not extend it). An admin confirms the
   transfer with `POST /api/v1/admin/orders/{id}/confirm-payment` (see admin.md), which settles the
   order exactly like a provider `PAID` callback. If nobody confirms it within the hold, the order
-  expires normally.
+  expires with the normal `payment.expired` / `order.canceled` notifications (never silently,
+  however old) and the ops-only `payment.proof_unreviewed` event (6.4).
 
 ## 6.4 Order expiry (worker)
 
@@ -122,17 +123,26 @@ The worker's `checkout_expiry` job (every `JOB_CHECKOUT_EXPIRY_INTERVAL_SEC`, de
 `PENDING_PAYMENT` order to the terminal status `EXPIRED` when its payment deadline plus a grace
 period has passed:
 
-- Deadline = latest payment's `expiresAt`, or `createdAt + PAYMENT_INTENT_EXPIRES_MIN` when the
-  order has no payment. Grace = `JOB_CHECKOUT_EXPIRY_GRACE_SEC` (default 600 s). Until then the
+- Deadline = the latest `expiresAt` over the order's payments, or
+  `createdAt + PAYMENT_INTENT_EXPIRES_MIN` when the order has no payment. Midtrans intents created
+  before this release were sent without a Snap expiry and stay payable at Midtrans for its default
+  window, so while such an intent is `PENDING` its deadline is at least `createdAt + 24 h` (new
+  intents record `response.ExpirySynced: true` in `provider_payload` and use `expiresAt`). Grace = `JOB_CHECKOUT_EXPIRY_GRACE_SEC` (default 600 s). Until then the
   order stays payable and its stock stays reserved.
 - Orders inside the proof hold (6.3) are skipped.
-- On expiry: the latest `PENDING` payment becomes `EXPIRED` (with a `payment_events` row), stock and
+- On expiry: every `PENDING` payment of the order becomes `EXPIRED` (with a `payment_events` row), stock and
   flash-sale quota are released, and `payment.expired` + `order.canceled` are emitted (customer
   email, in-app notification `payment_expired` / `order_canceled`, outbound webhooks) with payload
   `{orderId, orderNumber, tenantId, paymentId?, userId?, email?, status: "EXPIRED", reason: "payment_deadline", source: "worker"}`.
 - Backlog rule: orders whose deadline + grace passed more than
   `JOB_CHECKOUT_EXPIRY_SILENT_AFTER_HOURS` (default 24 h) ago are expired **silently** (no events,
-  no notifications); the `payment_events` row carries `"silent": true`.
+  no notifications); the `payment_events` row carries `"silent": true`. Orders with a payment
+  proof are never expired silently.
+- An order that expires with a payment proof nobody confirmed also emits the ops-only topic
+  `payment.proof_unreviewed` `{orderId, orderNumber?, tenantId, userId?, status: "EXPIRED",
+  firstProofAt, proofCount, source: "worker"}` (worker warn log of the same name; counter
+  `orders_expired_proof_unreviewed`). Like `payment.late` it carries no email and never produces a
+  customer email or in-app notification; it is delivered to the tenant's outbound webhooks.
 - A provider `expire` callback for a pending order has the same effect (order `EXPIRED`, not
   `CANCELLED`); a provider `deny`/`cancel` callback still yields `CANCELLED`.
 - `EXPIRED` is terminal: the customer cannot cancel it, admins cannot move it, and a new intent or

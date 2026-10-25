@@ -141,21 +141,28 @@ ORDER BY i.id
 FOR UPDATE OF i;
 
 -- Phase B candidates (no locks; each order is re-checked under its row lock).
--- Deadline = latest payment expires_at, else created_at + fallback TTL. Orders
--- whose first payment proof is younger than the proof hold are skipped.
+-- Deadline = the latest provider deadline over the order's payments, else
+-- created_at + fallback TTL. A Midtrans intent created before the release
+-- that sends the Snap expiry (no response.ExpirySynced marker) stays payable
+-- at Midtrans for its own default window, so while it is PENDING its deadline
+-- is at least created_at + legacy_window. Orders whose first payment proof is
+-- younger than the proof hold are skipped.
 -- name: ListExpiredUnpaidOrderCandidates :many
 SELECT o.id
 FROM orders o
-LEFT JOIN LATERAL (
-  SELECT p.expires_at
-  FROM payments p
-  WHERE p.order_id = o.id
-  ORDER BY p.created_at DESC
-  LIMIT 1
-) lp ON true
 WHERE o.tenant_id = sqlc.arg(tenant_id)
   AND o.status = 'PENDING_PAYMENT'
-  AND COALESCE(lp.expires_at, o.created_at + make_interval(secs => sqlc.arg(fallback_ttl_sec)::int))
+  AND COALESCE(
+        (SELECT max(CASE
+                      WHEN p.provider = 'midtrans'
+                       AND p.status = 'PENDING'
+                       AND (p.provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+                      THEN GREATEST(p.expires_at, p.created_at + make_interval(secs => sqlc.arg(legacy_window_sec)::int))
+                      ELSE p.expires_at
+                    END)
+         FROM payments p
+         WHERE p.order_id = o.id),
+        o.created_at + make_interval(secs => sqlc.arg(fallback_ttl_sec)::int))
       + make_interval(secs => sqlc.arg(grace_sec)::int) <= now()
   AND COALESCE(
         (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id),
@@ -165,7 +172,9 @@ ORDER BY o.created_at, o.id
 LIMIT sqlc.arg(batch_size);
 
 -- Phase B re-check under the order row lock. ErrNoRows means the order is
--- locked by another transaction or is no longer pending.
+-- locked by another transaction or is no longer pending. payment_deadline
+-- uses the same rule as ListExpiredUnpaidOrderCandidates (NULL without
+-- payments).
 -- name: LockPendingOrderForExpiry :one
 SELECT o.id,
        o.user_id,
@@ -173,11 +182,20 @@ SELECT o.id,
        o.order_number,
        o.created_at,
        lp.id         AS payment_id,
-       lp.expires_at AS payment_expires_at,
-       (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id)::timestamptz AS first_proof_at
+       (SELECT max(CASE
+                     WHEN p.provider = 'midtrans'
+                      AND p.status = 'PENDING'
+                      AND (p.provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+                     THEN GREATEST(p.expires_at, p.created_at + make_interval(secs => sqlc.arg(legacy_window_sec)::int))
+                     ELSE p.expires_at
+                   END)
+        FROM payments p
+        WHERE p.order_id = o.id)::timestamptz AS payment_deadline,
+       (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id)::timestamptz AS first_proof_at,
+       (SELECT count(*) FROM payment_proofs pp WHERE pp.order_id = o.id)::int AS proof_count
 FROM orders o
 LEFT JOIN LATERAL (
-  SELECT p.id, p.expires_at
+  SELECT p.id
   FROM payments p
   WHERE p.order_id = o.id
   ORDER BY p.created_at DESC

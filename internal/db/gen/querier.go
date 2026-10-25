@@ -197,8 +197,12 @@ type Querier interface {
 	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]ListCategoriesRow, error)
 	ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error)
 	// Phase B candidates (no locks; each order is re-checked under its row lock).
-	// Deadline = latest payment expires_at, else created_at + fallback TTL. Orders
-	// whose first payment proof is younger than the proof hold are skipped.
+	// Deadline = the latest provider deadline over the order's payments, else
+	// created_at + fallback TTL. A Midtrans intent created before the release
+	// that sends the Snap expiry (no response.ExpirySynced marker) stays payable
+	// at Midtrans for its own default window, so while it is PENDING its deadline
+	// is at least created_at + legacy_window. Orders whose first payment proof is
+	// younger than the proof hold are skipped.
 	ListExpiredUnpaidOrderCandidates(ctx context.Context, arg ListExpiredUnpaidOrderCandidatesParams) ([]pgtype.UUID, error)
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
@@ -237,7 +241,9 @@ type Querier interface {
 	// orders, in ascending id, before ReleaseFlashSaleReservations decrements them.
 	LockFlashSaleItemsForOrders(ctx context.Context, orderIds []pgtype.UUID) ([]pgtype.UUID, error)
 	// Phase B re-check under the order row lock. ErrNoRows means the order is
-	// locked by another transaction or is no longer pending.
+	// locked by another transaction or is no longer pending. payment_deadline
+	// uses the same rule as ListExpiredUnpaidOrderCandidates (NULL without
+	// payments).
 	LockPendingOrderForExpiry(ctx context.Context, arg LockPendingOrderForExpiryParams) (LockPendingOrderForExpiryRow, error)
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error

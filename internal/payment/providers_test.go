@@ -128,6 +128,17 @@ func TestMidtransCreateIntentSendsSnapExpiry(t *testing.T) {
 	if got, want := result.ExpiresAt, start.Add(15*time.Minute).Unix(); got != want {
 		t.Fatalf("ExpiresAt = %d, want %d", got, want)
 	}
+	if !result.ExpirySynced {
+		t.Fatal("ExpirySynced must be set when the Snap expiry was sent")
+	}
+	// The marker is what the checkout-expiry job reads from provider_payload.
+	stored, _ := json.Marshal(map[string]any{"response": result})
+	var decoded struct {
+		Response map[string]any `json:"response"`
+	}
+	if err := json.Unmarshal(stored, &decoded); err != nil || decoded.Response["ExpirySynced"] != true {
+		t.Fatalf("stored payload lacks response.ExpirySynced: %s", stored)
+	}
 }
 
 func TestSnapExpiryWindowRoundsUpToMinutes(t *testing.T) {

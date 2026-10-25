@@ -123,20 +123,35 @@ Both files start with `SET LOCAL lock_timeout = '5s';` and run while the old api
 ## Periodic jobs (worker)
 `cmd/worker` runs two jobs when `WORKER_JOBS_ENABLED=true`: `checkout_expiry` (expire unpaid orders, sweep orphaned reservations) and `shipment_tracking` (poll the carrier). Each tick takes the Redis lock `lock:job:<name>`, so only one worker replica runs a job at a time.
 
-**Confirm runs.** Every run logs `"message":"job run"` with `job`, `status` (`success`/`error`), `duration_ms` and `counters` (e.g. `orders_expired`, `orders_expired_silent`, `skipped_proof_hold`, `reservations_expired`, `reservations_anomalous`, `polled`, `events_applied`, `errors`, `skipped_breaker`, `deferred_cap`, `stopped_*`). Replicas that lost the lock log `job run skipped` with `reason=lock_held` at debug level. The runner logs `jobs heartbeat` every `WORKER_HEARTBEAT_SEC` with each job's `last_run_age_sec` and `last_status`. Metrics (`worker_job_runs_total`, `worker_job_last_success_timestamp_seconds`, ...) exist but the standalone worker has no `/metrics` listener yet; use the logs.
+**Confirm runs.** Every run logs `"message":"job run"` with `job`, `status` (`success`/`error`), `duration_ms` and `counters` (e.g. `orders_expired`, `orders_expired_silent`, `orders_expired_proof_unreviewed`, `skipped_proof_hold`, `skipped_renewed`, `no_tracking_data`, `reservations_expired`, `reservations_anomalous`, `polled`, `events_applied`, `errors`, `skipped_breaker`, `deferred_cap`, `stopped_*`). Replicas that lost the lock log `job run skipped` with `reason=lock_held` at debug level. The runner logs `jobs heartbeat` every `WORKER_HEARTBEAT_SEC` with each job's `last_run_age_sec` and `last_status`. Metrics (`worker_job_runs_total`, `worker_job_last_success_timestamp_seconds`, ...) exist but the standalone worker has no `/metrics` listener yet; use the logs.
+
+**Old Midtrans intents.** Intents created by the previous release were sent to Midtrans without an expiry, so a VA / bank-transfer intent stays payable at Midtrans for about 24 h although its local `payments.expires_at` is creation + 15 min. The job treats a `PENDING` Midtrans payment without `response.ExpirySynced` in `provider_payload` as payable until `created_at + 24 h` (+ grace), so those orders are not expired early and no wait is needed before enabling. Orders still inside that window:
+```sql
+SELECT count(*) FROM payments
+WHERE provider = 'midtrans' AND status = 'PENDING'
+  AND (provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+  AND created_at > now() - interval '24 hours';
+```
+Their stock stays reserved until the window closes (at most 24 h after the deploy).
 
 **First rollout (this release).** `WORKER_JOBS_ENABLED` defaults to `false` and `deploy/k8s/worker.yaml` pins it to `"false"`. Old API binaries settle `PAID` callbacks with an unconditional update, which would move an order the worker just expired back to `PAID` after its stock was returned (oversell). So:
 1. Deploy the release with jobs disabled. With `deploy.yml` (systemd) both services restart on the new binaries in the same step; with k8s wait until `kubectl rollout status deployment/backend-toko` reports every API pod on the new image.
 2. Check the backlog size:
    ```sql
-   -- unpaid orders that will expire on the first tick (deadline + 10 min grace passed)
+   -- unpaid orders that will expire on the first tick (deadline + 10 min grace passed;
+   -- old Midtrans intents count as payable for 24 h, see above; proof holds not applied)
    SELECT o.tenant_id, count(*) FROM orders o
-   LEFT JOIN LATERAL (SELECT expires_at FROM payments WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1) p ON true
    WHERE o.status = 'PENDING_PAYMENT'
-     AND COALESCE(p.expires_at, o.created_at + interval '15 minutes') + interval '10 minutes' < now()
+     AND COALESCE(
+           (SELECT max(CASE WHEN p.provider = 'midtrans' AND p.status = 'PENDING'
+                             AND (p.provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+                            THEN GREATEST(p.expires_at, p.created_at + interval '24 hours')
+                            ELSE p.expires_at END)
+            FROM payments p WHERE p.order_id = o.id),
+           o.created_at + interval '15 minutes') + interval '10 minutes' < now()
    GROUP BY 1;
    -- of those, silent (no customer notification): deadline older than 24 h
-   -- (same query with "< now() - interval '24 hours'")
+   -- (same query with "< now() - interval '24 hours'"); orders with a payment proof are never silent
    -- shipments the tracker will poll
    SELECT count(*) FROM shipments WHERE COALESCE(last_status, status) IN ('SHIPPED','OUT_FOR_DELIVERY')
      AND COALESCE(tracking_number,'') <> '' AND track_next_poll_at IS NOT NULL;
@@ -147,14 +162,14 @@ Both files start with `SET LOCAL lock_timeout = '5s';` and run while the old api
 
 **Pause.** Set `WORKER_JOBS_ENABLED=false` and restart the worker. The webhook delivery worker keeps running.
 
-**Tuning.** `JOB_CHECKOUT_EXPIRY_INTERVAL_SEC` (60), `JOB_CHECKOUT_EXPIRY_GRACE_SEC` (600; how long an order stays payable after its deadline), `JOB_CHECKOUT_EXPIRY_SILENT_AFTER_HOURS` (24; older orders expire without notifications, 0 = never silent), `JOB_CHECKOUT_PROOF_HOLD_HOURS` (72), `JOB_BATCH_SIZE` (100), `JOB_LOCK_TTL_SEC` (300), `JOB_SHIPMENT_TRACKING_INTERVAL_SEC` (300), `SHIPMENT_TRACK_MAX_CALLS_PER_TICK` (50), `SHIPMENT_TRACK_BACKOFF_BASE_SEC` (900), `SHIPMENT_TRACK_BACKOFF_MAX_SEC` (21600), `SHIPMENT_TRACK_MAX_ATTEMPTS` (200), `SHIPMENT_TRACK_MAX_AGE_DAYS` (30), `SHIPMENT_TRACK_SILENT_AFTER_HOURS` (48). Carrier calls go through the `shipping-track` circuit breaker (`CB_SHIPPING_*`).
+**Tuning.** `JOB_CHECKOUT_EXPIRY_INTERVAL_SEC` (60), `JOB_CHECKOUT_EXPIRY_GRACE_SEC` (600; how long an order stays payable after its deadline), `JOB_CHECKOUT_EXPIRY_SILENT_AFTER_HOURS` (24; older orders expire without notifications, 0 = never silent; orders with a payment proof always notify), `JOB_CHECKOUT_PROOF_HOLD_HOURS` (72), `JOB_BATCH_SIZE` (100), `JOB_LOCK_TTL_SEC` (300; each run is cancelled after 90 % of it so the lock never expires under a running job), `JOB_SHIPMENT_TRACKING_INTERVAL_SEC` (300), `SHIPMENT_TRACK_MAX_CALLS_PER_TICK` (50), `SHIPMENT_TRACK_BACKOFF_BASE_SEC` (900), `SHIPMENT_TRACK_BACKOFF_MAX_SEC` (21600), `SHIPMENT_TRACK_MAX_ATTEMPTS` (200), `SHIPMENT_TRACK_MAX_AGE_DAYS` (30), `SHIPMENT_TRACK_SILENT_AFTER_HOURS` (48). Carrier calls go through the `shipping-track` circuit breaker (`CB_SHIPPING_*`). A carrier answer with no data for a waybill (not scanned yet, unknown waybill) counts as `no_tracking_data`, backs off that shipment, and does not count as a breaker failure.
 
 **Tracking state.** `shipments.track_next_poll_at IS NULL` means polling stopped; `track_last_error` says why (`stopped: delivered`, `stopped: returned`, `stopped: lost`, `stopped: max_attempts`, `stopped: max_age`) or holds the last carrier error. To re-poll a shipment: `UPDATE shipments SET track_next_poll_at = now(), track_attempts = 0, track_last_error = NULL WHERE id = '<id>' AND tenant_id = '<tenant>';`.
 
 **Reservation anomaly.** A `reservation_anomaly` warning / `reservations_anomalous` counter means expired `RESERVED` reservations exist on orders that are `PAID` or later. They are left untouched; investigate the order's settlement (`payment_events`, webhook logs).
 
 ## Late payments
-A `PAID` provider callback for an order that is already `EXPIRED` or `CANCELLED` records the payment as `PAID` but leaves the order and its (released) stock alone. Midtrans Snap intents now carry an explicit expiry equal to `PAYMENT_INTENT_EXPIRES_MIN`, so this should be rare (callbacks delayed past the grace period, or `CANCELLED` orders).
+A `PAID` provider callback for an order that is already `EXPIRED` or `CANCELLED` records the payment as `PAID` but leaves the order and its (released) stock alone. Midtrans Snap intents now carry an explicit expiry equal to `PAYMENT_INTENT_EXPIRES_MIN`, and older intents without it are kept payable for Midtrans' 24 h default (see "Old Midtrans intents"), so this should be rare: callbacks delayed past the grace period, payments on `CANCELLED` orders, or a Midtrans default window other than 24 h for some method.
 - Detection: metric `payment_late_total{provider}`; warn log `payment.late: payment captured for an order that is no longer payable; refund required` with `order_id`, `payment_id`, `tenant_id`; domain events `SELECT * FROM domain_events WHERE topic = 'payment.late' ORDER BY occurred_at DESC;`; or
   ```sql
   SELECT o.id, o.order_number, o.status, p.id AS payment_id, p.provider, p.amount, p.updated_at
@@ -176,4 +191,9 @@ A `PAID` provider callback for an order that is already `EXPIRED` or `CANCELLED`
 Customers paying by manual transfer upload a proof (`POST /api/v1/payments/{orderId}/proof`). An order with a proof is not expired for `JOB_CHECKOUT_PROOF_HOLD_HOURS` (default 72 h) counted from the **first** proof; re-uploading does not extend the hold. Stock stays reserved meanwhile.
 - Confirm a verified transfer with `POST /api/v1/admin/orders/{id}/confirm-payment` (optional `{"note": "..."}`). It settles the order like a provider `PAID` callback (order `PAID`, stock and flash-sale quota committed, voucher settled, `order.paid` email/notification) and is audit-logged. `PATCH .../status` cannot set `PAID`.
 - Reject a bogus proof by cancelling: `PATCH /api/v1/admin/orders/{id}/status` with `{"status":"CANCELLED"}`. Its reservations are released by the `checkout_expiry` orphan sweep once they are past their `expires_at`.
-- If nobody confirms within the hold, the order expires normally (customer gets the `payment.expired` / `order.canceled` notification). Proof uploads for non-pending orders return `409 INVALID_STATE`.
+- If nobody confirms within the hold, the order expires with the normal `payment.expired` / `order.canceled` notifications (never silently, however old the order is). Because the customer very likely sent money, the job also logs the warning `payment.proof_unreviewed: order expired with an unconfirmed transfer proof; review the transfer and refund if received` (with `order_id`, `tenant_id`, `proof_count`, `first_proof_at`), counts `orders_expired_proof_unreviewed`, and emits the ops-only domain event `payment.proof_unreviewed` (no customer email or in-app notification). Check the bank statement for each one; refund received transfers by hand and contact the customer:
+  ```sql
+  SELECT aggregate_id AS order_id, payload->>'orderNumber' AS order_number, payload->>'firstProofAt' AS first_proof_at, occurred_at
+  FROM domain_events WHERE topic = 'payment.proof_unreviewed' ORDER BY occurred_at DESC;
+  ```
+- Proof uploads for non-pending orders return `409 INVALID_STATE`.

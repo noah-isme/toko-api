@@ -114,39 +114,48 @@ func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, code string) 
 const listExpiredUnpaidOrderCandidates = `-- name: ListExpiredUnpaidOrderCandidates :many
 SELECT o.id
 FROM orders o
-LEFT JOIN LATERAL (
-  SELECT p.expires_at
-  FROM payments p
-  WHERE p.order_id = o.id
-  ORDER BY p.created_at DESC
-  LIMIT 1
-) lp ON true
 WHERE o.tenant_id = $1
   AND o.status = 'PENDING_PAYMENT'
-  AND COALESCE(lp.expires_at, o.created_at + make_interval(secs => $2::int))
-      + make_interval(secs => $3::int) <= now()
+  AND COALESCE(
+        (SELECT max(CASE
+                      WHEN p.provider = 'midtrans'
+                       AND p.status = 'PENDING'
+                       AND (p.provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+                      THEN GREATEST(p.expires_at, p.created_at + make_interval(secs => $2::int))
+                      ELSE p.expires_at
+                    END)
+         FROM payments p
+         WHERE p.order_id = o.id),
+        o.created_at + make_interval(secs => $3::int))
+      + make_interval(secs => $4::int) <= now()
   AND COALESCE(
         (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id),
         '-infinity'::timestamptz
-      ) <= now() - make_interval(secs => $4::int)
+      ) <= now() - make_interval(secs => $5::int)
 ORDER BY o.created_at, o.id
-LIMIT $5
+LIMIT $6
 `
 
 type ListExpiredUnpaidOrderCandidatesParams struct {
-	TenantID       pgtype.UUID `json:"tenant_id"`
-	FallbackTtlSec int32       `json:"fallback_ttl_sec"`
-	GraceSec       int32       `json:"grace_sec"`
-	ProofHoldSec   int32       `json:"proof_hold_sec"`
-	BatchSize      int32       `json:"batch_size"`
+	TenantID        pgtype.UUID `json:"tenant_id"`
+	LegacyWindowSec int32       `json:"legacy_window_sec"`
+	FallbackTtlSec  int32       `json:"fallback_ttl_sec"`
+	GraceSec        int32       `json:"grace_sec"`
+	ProofHoldSec    int32       `json:"proof_hold_sec"`
+	BatchSize       int32       `json:"batch_size"`
 }
 
 // Phase B candidates (no locks; each order is re-checked under its row lock).
-// Deadline = latest payment expires_at, else created_at + fallback TTL. Orders
-// whose first payment proof is younger than the proof hold are skipped.
+// Deadline = the latest provider deadline over the order's payments, else
+// created_at + fallback TTL. A Midtrans intent created before the release
+// that sends the Snap expiry (no response.ExpirySynced marker) stays payable
+// at Midtrans for its own default window, so while it is PENDING its deadline
+// is at least created_at + legacy_window. Orders whose first payment proof is
+// younger than the proof hold are skipped.
 func (q *Queries) ListExpiredUnpaidOrderCandidates(ctx context.Context, arg ListExpiredUnpaidOrderCandidatesParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listExpiredUnpaidOrderCandidates,
 		arg.TenantID,
+		arg.LegacyWindowSec,
 		arg.FallbackTtlSec,
 		arg.GraceSec,
 		arg.ProofHoldSec,
@@ -422,42 +431,55 @@ SELECT o.id,
        o.order_number,
        o.created_at,
        lp.id         AS payment_id,
-       lp.expires_at AS payment_expires_at,
-       (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id)::timestamptz AS first_proof_at
+       (SELECT max(CASE
+                     WHEN p.provider = 'midtrans'
+                      AND p.status = 'PENDING'
+                      AND (p.provider_payload -> 'response' ->> 'ExpirySynced') IS DISTINCT FROM 'true'
+                     THEN GREATEST(p.expires_at, p.created_at + make_interval(secs => $1::int))
+                     ELSE p.expires_at
+                   END)
+        FROM payments p
+        WHERE p.order_id = o.id)::timestamptz AS payment_deadline,
+       (SELECT min(pp.created_at) FROM payment_proofs pp WHERE pp.order_id = o.id)::timestamptz AS first_proof_at,
+       (SELECT count(*) FROM payment_proofs pp WHERE pp.order_id = o.id)::int AS proof_count
 FROM orders o
 LEFT JOIN LATERAL (
-  SELECT p.id, p.expires_at
+  SELECT p.id
   FROM payments p
   WHERE p.order_id = o.id
   ORDER BY p.created_at DESC
   LIMIT 1
 ) lp ON true
-WHERE o.id = $1
-  AND o.tenant_id = $2
+WHERE o.id = $2
+  AND o.tenant_id = $3
   AND o.status = 'PENDING_PAYMENT'
 FOR UPDATE OF o SKIP LOCKED
 `
 
 type LockPendingOrderForExpiryParams struct {
-	ID       pgtype.UUID `json:"id"`
-	TenantID pgtype.UUID `json:"tenant_id"`
+	LegacyWindowSec int32       `json:"legacy_window_sec"`
+	ID              pgtype.UUID `json:"id"`
+	TenantID        pgtype.UUID `json:"tenant_id"`
 }
 
 type LockPendingOrderForExpiryRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	TenantID         pgtype.UUID        `json:"tenant_id"`
-	OrderNumber      pgtype.Text        `json:"order_number"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	PaymentID        pgtype.UUID        `json:"payment_id"`
-	PaymentExpiresAt pgtype.Timestamptz `json:"payment_expires_at"`
-	FirstProofAt     pgtype.Timestamptz `json:"first_proof_at"`
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+	OrderNumber     pgtype.Text        `json:"order_number"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	PaymentID       pgtype.UUID        `json:"payment_id"`
+	PaymentDeadline pgtype.Timestamptz `json:"payment_deadline"`
+	FirstProofAt    pgtype.Timestamptz `json:"first_proof_at"`
+	ProofCount      int32              `json:"proof_count"`
 }
 
 // Phase B re-check under the order row lock. ErrNoRows means the order is
-// locked by another transaction or is no longer pending.
+// locked by another transaction or is no longer pending. payment_deadline
+// uses the same rule as ListExpiredUnpaidOrderCandidates (NULL without
+// payments).
 func (q *Queries) LockPendingOrderForExpiry(ctx context.Context, arg LockPendingOrderForExpiryParams) (LockPendingOrderForExpiryRow, error) {
-	row := q.db.QueryRow(ctx, lockPendingOrderForExpiry, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, lockPendingOrderForExpiry, arg.LegacyWindowSec, arg.ID, arg.TenantID)
 	var i LockPendingOrderForExpiryRow
 	err := row.Scan(
 		&i.ID,
@@ -466,8 +488,9 @@ func (q *Queries) LockPendingOrderForExpiry(ctx context.Context, arg LockPending
 		&i.OrderNumber,
 		&i.CreatedAt,
 		&i.PaymentID,
-		&i.PaymentExpiresAt,
+		&i.PaymentDeadline,
 		&i.FirstProofAt,
+		&i.ProofCount,
 	)
 	return i, err
 }

@@ -36,6 +36,11 @@ import (
 // CheckoutExpiryJobName is the job's name and lock suffix.
 const CheckoutExpiryJobName = "checkout_expiry"
 
+// DefaultLegacyProviderWindow is how long a Midtrans intent created without
+// the Snap expiry (before this release) stays payable at Midtrans: its
+// default for VA and bank transfer is about 24h.
+const DefaultLegacyProviderWindow = 24 * time.Hour
+
 // maxBatchesPerTenant bounds one run so a huge backlog drains over several
 // ticks instead of holding the job lock for a long time.
 const maxBatchesPerTenant = 50
@@ -54,7 +59,12 @@ type CheckoutExpiryJob struct {
 	Grace time.Duration
 	// SilentAfter: orders whose deadline+grace passed longer ago than this are
 	// expired without customer notifications or domain events (backlog).
+	// Orders with a payment proof are never expired silently.
 	SilentAfter time.Duration
+	// LegacyProviderWindow is the deadline floor (from the intent's creation)
+	// for PENDING Midtrans intents that were created without the Snap expiry;
+	// zero uses DefaultLegacyProviderWindow.
+	LegacyProviderWindow time.Duration
 	// ProofHold keeps an order with a payment proof pending this long after
 	// its first proof, so an admin can confirm the transfer.
 	ProofHold time.Duration
@@ -113,11 +123,12 @@ func (j *CheckoutExpiryJob) expireOrders(ctx context.Context, tenantID pgtype.UU
 	batch := j.batchSize()
 	for i := 0; i < maxBatchesPerTenant; i++ {
 		ids, err := j.Q.ListExpiredUnpaidOrderCandidates(ctx, dbgen.ListExpiredUnpaidOrderCandidatesParams{
-			TenantID:       tenantID,
-			FallbackTtlSec: seconds(j.FallbackTTL),
-			GraceSec:       seconds(j.Grace),
-			ProofHoldSec:   seconds(j.ProofHold),
-			BatchSize:      int32(batch),
+			TenantID:        tenantID,
+			LegacyWindowSec: seconds(j.legacyWindow()),
+			FallbackTtlSec:  seconds(j.FallbackTTL),
+			GraceSec:        seconds(j.Grace),
+			ProofHoldSec:    seconds(j.ProofHold),
+			BatchSize:       int32(batch),
 		})
 		if err != nil {
 			return fmt.Errorf("list expired orders: %w", err)
@@ -138,6 +149,9 @@ func (j *CheckoutExpiryJob) expireOrders(ctx context.Context, tenantID pgtype.UU
 				if outcome.silent {
 					res.Add("orders_expired_silent", 1)
 				}
+				if outcome.proofUnreviewed {
+					res.Add("orders_expired_proof_unreviewed", 1)
+				}
 			}
 		}
 		// Candidates that were skipped would be listed again; stop once a
@@ -153,12 +167,14 @@ type expiryOutcome struct {
 	counter              string
 	expired              bool
 	silent               bool
+	proofUnreviewed      bool
 	paymentsExpired      int
 	reservationsReleased int
 }
 
 // expireOrder expires one order in its own transaction and, after commit,
-// emits payment.expired and order.canceled unless the expiry is silent.
+// emits payment.expired and order.canceled unless the expiry is silent, plus
+// the ops-only payment.proof_unreviewed when the order had a payment proof.
 func (j *CheckoutExpiryJob) expireOrder(ctx context.Context, tenantID, orderID pgtype.UUID) (expiryOutcome, error) {
 	var (
 		out        expiryOutcome
@@ -175,7 +191,9 @@ func (j *CheckoutExpiryJob) expireOrder(ctx context.Context, tenantID, orderID p
 		defer func() { _ = tx.Rollback(ctx) }()
 		qtx := j.Q.WithTx(tx)
 
-		row, err = qtx.LockPendingOrderForExpiry(ctx, dbgen.LockPendingOrderForExpiryParams{ID: orderID, TenantID: tenantID})
+		row, err = qtx.LockPendingOrderForExpiry(ctx, dbgen.LockPendingOrderForExpiryParams{
+			ID: orderID, TenantID: tenantID, LegacyWindowSec: seconds(j.legacyWindow()),
+		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				out.counter = "skipped_locked_or_changed"
@@ -185,8 +203,8 @@ func (j *CheckoutExpiryJob) expireOrder(ctx context.Context, tenantID, orderID p
 		}
 		now := j.now()
 		deadline := row.CreatedAt.Time.Add(j.FallbackTTL)
-		if row.PaymentExpiresAt.Valid {
-			deadline = row.PaymentExpiresAt.Time
+		if row.PaymentDeadline.Valid {
+			deadline = row.PaymentDeadline.Time
 		}
 		effective := deadline.Add(j.Grace)
 		if effective.After(now) {
@@ -204,7 +222,10 @@ func (j *CheckoutExpiryJob) expireOrder(ctx context.Context, tenantID, orderID p
 			}
 			return fmt.Errorf("expire order: %w", err)
 		}
-		out.silent = j.SilentAfter > 0 && now.Sub(effective) > j.SilentAfter
+		// A customer who uploaded a transfer proof very likely paid; they and
+		// ops are always told, however old the order is.
+		out.proofUnreviewed = row.FirstProofAt.Valid
+		out.silent = !out.proofUnreviewed && j.SilentAfter > 0 && now.Sub(effective) > j.SilentAfter
 		paymentIDs, err = qtx.ExpirePendingPaymentsByOrder(ctx, orderID)
 		if err != nil {
 			return fmt.Errorf("expire payments: %w", err)
@@ -233,6 +254,9 @@ func (j *CheckoutExpiryJob) expireOrder(ctx context.Context, tenantID, orderID p
 	}
 	if out.expired && !out.silent {
 		j.emitExpired(ctx, row, paymentIDs)
+	}
+	if out.expired && out.proofUnreviewed {
+		j.emitProofUnreviewed(ctx, row)
 	}
 	return out, nil
 }
@@ -266,6 +290,39 @@ func (j *CheckoutExpiryJob) emitExpired(ctx context.Context, row dbgen.LockPendi
 		if _, err := j.Events.Emit(ctx, topic, row.ID, payload); err != nil {
 			j.logger().Warn().Err(err).Str("topic", topic).Str("order_id", cart.UUIDString(row.ID)).Msg("checkout_expiry: emit event failed")
 		}
+	}
+}
+
+// emitProofUnreviewed raises the ops signal for an order that expired with a
+// transfer proof nobody confirmed. The payload carries no email: the topic is
+// customer-silent (events.IsCustomerSilent).
+func (j *CheckoutExpiryJob) emitProofUnreviewed(ctx context.Context, row dbgen.LockPendingOrderForExpiryRow) {
+	orderID := cart.UUIDString(row.ID)
+	j.logger().Warn().
+		Str("order_id", orderID).
+		Str("tenant_id", cart.UUIDString(row.TenantID)).
+		Int32("proof_count", row.ProofCount).
+		Time("first_proof_at", row.FirstProofAt.Time).
+		Msg("payment.proof_unreviewed: order expired with an unconfirmed transfer proof; review the transfer and refund if received")
+	if j.Events == nil {
+		return
+	}
+	payload := map[string]any{
+		"orderId":      orderID,
+		"tenantId":     cart.UUIDString(row.TenantID),
+		"status":       string(dbgen.OrderStatusEXPIRED),
+		"firstProofAt": row.FirstProofAt.Time.UTC().Format(time.RFC3339),
+		"proofCount":   row.ProofCount,
+		"source":       "worker",
+	}
+	if row.OrderNumber.Valid {
+		payload["orderNumber"] = row.OrderNumber.String
+	}
+	if row.UserID.Valid {
+		payload["userId"] = cart.UUIDString(row.UserID)
+	}
+	if _, err := j.Events.Emit(ctx, events.TopicPaymentProofUnreviewed, row.ID, payload); err != nil {
+		j.logger().Warn().Err(err).Str("order_id", orderID).Msg("checkout_expiry: emit payment.proof_unreviewed failed")
 	}
 }
 
@@ -332,6 +389,13 @@ func (j *CheckoutExpiryJob) batchSize() int {
 		return 100
 	}
 	return j.BatchSize
+}
+
+func (j *CheckoutExpiryJob) legacyWindow() time.Duration {
+	if j.LegacyProviderWindow > 0 {
+		return j.LegacyProviderWindow
+	}
+	return DefaultLegacyProviderWindow
 }
 
 func (j *CheckoutExpiryJob) now() time.Time {

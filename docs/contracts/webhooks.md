@@ -67,7 +67,8 @@ Common error codes: `PAYMENT_NOT_CONFIGURED`, `PROVIDER_NOT_SUPPORTED`, `INVALID
 Domain events are delivered only to the active webhook endpoints of the **event's tenant** (the
 order's tenant). Events emitted without a tenant are not delivered (logged as a warning). Topics:
 `order.created`, `order.paid`, `order.canceled`, `payment.failed`, `payment.expired`,
-`payment.late` (ops only, see payment.md 6.5), `shipment.shipped`, `shipment.out_for_delivery`,
+`payment.late` (ops only, see payment.md 6.5), `payment.proof_unreviewed` (ops only, see
+payment.md 6.4), `shipment.shipped`, `shipment.out_for_delivery`,
 `shipment.delivered`. Events are emitted only on real state changes.
 
 ---

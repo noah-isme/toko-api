@@ -32,3 +32,15 @@ func TestEmailNotifierSkipsPaymentLateEvenWithRecipient(t *testing.T) {
 		t.Fatalf("payment.expired should still email, sent=%v", mailer.sent)
 	}
 }
+
+func TestEmailNotifierSkipsProofUnreviewed(t *testing.T) {
+	mailer := &countingMailer{}
+	n := EmailNotifier{Mail: mailer, Enabled: true}
+	payload := []byte(`{"email":"buyer@example.com","orderId":"o-1"}`)
+	if err := n.Notify(context.Background(), dbgen.DomainEvent{Topic: events.TopicPaymentProofUnreviewed, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if len(mailer.sent) != 0 {
+		t.Fatalf("payment.proof_unreviewed must not email the customer, sent to %v", mailer.sent)
+	}
+}

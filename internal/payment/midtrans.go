@@ -114,7 +114,7 @@ func (m Midtrans) CreateIntent(ctx context.Context, req IntentRequest) (IntentRe
 	if minutes > 0 {
 		expiresAt = start.Add(time.Duration(minutes) * time.Minute)
 	}
-	return IntentResponse{Provider: "midtrans", Token: result.Token, RedirectURL: result.RedirectURL, ExpiresAt: expiresAt.Unix()}, nil
+	return IntentResponse{Provider: "midtrans", Token: result.Token, RedirectURL: result.RedirectURL, ExpiresAt: expiresAt.Unix(), ExpirySynced: minutes > 0}, nil
 }
 
 // snapExpiryWindow returns the Snap expiry start (whole seconds, as Midtrans
@@ -146,6 +146,8 @@ func (m Midtrans) stubIntent(req IntentRequest) IntentResponse {
 		Token:       token,
 		RedirectURL: fmt.Sprintf("%s/snap/v2/vtweb/%s", strings.TrimRight(m.snapHost(), "/"), token),
 		ExpiresAt:   expiresAt.Unix(),
+		// No provider behind the stub, so nothing stays payable past ExpiresAt.
+		ExpirySynced: true,
 	}
 }
 
