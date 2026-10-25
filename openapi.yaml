@@ -3585,7 +3585,7 @@ components:
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
         expiredOrders: { type: integer, description: Orders in EXPIRED (payment deadline passed) }
-        averageOrderValue: { type: integer }
+        averageOrderValue: { type: integer, description: Average pricing total of orders that are not cancelled or expired }
     AdminVoucher:
       type: object
       required: [id, code, kind, value, minSpend, usedCount, combinable, priority, productIds, categoryIds, brandIds, createdAt, updatedAt]

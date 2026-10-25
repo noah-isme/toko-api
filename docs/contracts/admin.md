@@ -523,8 +523,10 @@ routes. Only orders of the caller's tenant can be confirmed.
 
 `GET /api/v1/admin/orders/stats` and `GET /api/v1/admin/analytics/overview` gain
 `"expiredOrders": <int>` (orders in `EXPIRED`). `cancelledOrders` no longer includes
-provider-expired orders (those are now `EXPIRED`). Revenue and top-products figures exclude
-`EXPIRED` orders exactly like `CANCELLED` ones.
+provider-expired orders (those are now `EXPIRED`). `totalRevenue`, `averageOrderValue` and the
+top-products figures exclude `CANCELLED` and `EXPIRED` orders (`totalOrders` and the per-status
+counts still include them). Before this release `totalRevenue` and `averageOrderValue` summed
+every status, so the values drop for tenants with cancelled orders.
 
 ---
 

@@ -425,14 +425,14 @@ func (q *Queries) AdminListVouchers(ctx context.Context, arg AdminListVouchersPa
 
 const adminOrderStats = `-- name: AdminOrderStats :one
 SELECT COUNT(*)::bigint                                                                    AS total_orders,
-       COALESCE(SUM(o.pricing_total), 0)::bigint                                           AS total_revenue,
+       COALESCE(SUM(o.pricing_total) FILTER (WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')), 0)::bigint AS total_revenue,
        COUNT(*) FILTER (WHERE o.status = 'PENDING_PAYMENT')::bigint                        AS pending_orders,
        COUNT(*) FILTER (WHERE o.status = 'PAID')::bigint                                   AS paid_orders,
        COUNT(*) FILTER (WHERE o.status IN ('SHIPPED', 'OUT_FOR_DELIVERY'))::bigint         AS shipped_orders,
        COUNT(*) FILTER (WHERE o.status = 'DELIVERED')::bigint                              AS delivered_orders,
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
        COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::bigint                                AS expired_orders,
-       COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
+       COALESCE(AVG(o.pricing_total) FILTER (WHERE o.status NOT IN ('CANCELLED', 'EXPIRED')), 0)::bigint AS average_order_value
 FROM orders o
 WHERE o.tenant_id = $1
   AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
