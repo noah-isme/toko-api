@@ -41,7 +41,8 @@ authorization boundary at the tenant membership.
 ## Consequences
 
 - **Positive:** Least-privilege staff roles per tenant; owners of self-created
-  tenants cannot reach other tenants or platform resources.
+  tenants cannot read, change or delete other tenants' resources or reach
+  platform resources.
 - **Positive:** A newly added admin route cannot silently inherit access: it is
   blocked for customers and fails the route-guard test until mapped.
 - **Negative:** Changing the matrix needs a deploy; there is no per-tenant
@@ -49,3 +50,18 @@ authorization boundary at the tenant membership.
 - **Negative:** `users.roles` still matters for platform-admin routes and some
   legacy customer counts; tenant-scoping webhooks, audit logs and analytics is
   follow-up work for their owners.
+- **Negative (open, needs a decision before merge):** `vouchers.code`,
+  `products.slug`, `categories.slug`, `brands.name`, `brands.slug` and
+  `product_variants.sku` are still unique database-wide. Before this change only
+  global admins could create them; now any self-service owner can. A `409` on
+  create reveals that a value exists in some other tenant (for voucher codes,
+  the attacker can then join that tenant as a customer and redeem it), and a
+  tenant can squat common names and slugs for everyone. Redemption itself is
+  tenant-scoped, so a foreign code never discounts another tenant's cart. The
+  fix is per-tenant uniqueness: one `CREATE UNIQUE INDEX CONCURRENTLY` migration
+  per `(tenant_id, ...)` index, then dropping the global constraints
+  (`product_variants` has no `tenant_id` and needs one first), plus updating
+  every `ON CONFLICT (slug|code|sku)` in the seeder and backfill tool and the
+  lookups by code or slug. That needs more migration numbers than this stream
+  was assigned and touches catalog, search and tooling code, so it is either
+  done as a follow-up before merge or explicitly deferred by the product owner.

@@ -279,16 +279,18 @@ Authorization: Bearer <token>
       "id": "session-uuid",
       "device": "Chrome on macOS",
       "ipAddress": "203.0.113.9",
-      "location": "Jakarta, ID",
       "lastActive": "2026-10-25T08:00:00Z",
-      "current": true
+      "current": false
     }
   ]
 }
 ```
 
-`location` is omitted when unknown; `current` marks the session that made the
-request. **Errors:** `401 UNAUTHORIZED`.
+One entry per stored refresh session, newest first. Expired sessions are only
+purged when they are next used, so they can still appear. `lastActive` is the
+session's creation time, `current` is always `false` today (the current session
+is not tracked) and `location` is not populated yet (omitted). **Errors:**
+`401 UNAUTHORIZED`, `403 TENANT_FORBIDDEN`.
 
 ---
 
@@ -300,7 +302,8 @@ Authorization: Bearer <token>
 ```
 
 **Response:** `204 No Content`. Revokes every refresh session of the caller and
-clears the refresh cookie. **Errors:** `401 UNAUTHORIZED`.
+clears the refresh cookie. Access tokens already issued stay valid until they
+expire. **Errors:** `401 UNAUTHORIZED`, `403 TENANT_FORBIDDEN`.
 
 ---
 
@@ -345,7 +348,11 @@ belong to, so their access is unchanged. `/api/v1/analytics/*` moves to
 3. `403 FORBIDDEN`, `details.required = "staff"` — member whose role is `customer`.
 4. `403 FORBIDDEN`, `details.required = "platform-admin"` — platform-admin routes only.
 5. `403 FORBIDDEN`, `details.required = "<permission>"` — role lacks the route's permission.
-6. The handler. Resources of another tenant return `404`, never `403`.
+6. The handler. Reading, changing or deleting a resource of another tenant
+   by id or code returns `404`, never `403`. Exception (known gap): creating a
+   voucher code, product/category slug, brand name/slug or variant SKU that
+   another tenant already uses returns `409 CONFLICT`, because these values are
+   still unique across all tenants (see ADR-011, Consequences).
 
 ```json
 { "error": { "code": "FORBIDDEN", "message": "insufficient permissions", "details": { "required": "orders:write" } } }

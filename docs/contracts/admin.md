@@ -13,13 +13,26 @@ returns `403 FORBIDDEN` with `details.required` naming it:
 ```
 
 `details.required` is `"staff"` for a member whose role is `customer` and
-`"platform-admin"` for the platform-global endpoints. Resources of another
-tenant always return `404`, never `403`.
+`"platform-admin"` for the platform-global endpoints. Reading, changing or
+deleting a resource of another tenant by id or code returns `404`, never `403`,
+and a product cannot reference another tenant's brand or category (`400`).
 
-Every `/api/v1/admin/*` request (all methods, including denied ones) is audited
-with `resource_type = "admin"`, the route, actor and final status. Mutations are
-never dropped by audit sampling; staff changes also record
-`metadata.targetUserId`, `email`, `previousRole` and `newRole`.
+**Known gap (open, not yet resolved):** voucher codes, product slugs, category
+slugs, brand names and slugs, and variant SKUs are still unique across **all**
+tenants (database-wide unique constraints). Creating or renaming one of these
+to a value another tenant already uses returns `409 CONFLICT`, which reveals
+that the value exists somewhere on the platform and lets one tenant reserve a
+value for everyone. Per-tenant uniqueness needs schema migrations that are not
+part of this change; see ADR-011, Consequences.
+
+Every `/api/v1/admin/*` request from an ACTIVE member of the tenant is audited
+with `resource_type = "admin"`, the route, actor and final status, including
+requests denied with `403 FORBIDDEN` (staff, platform-admin or permission
+denials, for example a customer probing `/admin`). Requests rejected before
+that (`401 UNAUTHORIZED`, `403 TENANT_FORBIDDEN`) are not audited. Mutations are
+never dropped by audit sampling (only GET/HEAD/OPTIONS can be sampled); staff
+changes also record `metadata.targetUserId`, `email`, `previousRole` and
+`newRole`. `/api/v1/analytics/*` (read-only) is not audited.
 
 ## 6.1 List Flash Sale Campaigns
 
@@ -361,7 +374,7 @@ Creates a new voucher rule.
 }
 ```
 
-Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (duplicate code), `INTERNAL`.
+Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (duplicate code; codes are currently unique across all tenants, so this can also mean another tenant uses the code), `INTERNAL`.
 
 ---
 

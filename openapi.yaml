@@ -128,6 +128,66 @@ paths:
       responses:
         '204':
           description: Logged out; refresh cookie cleared
+  /api/v1/auth/logout/all:
+    post:
+      summary: Revoke every session of the current user
+      description: >-
+        Revokes all refresh tokens of the authenticated user on every device
+        and clears the refresh cookie on this response. Access tokens already
+        issued stay valid until they expire.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: All sessions revoked; refresh cookie cleared
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/auth/sessions:
+    get:
+      summary: List the active sessions of the current user
+      description: >-
+        One entry per stored refresh-token session of the user, newest first.
+        Expired sessions are only purged when they are next used, so they can
+        still appear. `lastActive` is the session's creation time and
+        `current` is always false today (the current session is not tracked).
+        `location` is never set yet.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/me:
     get:
       summary: Get the current authenticated user
@@ -1310,6 +1370,52 @@ paths:
   /api/v1/carts/{id}/apply-voucher:
     post:
       summary: Apply voucher
+      description: >-
+        Vouchers belong to one tenant. A code that belongs to another tenant
+        is treated exactly like an unknown code (404).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Voucher applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      discount:
+                        type: integer
+                        format: int64
+        '400':
+          description: Invalid payload, or the voucher is not active, expired, used up or below minimum spend (BAD_REQUEST)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Cart not found, or voucher code unknown or owned by another tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/carts/{id}/voucher:
     delete:
       summary: Remove voucher
@@ -2624,10 +2730,10 @@ paths:
                     properties:
                       id: { type: string, format: uuid }
                       slug: { type: string }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
-        '409': { description: Slug already exists }
+        '409': { description: "Slug already exists. Slugs are currently unique across all tenants, so this can also mean another tenant uses it." }
         '500': { description: Server error }
   /api/v1/admin/products/{id}:
     get:
@@ -2679,11 +2785,11 @@ paths:
               $ref: '#/components/schemas/AdminProductUpdateRequest'
       responses:
         '204': { description: Product updated }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Product not found }
-        '409': { description: Slug already exists }
+        '409': { description: "Slug already exists. Slugs are currently unique across all tenants, so this can also mean another tenant uses it." }
         '500': { description: Server error }
     delete:
       x-permission: catalog:write
