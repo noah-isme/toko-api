@@ -444,7 +444,6 @@ func main() {
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
-	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache}
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
 
@@ -475,6 +474,17 @@ func main() {
 	}
 	auditEnabled := envBool("AUDIT_ENABLED", true) && auditSample > 0
 	auditSvc := &audit.Service{Store: queries, Enabled: auditEnabled, SamplingRate: auditSample}
+	// Catalog operations write explicit, unsampled audit rows inside their own
+	// transactions (bulk updates, imports) when auditing is enabled at all.
+	adminCatalog := &admin.CatalogHandler{
+		Q:            queries,
+		Cache:        catalogCache,
+		Pool:         pool,
+		Events:       bus,
+		AuditEnabled: auditEnabled,
+	}
+	platformHandler.Cache = catalogCache
+	platformHandler.Events = bus
 	auditHandler := audit.Handler{Store: auditSvc.Store}
 	auditRecorder := audit.HTTPRecorder{
 		Service: auditSvc,
@@ -827,9 +837,15 @@ func main() {
 			admin.Patch("/settings", platformHandler.SettingsUpdate)
 			admin.Post("/onboarding", platformHandler.Onboarding)
 
-			// Catalog management.
+			// Catalog management. The static catalog-ops paths are registered
+			// before "/products/{id}" so chi does not treat them as ids.
 			admin.Get("/products", adminCatalog.ListProducts)
 			admin.Post("/products", adminCatalog.CreateProduct)
+			admin.Post("/products/bulk/price", adminCatalog.BulkPrice)     // rbac: catalog:write
+			admin.Post("/products/bulk/stock", adminCatalog.BulkStock)     // rbac: inventory:write
+			admin.Post("/products/bulk/status", adminCatalog.BulkStatus)   // rbac: catalog:write
+			admin.Get("/products/export", adminCatalog.ExportProductsCSV)  // rbac: catalog:read
+			admin.Post("/products/import", adminCatalog.ImportProductsCSV) // rbac: catalog:write + inventory:write
 			admin.Get("/products/{id}", adminCatalog.GetProduct)
 			admin.Patch("/products/{id}", adminCatalog.UpdateProduct)
 			admin.Delete("/products/{id}", adminCatalog.DeleteProduct)
@@ -849,6 +865,7 @@ func main() {
 			// before "/orders/{id}" so chi does not treat "stats" as an id.
 			admin.Get("/orders", adminOrders.ListOrders)
 			admin.Get("/orders/stats", adminOrders.OrderStats)
+			admin.Get("/orders/export", adminOrders.ExportOrdersCSV) // rbac: orders:read + customers:read
 			admin.Get("/orders/{id}", adminOrders.GetOrder)
 
 			admin.Get("/vouchers", adminOrders.ListVouchers)

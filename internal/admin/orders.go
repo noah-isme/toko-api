@@ -18,6 +18,9 @@ import (
 // carry inventory and payment side effects.
 type OrdersHandler struct {
 	Q dbgen.Querier
+	// ExportBatchSize is the number of orders fetched per export page
+	// (default 1000). Tests lower it to exercise page boundaries.
+	ExportBatchSize int
 }
 
 type orderSummaryDTO struct {
