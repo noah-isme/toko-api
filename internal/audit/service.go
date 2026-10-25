@@ -54,13 +54,15 @@ func (s Service) Record(ctx context.Context, actor Actor, action, resourceType, 
 	if !s.Enabled {
 		return nil
 	}
-	if s.SamplingRate > 0 && s.SamplingRate < 1 {
+	if req == nil {
+		return errors.New("audit: request is required")
+	}
+	// Sampling only ever drops safe (read-only) requests: every mutation is
+	// recorded regardless of AUDIT_SAMPLING_RATE.
+	if s.SamplingRate > 0 && s.SamplingRate < 1 && isSafeMethod(req.Method) {
 		if rand.Float64() > s.SamplingRate {
 			return nil
 		}
-	}
-	if req == nil {
-		return errors.New("audit: request is required")
 	}
 	if s.Store == nil {
 		return errors.New("audit: store not configured")
@@ -104,6 +106,15 @@ func (s Service) Record(ctx context.Context, actor Actor, action, resourceType, 
 		Metadata:     jsonb,
 	})
 	return err
+}
+
+func isSafeMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
 }
 
 func buildAction(action, method, route string) string {
