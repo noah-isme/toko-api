@@ -2,8 +2,11 @@ package push
 
 import (
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -83,6 +86,9 @@ func (s *WebPushSender) Send(ctx context.Context, sub dbgen.PushSubscription, ms
 	if s == nil || s.HTTPClient == nil {
 		return 0, &DeliveryError{Host: host, Class: "sender not configured"}
 	}
+	if err := checkSubscriptionKeys(sub); err != nil {
+		return 0, &DeliveryError{Host: host, Class: "invalid subscription keys", Permanent: true, cause: err}
+	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return 0, err
@@ -108,12 +114,15 @@ func (s *WebPushSender) Send(ctx context.Context, sub dbgen.PushSubscription, ms
 	return resp.StatusCode, nil
 }
 
+// classifySendErr maps a webpush-go error. Subscription keys were checked
+// before the call, so an error without an HTTP request (not a *url.Error) is a
+// server-side problem, such as an unusable VAPID key or a JWT signing failure.
+// Those are never Permanent: pruning on them would delete every valid
+// subscription because of the server's own misconfiguration.
 func classifySendErr(host string, err error) *DeliveryError {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {
-		// Failed before any request was made: the stored p256dh/auth keys do
-		// not decode or are not a valid curve point.
-		return &DeliveryError{Host: host, Class: "invalid subscription keys", Permanent: true, cause: err}
+		return &DeliveryError{Host: host, Class: "push request could not be built (check the VAPID keys)", cause: err}
 	}
 	if errors.Is(err, common.ErrUnsafeAddress) {
 		return &DeliveryError{Host: host, Class: "endpoint resolves to a non-public address", Permanent: true, cause: err}
@@ -123,4 +132,43 @@ func classifySendErr(host string, err error) *DeliveryError {
 		return &DeliveryError{Host: host, Class: "timeout", cause: err}
 	}
 	return &DeliveryError{Host: host, Class: "network error", cause: err}
+}
+
+// errInvalidSubscriptionKeys is the cause of a Permanent "invalid subscription
+// keys" DeliveryError. It never contains the key material.
+var errInvalidSubscriptionKeys = errors.New("push: invalid subscription keys")
+
+// checkSubscriptionKeys validates the browser-supplied keys the same way
+// webpush-go decodes them (standard or URL-safe base64, padding optional):
+// p256dh must be an uncompressed point on P-256 and auth a 16-byte secret
+// (RFC 8291 section 3). Only a failure here proves the subscription itself is
+// unusable.
+func checkSubscriptionKeys(sub dbgen.PushSubscription) error {
+	dh, err := decodeSubscriptionKey(sub.P256dh)
+	if err != nil {
+		return fmt.Errorf("%w: p256dh is not base64", errInvalidSubscriptionKeys)
+	}
+	if _, err := ecdh.P256().NewPublicKey(dh); err != nil {
+		return fmt.Errorf("%w: p256dh is not an uncompressed P-256 point", errInvalidSubscriptionKeys)
+	}
+	auth, err := decodeSubscriptionKey(sub.Auth)
+	if err != nil {
+		return fmt.Errorf("%w: auth is not base64", errInvalidSubscriptionKeys)
+	}
+	if len(auth) != 16 {
+		return fmt.Errorf("%w: auth must be 16 bytes, got %d", errInvalidSubscriptionKeys, len(auth))
+	}
+	return nil
+}
+
+// decodeSubscriptionKey mirrors webpush-go's decoder so this check accepts
+// exactly what the library would.
+func decodeSubscriptionKey(key string) ([]byte, error) {
+	if rem := len(key) % 4; rem != 0 {
+		key += strings.Repeat("=", 4-rem)
+	}
+	if b, err := base64.StdEncoding.DecodeString(key); err == nil {
+		return b, nil
+	}
+	return base64.URLEncoding.DecodeString(key)
 }

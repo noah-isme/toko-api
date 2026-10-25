@@ -3,9 +3,13 @@ package push
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	"github.com/noah-isme/backend-toko/internal/config"
@@ -159,4 +163,38 @@ func TestEnabledRequiresSenderAndKey(t *testing.T) {
 	var nilSvc *Service
 	require.False(t, nilSvc.Enabled())
 	require.True(t, strings.HasPrefix(PushDeliveryTask(), "push-"))
+}
+
+// Regression: a malformed server VAPID key once pruned every valid
+// subscription with no error. It must prune nothing and return a retryable
+// error so the queue retries and, eventually, dead-letters the task.
+func TestSendToUserMalformedServerKeyPrunesNothing(t *testing.T) {
+	_, pub, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	user := newID()
+	store := &stubStore{subs: []dbgen.PushSubscription{
+		browserSubscriptionFor(t, user, srv.URL+"/secret-token-a"),
+		browserSubscriptionFor(t, user, srv.URL+"/secret-token-b"),
+		browserSubscriptionFor(t, user, srv.URL+"/secret-token-c"),
+	}}
+	sender := NewWebPushSender(pub, "abc+/def+/ghi=", "mailto:a@b.c", 60, srv.Client())
+	svc := &Service{Q: store, Sender: sender, PublicKey: pub, AllowedHosts: []string{"*"}, MaxSubscriptions: 10}
+
+	res, err := svc.SendToUser(context.Background(), user, Message{Title: "x"})
+	require.Error(t, err)
+	require.Equal(t, SendResult{Failed: 3}, res)
+	require.Empty(t, store.deleted)
+	require.NotContains(t, err.Error(), "secret-token")
+}
+
+func browserSubscriptionFor(t *testing.T, user pgtype.UUID, endpoint string) dbgen.PushSubscription {
+	t.Helper()
+	sub := browserSubscription(t, endpoint)
+	sub.UserID = user
+	return sub
 }

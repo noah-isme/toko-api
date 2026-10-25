@@ -514,6 +514,11 @@ func applyPushDefaults(cfg *Config, rawSubject string) error {
 	if (cfg.PushVAPIDPublicKey == "") != (cfg.PushVAPIDPrivateKey == "") {
 		return errors.New("PUSH_VAPID_PUBLIC_KEY and PUSH_VAPID_PRIVATE_KEY must be set together (or both left empty to disable web push)")
 	}
+	if cfg.PushEnabled() {
+		if err := validateVAPIDKeys(cfg.PushVAPIDPublicKey, cfg.PushVAPIDPrivateKey); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(rawSubject) == "" {
 		rawSubject = cfg.NotifyEmailFrom
 	}

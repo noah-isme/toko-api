@@ -162,3 +162,87 @@ func TestWebPushSenderTransportErrorIsRetryableAndRedacted(t *testing.T) {
 func TestNewWebPushSenderPanicsWithoutClient(t *testing.T) {
 	require.Panics(t, func() { NewWebPushSender("a", "b", "mailto:c@d.e", 1, nil) })
 }
+
+// A misconfigured server key (standard base64, quotes, garbage) must never be
+// mistaken for bad subscription keys: that would prune every subscription.
+func TestWebPushSenderMalformedServerKeyIsNotPermanent(t *testing.T) {
+	_, pub, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	for name, keys := range map[string][2]string{
+		"private key in standard base64": {pub, "abc+/def+/ghi="},
+		"quoted private key":             {pub, `"abc"`},
+		"public key in standard base64":  {"BPub+Key/x=", "c2VjcmV0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewWebPushSender(keys[0], keys[1], "mailto:a@b.c", 60, srv.Client()).
+				Send(context.Background(), browserSubscription(t, srv.URL+"/secret-token"), Message{Title: "x"})
+			var de *DeliveryError
+			require.True(t, errors.As(err, &de), "got %v", err)
+			require.False(t, de.Permanent, "a server-side key error must not prune")
+			require.NotContains(t, err.Error(), "secret-token")
+		})
+	}
+	require.Zero(t, hits.Load(), "no request can be built without a usable VAPID key")
+}
+
+func TestWebPushSenderRejectsBadSubscriptionKeysBeforeSending(t *testing.T) {
+	priv, pub, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	offCurve := make([]byte, 65)
+	offCurve[0] = 0x04
+	offCurve[64] = 1
+	cases := map[string]func(*dbgen.PushSubscription){
+		"p256dh not base64":      func(s *dbgen.PushSubscription) { s.P256dh = "!!!" },
+		"p256dh off the curve":   func(s *dbgen.PushSubscription) { s.P256dh = base64.RawURLEncoding.EncodeToString(offCurve) },
+		"p256dh compressed form": func(s *dbgen.PushSubscription) { s.P256dh = base64.RawURLEncoding.EncodeToString(make([]byte, 33)) },
+		"auth wrong length":      func(s *dbgen.PushSubscription) { s.Auth = base64.RawURLEncoding.EncodeToString(make([]byte, 8)) },
+		"auth not base64":        func(s *dbgen.PushSubscription) { s.Auth = "@@" },
+	}
+	sender := NewWebPushSender(pub, priv, "mailto:a@b.c", 60, srv.Client())
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			sub := browserSubscription(t, srv.URL+"/secret-token")
+			mutate(&sub)
+			_, err := sender.Send(context.Background(), sub, Message{Title: "x"})
+			var de *DeliveryError
+			require.True(t, errors.As(err, &de), "got %v", err)
+			require.True(t, de.Permanent)
+			require.ErrorIs(t, err, errInvalidSubscriptionKeys)
+		})
+	}
+	require.Zero(t, hits.Load())
+}
+
+func TestWebPushSenderAcceptsPaddedStandardBase64SubscriptionKeys(t *testing.T) {
+	priv, pub, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	sub := browserSubscription(t, srv.URL+"/t")
+	dh, err := base64.RawURLEncoding.DecodeString(sub.P256dh)
+	require.NoError(t, err)
+	auth, err := base64.RawURLEncoding.DecodeString(sub.Auth)
+	require.NoError(t, err)
+	sub.P256dh = base64.StdEncoding.EncodeToString(dh)
+	sub.Auth = base64.StdEncoding.EncodeToString(auth)
+	status, err := NewWebPushSender(pub, priv, "mailto:a@b.c", 60, srv.Client()).Send(context.Background(), sub, Message{Title: "x"})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, status)
+}

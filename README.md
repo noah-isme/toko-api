@@ -141,7 +141,7 @@ PUSH_VAPID_PRIVATE_KEY=...    # secret
 PUSH_VAPID_SUBJECT=mailto:ops@toko.example   # or ops@toko.example, or https://toko.example/contact; default mailto:<NOTIFY_FROM_EMAIL>
 PUSH_TTL_SEC=86400            # how long push services keep an undelivered message
 PUSH_ENDPOINT_ALLOWED_HOSTS=  # empty = fcm.googleapis.com,.push.services.mozilla.com,.notify.windows.com,web.push.apple.com,.push.apple.com ("." = any subdomain, "*" = any https DNS host)
-PUSH_MAX_SUBSCRIPTIONS_PER_USER=10   # oldest subscriptions beyond this are evicted
+PUSH_MAX_SUBSCRIPTIONS_PER_USER=10   # least recently (re)subscribed beyond this are evicted
 RATE_LIMIT_PUSH_TEST_MAX=5           # POST /push/send-test calls per user per window
 RATE_LIMIT_PUSH_TEST_WINDOW_SEC=60
 QUEUE_CONCURRENCY_PUSH=4
@@ -150,8 +150,11 @@ QUEUE_CONCURRENCY_PUSH=4
 Both keys must be set together; with neither set the API and worker boot with
 push disabled (a warning is logged), `GET /push/vapid-key` and
 `POST /push/send-test` return `503 PUSH_DISABLED`, and no pushes are queued.
-Setting only one key is a startup error. Keep the same key pair: rotating it
-invalidates every stored browser subscription.
+Setting only one key is a startup error, and so is an unusable pair: both keys
+must be base64url (URL-safe alphabet, padding optional, no quotes), the private
+key must decode to 32 bytes, the public key to a 65-byte uncompressed P-256
+point, and the public key must be the one derived from the private key. Keep the
+same key pair: rotating it invalidates every stored browser subscription.
 
 When `APP_ENV=production`, startup rejects unsafe or incomplete configuration.
 Use a random `JWT_SECRET` of at least 32 bytes, set

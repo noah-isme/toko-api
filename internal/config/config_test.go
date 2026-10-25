@@ -1,9 +1,22 @@
 package config
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
+
+// testVAPIDKeys returns a valid key pair encoded like `make vapid-keys` does.
+func testVAPIDKeys(t *testing.T) (publicKey, privateKey string) {
+	t.Helper()
+	key, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), base64.RawURLEncoding.EncodeToString(key.Bytes())
+}
 
 func setProductionEnv(t *testing.T) {
 	t.Helper()
@@ -206,8 +219,9 @@ func TestLoadPushRequiresBothVAPIDKeys(t *testing.T) {
 
 func TestLoadPushEnabledWithBothKeys(t *testing.T) {
 	setDevEnv(t)
-	t.Setenv("PUSH_VAPID_PUBLIC_KEY", "pub")
-	t.Setenv("PUSH_VAPID_PRIVATE_KEY", "priv")
+	pub, priv := testVAPIDKeys(t)
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", pub)
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", priv)
 	t.Setenv("NOTIFY_FROM_EMAIL", "no-reply@shop.example")
 	cfg, err := Load()
 	if err != nil {
@@ -263,5 +277,57 @@ func TestLoadPushAllowedHostsDefaultAndOverride(t *testing.T) {
 	}
 	if strings.Join(cfg.PushEndpointAllowedHosts, ",") != "push.example.com,.relay.example" {
 		t.Fatalf("override hosts = %v", cfg.PushEndpointAllowedHosts)
+	}
+}
+
+func TestLoadPushRejectsUnusableVAPIDKeys(t *testing.T) {
+	pub, priv := testVAPIDKeys(t)
+	otherPub, _ := testVAPIDKeys(t)
+	rawPriv, _ := base64.RawURLEncoding.DecodeString(priv)
+	rawPub, _ := base64.RawURLEncoding.DecodeString(pub)
+	stdPriv := base64.StdEncoding.EncodeToString(rawPriv)
+	if !strings.ContainsAny(stdPriv, "+/") {
+		stdPriv = "abc+/def+/ghi=" // force a standard-alphabet value
+	}
+	cases := map[string]struct {
+		pub, priv, want string
+	}{
+		"standard base64 private key": {pub, stdPriv, "PUSH_VAPID_PRIVATE_KEY is not base64url"},
+		"quoted private key":          {pub, `"` + priv + `"`, "PUSH_VAPID_PRIVATE_KEY is not base64url"},
+		"short private key":           {pub, base64.RawURLEncoding.EncodeToString(rawPriv[:16]), "32 bytes"},
+		"zero private key":            {pub, base64.RawURLEncoding.EncodeToString(make([]byte, 32)), "not a valid P-256 private key"},
+		"quoted public key":           {`"` + pub + `"`, priv, "PUSH_VAPID_PUBLIC_KEY is not base64url"},
+		"compressed public key":       {base64.RawURLEncoding.EncodeToString(rawPub[:33]), priv, "65-byte"},
+		"off-curve public key":        {base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...)), priv, "not a valid P-256 point"},
+		"mismatched pair":             {otherPub, priv, "does not match"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setDevEnv(t)
+			t.Setenv("PUSH_VAPID_PUBLIC_KEY", tc.pub)
+			t.Setenv("PUSH_VAPID_PRIVATE_KEY", tc.priv)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want it to mention %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), priv) {
+				t.Fatal("the error must not echo the private key")
+			}
+		})
+	}
+}
+
+func TestLoadPushAcceptsPaddedVAPIDKeys(t *testing.T) {
+	setDevEnv(t)
+	pub, priv := testVAPIDKeys(t)
+	rawPub, _ := base64.RawURLEncoding.DecodeString(pub)
+	t.Setenv("PUSH_VAPID_PUBLIC_KEY", base64.URLEncoding.EncodeToString(rawPub))
+	t.Setenv("PUSH_VAPID_PRIVATE_KEY", priv)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.PushEnabled() {
+		t.Fatal("push must be enabled")
 	}
 }

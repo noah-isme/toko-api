@@ -150,8 +150,10 @@ func (s *Service) Allowed(ctx context.Context, userID pgtype.UUID, category stri
 //   - 404/410 from the push service, a non-https endpoint, undecodable keys or
 //     an endpoint resolving to a non-public address: the subscription is
 //     deleted (pruned) and no error is returned for it.
-//   - 429, 5xx and network errors: counted as failed and returned (joined), so
-//     a queue job retries.
+//   - 429, 5xx, network errors and non-permanent sender errors (such as a
+//     VAPID key the push library cannot use): counted as failed and returned
+//     (joined), so a queue job retries. Never pruned: a server-side problem
+//     must not delete the user's subscriptions.
 //   - Other 4xx (bad VAPID config, payload too large, ...): counted as failed
 //     and logged; not returned, since a retry cannot succeed.
 //
