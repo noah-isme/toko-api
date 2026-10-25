@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -38,6 +39,7 @@ type QueryProvider interface {
 	FacetPriceBucketsPublic(ctx context.Context, arg dbgen.FacetPriceBucketsPublicParams) ([]dbgen.FacetPriceBucketsPublicRow, error)
 	FacetInStockPublic(ctx context.Context, arg dbgen.FacetInStockPublicParams) ([]dbgen.FacetInStockPublicRow, error)
 	SuggestProductTitles(ctx context.Context, arg dbgen.SuggestProductTitlesParams) ([]dbgen.SuggestProductTitlesRow, error)
+	SetLocalWordSimilarityThreshold(ctx context.Context, threshold string) error
 }
 
 // Search modes reported in ProductListResult.SearchMode (and the API's meta.searchMode).
@@ -49,6 +51,13 @@ const (
 const (
 	// minFuzzyQueryRunes is the shortest query that triggers the fuzzy fallback and suggestions.
 	minFuzzyQueryRunes = 3
+	// maxFuzzyQueryRunes is the longest query that triggers them: trigram matching cost grows
+	// with len(q) (a 200-rune q makes the suggestion scan ~4x slower than a 3-word q, a
+	// 2,000-rune q makes the fuzzy count abandon the trigram index), so longer queries get
+	// full-text search only.
+	maxFuzzyQueryRunes = 64
+	// MaxQueryRunes is the longest accepted q; longer values are rejected with 400 (field q).
+	MaxQueryRunes = 200
 	// suggestionMinScore is the word_similarity floor for "did you mean" suggestions.
 	suggestionMinScore = 0.2
 	// suggestionLimit caps meta.suggestions.
@@ -274,6 +283,9 @@ func (s *Service) ParseListParams(values url.Values) (ListParams, error) {
 		Limit: s.defaultLimit,
 	}
 	params.Query = strings.TrimSpace(values.Get("q"))
+	if n := utf8.RuneCountInString(params.Query); n > MaxQueryRunes {
+		return params, badRequest("q", fmt.Sprintf("q must be at most %d characters", MaxQueryRunes), fmt.Errorf("q has %d characters", n))
+	}
 	params.Category = strings.TrimSpace(values.Get("category"))
 	params.Brand = strings.TrimSpace(values.Get("brand"))
 
@@ -384,9 +396,12 @@ func (s *Service) ListCategories(ctx context.Context) ([]Category, error) {
 // ListProducts returns filtered product list with pagination metadata.
 //
 // With a query it first runs full-text search ('simple' config). When that finds
-// nothing and the query has at least minFuzzyQueryRunes runes, it retries the same
-// count/list/facets with pg_trgm word similarity on the title (via FuzzyRunner).
-// When both find nothing, it returns up to suggestionLimit closest titles.
+// nothing and the query has minFuzzyQueryRunes..maxFuzzyQueryRunes runes, it retries the
+// same count/list/facets with pg_trgm word similarity on the title (via FuzzyRunner, in
+// one read-only transaction with a statement timeout). When both find nothing, the same
+// transaction returns up to suggestionLimit closest titles. Without a FuzzyRunner there
+// is neither fuzzy fallback nor suggestions. If the fuzzy transaction times out, the FTS
+// result is returned unchanged.
 func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductListResult, error) {
 	key, shouldUseCache := s.listCacheKey(ctx, params)
 	if shouldUseCache && s.cache != nil {
@@ -402,14 +417,19 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		return ProductListResult{}, err
 	}
 	facetsDone := false
-	fuzzyEligible := params.Query != "" && utf8.RuneCountInString(params.Query) >= minFuzzyQueryRunes
-	if result.Total == 0 && fuzzyEligible && s.fuzzy != nil {
+	if result.Total == 0 && fuzzyEligible(params.Query) && s.fuzzy != nil {
+		ftsResult := result
 		err := s.fuzzy.RunFuzzy(ctx, func(q QueryProvider) error {
 			fuzzyResult, err := s.searchPage(ctx, q, params, SearchModeFuzzy)
 			if err != nil {
 				return err
 			}
 			if fuzzyResult.Total == 0 {
+				suggestions, err := s.suggest(ctx, q, params.Query)
+				if err != nil {
+					return err
+				}
+				result.Suggestions = suggestions
 				return nil
 			}
 			if params.IncludeFacets {
@@ -424,7 +444,15 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 			return nil
 		})
 		if err != nil {
-			return ProductListResult{}, fmt.Errorf("fuzzy search: %w", err)
+			if !isStatementTimeout(err) || ctx.Err() != nil {
+				return ProductListResult{}, fmt.Errorf("fuzzy search: %w", err)
+			}
+			// The fuzzy pass hit its statement_timeout: answer with the (empty) FTS result
+			// instead of failing the request. The response is still valid, just without
+			// typo tolerance or suggestions.
+			zerolog.Ctx(ctx).Warn().Err(err).Int("q_runes", utf8.RuneCountInString(params.Query)).Msg("catalog fuzzy search timed out; returning full-text result")
+			result = ftsResult
+			facetsDone = false
 		}
 	}
 	if params.IncludeFacets && !facetsDone {
@@ -433,13 +461,6 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 			return ProductListResult{}, err
 		}
 		result.Facets = facets
-	}
-	if result.Total == 0 && fuzzyEligible {
-		suggestions, err := s.suggest(ctx, params.Query)
-		if err != nil {
-			return ProductListResult{}, err
-		}
-		result.Suggestions = suggestions
 	}
 	if params.Query == "" {
 		result.SearchMode = ""
@@ -655,8 +676,19 @@ func (s *Service) emptyPriceBuckets() []PriceBucket {
 	return append(buckets, PriceBucket{Min: lower})
 }
 
-func (s *Service) suggest(ctx context.Context, query string) ([]Suggestion, error) {
-	rows, err := s.queries.SuggestProductTitles(ctx, dbgen.SuggestProductTitlesParams{
+// fuzzyEligible reports whether q gets the fuzzy fallback and suggestions.
+func fuzzyEligible(q string) bool {
+	n := utf8.RuneCountInString(q)
+	return n >= minFuzzyQueryRunes && n <= maxFuzzyQueryRunes
+}
+
+// suggest runs inside the fuzzy pass's transaction: it lowers the session trigram threshold
+// to suggestionMinScore (transaction-local) so SuggestProductTitles can use the trigram index.
+func (s *Service) suggest(ctx context.Context, q QueryProvider, query string) ([]Suggestion, error) {
+	if err := q.SetLocalWordSimilarityThreshold(ctx, formatThreshold(suggestionMinScore)); err != nil {
+		return nil, fmt.Errorf("set suggestion threshold: %w", err)
+	}
+	rows, err := q.SuggestProductTitles(ctx, dbgen.SuggestProductTitlesParams{
 		Q:          query,
 		TenantID:   tenantIDFromContext(ctx),
 		MinScore:   suggestionMinScore,

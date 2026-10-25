@@ -3,15 +3,20 @@ package catalog_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	"github.com/noah-isme/backend-toko/internal/catalog"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 type fakeFuzzyRunner struct {
@@ -144,6 +149,9 @@ func TestCatalogSearchSuggestions(t *testing.T) {
 	require.Equal(t, "kaos-hitam", resp.Meta.Suggestions[0].Slug)
 	require.Equal(t, "zzzz", queries.lastSuggest.Q)
 	require.EqualValues(t, 5, queries.lastSuggest.LimitValue)
+	// Suggestions run inside the fuzzy transaction with the trigram threshold lowered to the
+	// suggestion floor, so SuggestProductTitles can use the trigram index.
+	require.Equal(t, []string{"0.2"}, queries.thresholds)
 
 	// With results, suggestions are not computed.
 	queries.suggestCalls = 0
@@ -274,6 +282,7 @@ func TestCatalogSearchIncludeValidation(t *testing.T) {
 func TestCatalogSearchWithoutFuzzyRunner(t *testing.T) {
 	queries := newFakeCatalogQueries(t)
 	queries.fuzzyProducts = []dbgen.ListProductsPublicRow{queries.productList[0]}
+	queries.suggestions = []dbgen.SuggestProductTitlesRow{{Title: "Kaos Hitam", Slug: "kaos-hitam"}}
 	svc, err := catalog.NewService(catalog.ServiceConfig{Queries: queries})
 	require.NoError(t, err)
 	h := catalog.NewHandler(catalog.HandlerConfig{Service: svc})
@@ -281,9 +290,120 @@ func TestCatalogSearchWithoutFuzzyRunner(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, catalog.SearchModeFTS, resp.Meta.SearchMode)
 	require.Empty(t, resp.Data)
+	// Suggestions need the time-limited fuzzy transaction, so none without a runner.
+	require.Equal(t, 0, queries.suggestCalls)
+	require.Empty(t, resp.Meta.Suggestions)
 }
 
 func TestCatalogNewServiceRejectsUnsortedEdges(t *testing.T) {
 	_, err := catalog.NewService(catalog.ServiceConfig{Queries: newFakeCatalogQueries(t), PriceBucketEdges: []int64{100, 50}})
+	require.Error(t, err)
+}
+
+func decodeErrorField(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var errResp struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	require.Equal(t, "BAD_REQUEST", errResp.Error.Code)
+	field, _ := errResp.Error.Details["field"].(string)
+	return field
+}
+
+func TestCatalogSearchQueryLengthCap(t *testing.T) {
+	h, queries, runner := newSearchHarness(t)
+
+	// MaxQueryRunes counts runes, not bytes: 200 two-byte runes are accepted.
+	rec, _, _ := doProducts(t, h, "?q="+url.QueryEscape(strings.Repeat("é", catalog.MaxQueryRunes)))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Surrounding whitespace is trimmed before the check.
+	rec, _, _ = doProducts(t, h, "?q="+url.QueryEscape("  "+strings.Repeat("a", catalog.MaxQueryRunes)+"  "))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	queries.countModes = nil
+	rec, _, _ = doProducts(t, h, "?q="+url.QueryEscape(strings.Repeat("a", catalog.MaxQueryRunes+1)))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "q", decodeErrorField(t, rec))
+	require.Empty(t, queries.countModes, "an over-long q must not reach the database")
+	require.Equal(t, 0, runner.calls)
+}
+
+func TestCatalogSearchLongQuerySkipsFuzzyAndSuggestions(t *testing.T) {
+	h, queries, runner := newSearchHarness(t)
+	queries.fuzzyProducts = []dbgen.ListProductsPublicRow{queries.productList[1]}
+	queries.suggestions = []dbgen.SuggestProductTitlesRow{{Title: "Kaos Hitam", Slug: "kaos-hitam"}}
+
+	// 65 runes: full-text search only (trigram cost grows with len(q)).
+	rec, raw, resp := doProducts(t, h, "?q="+strings.Repeat("z", 65))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 0, runner.calls)
+	require.Equal(t, 0, queries.suggestCalls)
+	require.Equal(t, catalog.SearchModeFTS, resp.Meta.SearchMode)
+	require.Empty(t, resp.Data)
+	var meta map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["meta"], &meta))
+	require.NotContains(t, meta, "suggestions")
+
+	// 64 runes is still eligible.
+	rec, _, resp = doProducts(t, h, "?q="+strings.Repeat("z", 64))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, runner.calls)
+	require.Equal(t, catalog.SearchModeFuzzy, resp.Meta.SearchMode)
+}
+
+func statementTimeoutErr() error {
+	return &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}
+}
+
+func TestCatalogSearchFuzzyTimeoutDegradesToFTS(t *testing.T) {
+	h, queries, runner := newSearchHarness(t)
+	queries.fuzzyProducts = []dbgen.ListProductsPublicRow{queries.productList[1]}
+	queries.suggestions = []dbgen.SuggestProductTitlesRow{{Title: "Kaos Hitam", Slug: "kaos-hitam"}}
+	queries.facetStock = []dbgen.FacetInStockPublicRow{{InStock: true, Count: 0}}
+	queries.fuzzyCountErr = statementTimeoutErr()
+
+	rec, _, resp := doProducts(t, h, "?q=spatu&include=facets")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, runner.calls)
+	require.Equal(t, catalog.SearchModeFTS, resp.Meta.SearchMode)
+	require.Empty(t, resp.Data)
+	require.Empty(t, resp.Meta.Suggestions)
+	require.NotNil(t, resp.Facets)
+	// Facets are recomputed in FTS mode so they match data.
+	require.Equal(t, catalog.SearchModeFTS, queries.lastFacetStock.MatchMode)
+}
+
+func TestCatalogSearchSuggestionTimeoutDegrades(t *testing.T) {
+	h, queries, _ := newSearchHarness(t)
+	queries.suggestErr = statementTimeoutErr()
+	rec, raw, resp := doProducts(t, h, "?q=zzzz")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, queries.suggestCalls)
+	require.Equal(t, catalog.SearchModeFTS, resp.Meta.SearchMode)
+	var meta map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["meta"], &meta))
+	require.NotContains(t, meta, "suggestions")
+}
+
+func TestCatalogSearchFuzzyErrorsStillFail(t *testing.T) {
+	// Any error other than a server-side statement timeout is a real failure.
+	queries := newFakeCatalogQueries(t)
+	queries.fuzzyCountErr = errors.New("connection reset")
+	svc, err := catalog.NewService(catalog.ServiceConfig{Queries: queries, FuzzyRunner: &fakeFuzzyRunner{q: queries}})
+	require.NoError(t, err)
+	ctx := tenant.WithTenant(context.Background(), "55555555-5555-5555-5555-555555555555")
+	_, err = svc.ListProducts(ctx, catalog.ListParams{Query: "spatu", Page: 1, Limit: 20})
+	require.Error(t, err)
+
+	// A 57014 caused by the client going away (context cancelled) is not degraded either.
+	queries.fuzzyCountErr = statementTimeoutErr()
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = svc.ListProducts(cctx, catalog.ListParams{Query: "spatu", Page: 1, Limit: 20})
 	require.Error(t, err)
 }

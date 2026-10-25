@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -30,6 +32,8 @@ type searchFixture struct {
 	// product ids/slugs by short key: sepatu, kaos, kemeja (tenant A), sandal (tenant B).
 	ids   map[string]string
 	slugs map[string]string
+	// tenantOf maps a product key to its tenant id.
+	tenantOf map[string]string
 	// brand/category slugs by short key (slugs and names are globally unique in the schema).
 	terms map[string]string
 	users []string
@@ -53,7 +57,7 @@ func newSearchFixture(t *testing.T) *searchFixture {
 	t.Cleanup(pool.Close)
 	require.NoError(t, pool.Ping(ctx))
 
-	f := &searchFixture{t: t, pool: pool, ids: map[string]string{}, slugs: map[string]string{}, terms: map[string]string{}}
+	f := &searchFixture{t: t, pool: pool, ids: map[string]string{}, slugs: map[string]string{}, tenantOf: map[string]string{}, terms: map[string]string{}}
 	f.tenA = f.insertTenant()
 	f.tenB = f.insertTenant()
 	t.Cleanup(func() {
@@ -124,6 +128,7 @@ func (f *searchFixture) insertProduct(key, tenantID, title, description string, 
 		title, slug, description, price, inStock, brandID, categoryID, tenantID).Scan(&id))
 	f.ids[key] = id
 	f.slugs[key] = slug
+	f.tenantOf[key] = tenantID
 }
 
 func (f *searchFixture) list(params catalog.ListParams) catalog.ProductListResult {
@@ -188,6 +193,45 @@ func TestIntegrationSearchSuggestions(t *testing.T) {
 	require.Len(t, res.Suggestions, 1, "tenant B's 'Sepatu Sandal Jepit' scores the same but must not leak")
 	require.Equal(t, f.slugs["sepatu"], res.Suggestions[0].Slug)
 	require.Equal(t, "Sepatu Lari Nike Pegasus", res.Suggestions[0].Title)
+}
+
+// The 'simple' search vector is a stored column maintained by a row trigger (000049);
+// it must follow title/description edits and leave other updates alone.
+func TestIntegrationSearchVectorTriggerTracksEdits(t *testing.T) {
+	f := newSearchFixture(t)
+	ctx := context.Background()
+	var nulls int
+	require.NoError(t, f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM products WHERE tenant_id = $1 AND search_vector_simple IS NULL`, f.tenA).Scan(&nulls))
+	require.Zero(t, nulls, "INSERT must fill search_vector_simple")
+
+	require.EqualValues(t, 0, f.list(catalog.ListParams{Query: "zamrud"}).Total)
+	_, err := f.pool.Exec(ctx, `UPDATE products SET description = 'Kaos warna zamrud' WHERE id = $1`, f.ids["kaos"])
+	require.NoError(t, err)
+	res := f.list(catalog.ListParams{Query: "zamrud"})
+	require.Equal(t, catalog.SearchModeFTS, res.SearchMode)
+	require.Equal(t, []string{f.slugs["kaos"]}, slugsOf(res.Items))
+
+	_, err = f.pool.Exec(ctx, `UPDATE products SET title = 'Kaos Oblong Polos' WHERE id = $1`, f.ids["kaos"])
+	require.NoError(t, err)
+	require.Equal(t, []string{f.slugs["kaos"]}, slugsOf(f.list(catalog.ListParams{Query: "oblong"}).Items))
+	require.EqualValues(t, 0, f.list(catalog.ListParams{Query: "hitam"}).Total)
+
+	// An update that touches neither column keeps the vector (still searchable).
+	_, err = f.pool.Exec(ctx, `UPDATE products SET price = price + 1 WHERE id = $1`, f.ids["kaos"])
+	require.NoError(t, err)
+	require.Equal(t, []string{f.slugs["kaos"]}, slugsOf(f.list(catalog.ListParams{Query: "zamrud"}).Items))
+}
+
+// A junk query at the fuzzy length limit takes the index-assisted fuzzy and suggestion
+// paths and comes back empty without error.
+func TestIntegrationSearchLongJunkQuery(t *testing.T) {
+	f := newSearchFixture(t)
+	q := strings.Repeat("qxzv", 16) // 64 runes
+	res := f.list(catalog.ListParams{Query: q, IncludeFacets: true})
+	require.EqualValues(t, 0, res.Total)
+	require.Empty(t, res.Suggestions)
+	require.Equal(t, catalog.SearchModeFTS, res.SearchMode)
 }
 
 func TestIntegrationSearchFacets(t *testing.T) {
@@ -280,8 +324,10 @@ func (f *searchFixture) refresh() {
 // unitsSold returns -1 when the product has no product_sales row.
 func (f *searchFixture) unitsSold(key string) int64 {
 	f.t.Helper()
-	var units int64
-	err := f.pool.QueryRow(context.Background(), `SELECT units_sold FROM product_sales WHERE product_id = $1`, f.ids[key]).Scan(&units)
+	var productID, tenantID pgtype.UUID
+	require.NoError(f.t, productID.Scan(f.ids[key]))
+	require.NoError(f.t, tenantID.Scan(f.tenantOf[key]))
+	units, err := dbgen.New(f.pool).GetProductSalesUnits(context.Background(), dbgen.GetProductSalesUnitsParams{ProductID: productID, TenantID: tenantID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return -1
 	}
@@ -355,6 +401,51 @@ func TestIntegrationPopularitySortAndRefresh(t *testing.T) {
 	// order_items keep the orphan product id (no FK); refresh skips it.
 	f.refresh()
 	require.EqualValues(t, -1, f.unitsSold("kaos"))
+}
+
+// A product deleted while the refresher runs must be skipped, not fail the FK check and
+// roll back the tenant's whole refresh (UpsertProductSalesForTenant locks FOR KEY SHARE).
+func TestIntegrationPopularityRefreshToleratesConcurrentProductDelete(t *testing.T) {
+	f := newSearchFixture(t)
+	ctx := context.Background()
+	f.insertOrder(f.tenA, "PAID", map[string]int{"kemeja": 2, "kaos": 1})
+
+	deleter, err := f.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = deleter.Rollback(ctx) }()
+	_, err = deleter.Exec(ctx, `DELETE FROM products WHERE id = $1`, f.ids["kemeja"])
+	require.NoError(t, err)
+
+	var tenantID pgtype.UUID
+	require.NoError(t, tenantID.Scan(f.tenA))
+	type outcome struct {
+		refreshed bool
+		err       error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		refreshed, _, _, err := catalog.PopularityRefresher{Pool: f.pool}.RefreshTenant(ctx, tenantID)
+		done <- outcome{refreshed, err}
+	}()
+
+	// Wait until the refresher is blocked on the deleted product's row lock.
+	require.Eventually(t, func() bool {
+		var waiting int
+		_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO product_sales%' AND pid <> pg_backend_pid()`).Scan(&waiting)
+		return waiting > 0
+	}, 5*time.Second, 20*time.Millisecond)
+	require.NoError(t, deleter.Commit(ctx))
+
+	select {
+	case res := <-done:
+		require.NoError(t, res.err)
+		require.True(t, res.refreshed)
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not finish")
+	}
+	require.EqualValues(t, -1, f.unitsSold("kemeja"))
+	require.EqualValues(t, 1, f.unitsSold("kaos"))
 }
 
 func TestIntegrationRatingSort(t *testing.T) {

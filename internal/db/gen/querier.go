@@ -66,10 +66,11 @@ type Querier interface {
 	CountOrdersForDay(ctx context.Context, arg CountOrdersForDayParams) (int64, error)
 	CountOrdersForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Search predicate shared by every public list/facet query below:
-	//   match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the 'simple' tsvector
-	//                         expression, served by idx_products_search_simple (migration 000049).
-	//                         The expression must stay character-for-character identical to the
-	//                         index definition or the planner falls back to a sequential scan.
+	//   match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the stored
+	//                         products.search_vector_simple column (title weight A, description B),
+	//                         kept current by trg_products_search_vector_simple and served by
+	//                         idx_products_search_simple (migration 000049). Ranking reads the same
+	//                         stored column, so neither the filter nor ts_rank rebuilds tsvectors.
 	//   match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
 	//                         the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
 	// Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
@@ -245,9 +246,17 @@ type Querier interface {
 	ReserveVariantStock(ctx context.Context, arg ReserveVariantStockParams) (pgtype.UUID, error)
 	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
 	RotateSessionToken(ctx context.Context, arg RotateSessionTokenParams) (Session, error)
+	// Transaction-local (is_local => true, i.e. SET LOCAL) pg_trgm threshold; only call it inside
+	// a transaction so pooled connections never keep the setting.
+	SetLocalWordSimilarityThreshold(ctx context.Context, threshold string) error
 	SubscribeNewsletter(ctx context.Context, arg SubscribeNewsletterParams) (NewsletterSubscriber, error)
-	// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, so a scan of
-	// the tenant's titles with the function form of word_similarity is acceptable.
+	// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, inside the
+	// fuzzy pass's read-only transaction (statement_timeout applies). The caller first lowers
+	// pg_trgm.word_similarity_threshold to min_score with SetLocalWordSimilarityThreshold so the
+	// <% operator can use idx_products_title_trgm (junk queries then cost well under 1 ms); the
+	// explicit word_similarity floor keeps the result independent of the session threshold.
+	// When many titles share trigrams with q the planner still picks a scan of the tenant's
+	// titles (~100 ms at 20k products; see RUNBOOK scaling limits).
 	SuggestProductTitles(ctx context.Context, arg SuggestProductTitlesParams) ([]SuggestProductTitlesRow, error)
 	TouchCart(ctx context.Context, arg TouchCartParams) error
 	TransferCartToUser(ctx context.Context, arg TransferCartToUserParams) error
@@ -271,6 +280,9 @@ type Querier interface {
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
 	UpsertOrderProductPair(ctx context.Context, arg UpsertOrderProductPairParams) (OrderProductPair, error)
+	// KEY SHARE is the lock the FK check takes anyway; taking it here (in p.id order) means a
+	// product deleted after this statement's snapshot is skipped instead of failing the FK
+	// check and rolling back the whole tenant's refresh.
 	UpsertProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	UpsertPushPreferences(ctx context.Context, arg UpsertPushPreferencesParams) (PushPreference, error)
 	UpsertUserProductView(ctx context.Context, arg UpsertUserProductViewParams) (UserProductView, error)

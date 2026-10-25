@@ -23,6 +23,10 @@ FROM (
 JOIN products p ON p.id = agg.product_id AND p.tenant_id = sqlc.arg(tenant_id)
 WHERE agg.units > 0
 ORDER BY p.id
+-- KEY SHARE is the lock the FK check takes anyway; taking it here (in p.id order) means a
+-- product deleted after this statement's snapshot is skipped instead of failing the FK
+-- check and rolling back the whole tenant's refresh.
+FOR KEY SHARE OF p
 ON CONFLICT (product_id) DO UPDATE
    SET units_sold = EXCLUDED.units_sold,
        tenant_id  = EXCLUDED.tenant_id,

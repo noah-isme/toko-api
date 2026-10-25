@@ -154,6 +154,10 @@ type fakeCatalogQueries struct {
 	lastFacetStock  *dbgen.FacetInStockPublicParams
 	suggestCalls    int
 	lastSuggest     dbgen.SuggestProductTitlesParams
+	thresholds      []string
+	// fuzzyCountErr / suggestErr are returned by the fuzzy-mode count and by suggestions.
+	fuzzyCountErr error
+	suggestErr    error
 }
 
 func newFakeCatalogQueries(t *testing.T) *fakeCatalogQueries {
@@ -294,6 +298,9 @@ func (f *fakeCatalogQueries) GetCategoryByID(ctx context.Context, arg dbgen.GetC
 func (f *fakeCatalogQueries) CountProductsPublic(ctx context.Context, arg dbgen.CountProductsPublicParams) (int64, error) {
 	f.lastCount = arg
 	f.countModes = append(f.countModes, arg.MatchMode)
+	if arg.MatchMode == catalog.SearchModeFuzzy && f.fuzzyCountErr != nil {
+		return 0, f.fuzzyCountErr
+	}
 	return int64(len(f.filterProducts(arg))), nil
 }
 
@@ -380,7 +387,15 @@ func (f *fakeCatalogQueries) FacetInStockPublic(ctx context.Context, arg dbgen.F
 func (f *fakeCatalogQueries) SuggestProductTitles(ctx context.Context, arg dbgen.SuggestProductTitlesParams) ([]dbgen.SuggestProductTitlesRow, error) {
 	f.suggestCalls++
 	f.lastSuggest = arg
+	if f.suggestErr != nil {
+		return nil, f.suggestErr
+	}
 	return append([]dbgen.SuggestProductTitlesRow(nil), f.suggestions...), nil
+}
+
+func (f *fakeCatalogQueries) SetLocalWordSimilarityThreshold(ctx context.Context, threshold string) error {
+	f.thresholds = append(f.thresholds, threshold)
+	return nil
 }
 
 func (f *fakeCatalogQueries) filterProducts(arg dbgen.CountProductsPublicParams) []dbgen.ListProductsPublicRow {

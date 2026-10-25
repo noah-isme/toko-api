@@ -21,9 +21,7 @@ WHERE p.tenant_id = $1
   AND ($2::text IS NULL
        OR ($3::text = 'fuzzy' AND $2::text <% p.title)
        OR ($3::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $2)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $2)))
   AND ($4::text IS NULL OR c.slug = $4)
   AND ($5::text IS NULL OR b.slug = $5)
   AND ($6::bigint IS NULL OR p.price >= $6)
@@ -44,10 +42,11 @@ type CountProductsPublicParams struct {
 
 // Search predicate shared by every public list/facet query below:
 //
-//	match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the 'simple' tsvector
-//	                      expression, served by idx_products_search_simple (migration 000049).
-//	                      The expression must stay character-for-character identical to the
-//	                      index definition or the planner falls back to a sequential scan.
+//	match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the stored
+//	                      products.search_vector_simple column (title weight A, description B),
+//	                      kept current by trg_products_search_vector_simple and served by
+//	                      idx_products_search_simple (migration 000049). Ranking reads the same
+//	                      stored column, so neither the filter nor ts_rank rebuilds tsvectors.
 //	match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
 //	                      the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
 //
@@ -79,9 +78,7 @@ WHERE p.tenant_id = $1
   AND ($2::text IS NULL
        OR ($3::text = 'fuzzy' AND $2::text <% p.title)
        OR ($3::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $2)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $2)))
   AND ($4::text IS NULL OR c.slug = $4)
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
@@ -151,9 +148,7 @@ WHERE p.tenant_id = $1
   AND ($2::text IS NULL
        OR ($3::text = 'fuzzy' AND $2::text <% p.title)
        OR ($3::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $2)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $2)))
   AND ($4::text IS NULL OR b.slug = $4)
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
@@ -223,9 +218,7 @@ WHERE p.tenant_id = $1
   AND ($2::text IS NULL
        OR ($3::text = 'fuzzy' AND $2::text <% p.title)
        OR ($3::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $2)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $2)))
   AND ($4::text IS NULL OR c.slug = $4)
   AND ($5::text IS NULL OR b.slug = $5)
   AND ($6::bigint IS NULL OR p.price >= $6)
@@ -286,9 +279,7 @@ WHERE p.tenant_id = $2
   AND ($3::text IS NULL
        OR ($4::text = 'fuzzy' AND $3::text <% p.title)
        OR ($4::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $3)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $3)))
   AND ($5::text IS NULL OR c.slug = $5)
   AND ($6::text IS NULL OR b.slug = $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
@@ -547,9 +538,7 @@ WHERE p.tenant_id = $1
   AND ($2::text IS NULL
        OR ($3::text = 'fuzzy' AND $2::text <% p.title)
        OR ($3::text <> 'fuzzy'
-           AND (setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B'))
-               @@ websearch_to_tsquery('simple', $2)))
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', $2)))
   AND ($4::text IS NULL OR c.slug = $4)
   AND ($5::text IS NULL OR b.slug = $5)
   AND ($6::bigint IS NULL OR p.price >= $6)
@@ -565,8 +554,7 @@ ORDER BY CASE WHEN $9::text = 'price:asc' THEN p.price END ASC,
          CASE
            WHEN $2::text IS NULL THEN NULL
            WHEN $3::text = 'fuzzy' THEN word_similarity($2::text, p.title)::float8
-           ELSE ts_rank((setweight(to_tsvector('simple', coalesce(p.title, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(p.description, '')), 'B')), websearch_to_tsquery('simple', $2))::float8
+           ELSE ts_rank(p.search_vector_simple, websearch_to_tsquery('simple', $2))::float8
          END DESC,
          p.created_at DESC,
          p.id
@@ -795,10 +783,22 @@ func (q *Queries) ListVariantsByProduct(ctx context.Context, productID pgtype.UU
 	return items, nil
 }
 
+const setLocalWordSimilarityThreshold = `-- name: SetLocalWordSimilarityThreshold :exec
+SELECT set_config('pg_trgm.word_similarity_threshold', $1::text, true)
+`
+
+// Transaction-local (is_local => true, i.e. SET LOCAL) pg_trgm threshold; only call it inside
+// a transaction so pooled connections never keep the setting.
+func (q *Queries) SetLocalWordSimilarityThreshold(ctx context.Context, threshold string) error {
+	_, err := q.db.Exec(ctx, setLocalWordSimilarityThreshold, threshold)
+	return err
+}
+
 const suggestProductTitles = `-- name: SuggestProductTitles :many
 SELECT p.title, p.slug, word_similarity($1::text, p.title)::float8 AS score
 FROM products p
 WHERE p.tenant_id = $2
+  AND $1::text <% p.title
   AND word_similarity($1::text, p.title) >= $3::float4
 ORDER BY score DESC, p.title ASC
 LIMIT $4
@@ -817,8 +817,13 @@ type SuggestProductTitlesRow struct {
 	Score float64 `json:"score"`
 }
 
-// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, so a scan of
-// the tenant's titles with the function form of word_similarity is acceptable.
+// Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, inside the
+// fuzzy pass's read-only transaction (statement_timeout applies). The caller first lowers
+// pg_trgm.word_similarity_threshold to min_score with SetLocalWordSimilarityThreshold so the
+// <% operator can use idx_products_title_trgm (junk queries then cost well under 1 ms); the
+// explicit word_similarity floor keeps the result independent of the session threshold.
+// When many titles share trigrams with q the planner still picks a scan of the tenant's
+// titles (~100 ms at 20k products; see RUNBOOK scaling limits).
 func (q *Queries) SuggestProductTitles(ctx context.Context, arg SuggestProductTitlesParams) ([]SuggestProductTitlesRow, error) {
 	rows, err := q.db.Query(ctx, suggestProductTitles,
 		arg.Q,
