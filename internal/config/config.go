@@ -129,6 +129,9 @@ type Config struct {
 	APIMaxShutdownGrace        time.Duration
 	EnableAPIEmbeddedWorkers   bool
 	AdminDLQPageSize           int
+
+	// JobsConfig holds the worker's periodic job settings (internal/jobs).
+	JobsConfig
 }
 
 // Load reads configuration from environment variables and optional .env files.
@@ -274,6 +277,7 @@ func Load() (*Config, error) {
 		AdminDLQPageSize:           parsePositiveIntAllowZero(k.String("ADMIN_DLQ_PAGE_SIZE"), 50),
 	}
 	cfg.ShippingProvider = resolveShippingProvider(cfg.AppEnv, cfg.ShippingProvider, cfg.RajaOngkirAPIKey)
+	cfg.JobsConfig = loadJobsConfig(k)
 
 	if cfg.VoucherMaxStack < 1 {
 		cfg.VoucherMaxStack = 1
