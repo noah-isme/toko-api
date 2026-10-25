@@ -89,6 +89,12 @@ schema:
 - `000032_payment_proofs` — private payment-proof storage.
 - `000033_flash_sale_cart_items` — campaign-aware cart reservations.
 - `000034_flash_sale_order_items` — atomic flash-sale quota reservations tied to orders.
+- `000047_outbox_columns` — `domain_events` outbox columns (`dispatched_at`, `dispatch_attempts`, `last_dispatch_error`) and `notifications.event_id`.
+- `000048_notifications_event_user_unique` — unique `(event_id, user_id)` index on `notifications`, built `CONCURRENTLY`.
+
+Rollback for 000047/000048: roll the `api`/`worker` binaries back first, then
+`migrate down`; the new binaries write the columns these migrations add. Dirty
+state recovery is described in `docs/ops/RUNBOOK.md`.
 
 Payment instructions use the merchant values in `.env`/`.env.example`:
 `PAYMENT_BANK_NAME`, `PAYMENT_BANK_ACCOUNT_NAME`,
@@ -110,6 +116,42 @@ PUBLIC_BASE_URL=https://toko.example   # storefront origin used to build the lin
 
 `PUBLIC_BASE_URL` matters: without it the emailed links are relative and no mail
 client can follow them.
+
+### Background delivery (worker)
+Order, payment and shipment emails and web pushes are not sent by the API. The
+API stores each domain event (outbox) and enqueues opaque `email-delivery` /
+`push-delivery` tasks; `cmd/worker` renders and sends them, retrying with
+backoff (`QUEUE_BACKOFF_*`) and parking a task in the dead-letter queue
+(`GET /api/v1/admin/queue/dlq?kind=email-delivery`) after `QUEUE_MAX_ATTEMPTS`.
+The worker also runs the outbox relay, which re-dispatches events whose fan-out
+failed (`OUTBOX_RELAY_*`). Run the worker with the same `SMTP_*` and
+`PUSH_VAPID_*` settings as the API, or these messages are never delivered.
+Password reset and verification mails stay synchronous in the API.
+
+### Web Push
+Web push uses VAPID. Generate a key pair once per environment:
+
+```bash
+make vapid-keys          # prints PUSH_VAPID_PUBLIC_KEY=... and PUSH_VAPID_PRIVATE_KEY=...
+```
+
+```bash
+PUSH_VAPID_PUBLIC_KEY=...     # served to browsers by GET /api/v1/push/vapid-key
+PUSH_VAPID_PRIVATE_KEY=...    # secret
+PUSH_VAPID_SUBJECT=mailto:ops@toko.example   # or ops@toko.example, or https://toko.example/contact; default mailto:<NOTIFY_FROM_EMAIL>
+PUSH_TTL_SEC=86400            # how long push services keep an undelivered message
+PUSH_ENDPOINT_ALLOWED_HOSTS=  # empty = fcm.googleapis.com,.push.services.mozilla.com,.notify.windows.com,web.push.apple.com,.push.apple.com ("." = any subdomain, "*" = any https DNS host)
+PUSH_MAX_SUBSCRIPTIONS_PER_USER=10   # oldest subscriptions beyond this are evicted
+RATE_LIMIT_PUSH_TEST_MAX=5           # POST /push/send-test calls per user per window
+RATE_LIMIT_PUSH_TEST_WINDOW_SEC=60
+QUEUE_CONCURRENCY_PUSH=4
+```
+
+Both keys must be set together; with neither set the API and worker boot with
+push disabled (a warning is logged), `GET /push/vapid-key` and
+`POST /push/send-test` return `503 PUSH_DISABLED`, and no pushes are queued.
+Setting only one key is a startup error. Keep the same key pair: rotating it
+invalidates every stored browser subscription.
 
 When `APP_ENV=production`, startup rejects unsafe or incomplete configuration.
 Use a random `JWT_SECRET` of at least 32 bytes, set

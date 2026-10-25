@@ -16,6 +16,11 @@
 #
 # The image must be the same tag being deployed: it carries the migrations
 # embedded in the binary, so image tag and schema version move together.
+#
+# Rollback: roll the API/worker Deployments back to the previous image first,
+# then run `migrate down`. 000047 adds columns the new binaries write (and
+# 000048 the index their ON CONFLICT clause needs), so running `down` under the
+# new binaries breaks event inserts.
 apiVersion: batch/v1
 kind: Job
 metadata:

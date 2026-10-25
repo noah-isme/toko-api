@@ -974,6 +974,12 @@ paths:
   /api/v1/push/vapid-key:
     get:
       summary: Get VAPID public key for web push
+      description: |
+        Returns the VAPID application server key (base64url, uncompressed P-256 point)
+        to pass as `applicationServerKey` to `PushManager.subscribe`. Both field
+        spellings carry the same value; clients should prefer `publicKey`.
+        Answers `503 PUSH_DISABLED` when the server has no VAPID keys configured;
+        clients should then hide or disable push UI.
       security:
         - bearerAuth: []
       responses:
@@ -982,17 +988,96 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - public_key
-                properties:
-                  public_key:
-                    type: string
+                $ref: '#/components/schemas/PushVapidKeyResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          description: Web push is not configured on this server (`PUSH_DISABLED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/push/send-test:
+    post:
+      summary: Send a test push notification to the caller
+      description: |
+        Synchronously sends a test push (`{"title":"Notifikasi uji","body":"Push notification berfungsi.","tag":"test","data":{"url":"/account/notifications"}}`)
+        to every stored subscription of the authenticated user. Per-type
+        preferences are ignored (explicit debug action). Subscriptions whose push
+        service answers 404/410 are deleted and counted in `pruned`.
+        Rate-limited per user (default 5 calls per 60 seconds,
+        `RATE_LIMIT_PUSH_TEST_MAX` / `RATE_LIMIT_PUSH_TEST_WINDOW_SEC`).
+        No request body.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: At least one push service accepted the notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushSendTestResponse'
+        '401':
+          description: Unauthorized (`UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: The user has no stored subscription (`NO_SUBSCRIPTION`); subscribe first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limit exceeded. Carries `Retry-After` and `X-RateLimit-*` headers.
+          headers:
+            Retry-After:
+              description: Seconds until the next call is allowed.
+              schema:
+                type: integer
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: rate limit exceeded
+        '500':
+          description: Subscriptions could not be loaded (`PUSH_SEND_FAILED`, no details).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '502':
+          description: |
+            No push service accepted the notification (`PUSH_SEND_FAILED`).
+            `error.details` is `{ "sent": 0, "failed": <int>, "pruned": <int> }`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          description: Web push is not configured on this server (`PUSH_DISABLED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/push/subscription:
     post:
       summary: Subscribe to web push notifications
+      description: |
+        Stores (upserts) a browser push subscription for the authenticated user.
+        The endpoint must be an absolute `https://` URL without credentials whose
+        host is a DNS name (no IP literals) of a known push service. Default
+        allowlist: `fcm.googleapis.com`, `*.push.services.mozilla.com`,
+        `*.notify.windows.com`, `web.push.apple.com`, `*.push.apple.com`
+        (operators extend it with `PUSH_ENDPOINT_ALLOWED_HOSTS`). `endpoint` is
+        limited to 2048 bytes and each key to 512 bytes. At most
+        `PUSH_MAX_SUBSCRIPTIONS_PER_USER` (default 10) subscriptions are kept per
+        user; subscribing another endpoint silently evicts the oldest.
       security:
         - bearerAuth: []
       requestBody:
@@ -1030,9 +1115,24 @@ paths:
                   message:
                     type: string
         '400':
-          description: Missing fields
+          description: |
+            `MISSING_FIELDS` (endpoint or keys empty), `INVALID_BODY` (malformed JSON,
+            endpoint > 2048 bytes or a key > 512 bytes) or `INVALID_ENDPOINT`
+            (endpoint is not an https URL of an allowlisted push service;
+            `error.details` is the validation reason, e.g.
+            `push: invalid subscription endpoint: scheme must be https`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '401':
           description: Unauthorized
+        '500':
+          description: Storing the subscription failed (`SUBSCRIBE_FAILED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
     delete:
       summary: Unsubscribe from web push notifications
       security:
@@ -3949,6 +4049,42 @@ components:
               type: boolean
             stock_updates:
               type: boolean
+    PushVapidKeyResponse:
+      type: object
+      required:
+        - public_key
+        - publicKey
+      properties:
+        public_key:
+          type: string
+          description: VAPID public key (base64url). Same value as `publicKey`.
+        publicKey:
+          type: string
+          description: VAPID public key (base64url). Preferred field.
+    PushSendTestResponse:
+      type: object
+      required:
+        - success
+        - message
+        - sent
+        - failed
+        - pruned
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Test notification sent
+        sent:
+          type: integer
+          description: Subscriptions accepted by their push service.
+        failed:
+          type: integer
+          description: Subscriptions rejected by their push service or unreachable.
+        pruned:
+          type: integer
+          description: Subscriptions deleted because the push service answered 404/410 (or the stored endpoint was not https).
     Favorite:
       type: object
       required:

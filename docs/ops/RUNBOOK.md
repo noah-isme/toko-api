@@ -100,6 +100,21 @@
 
 ## DLQ Replay
 - Gunakan endpoint admin replay per-id atau batch (kind); pastikan root cause diatasi sebelum replay massal.
+- Kinds: `webhook-delivery`, `email-delivery`, `push-delivery` (`GET /api/v1/admin/queue/dlq?kind=email-delivery`).
+- `email-delivery` / `push-delivery` payloads are only `{eventId, topic}`; the worker re-renders recipient and copy from `domain_events` on replay, so replay is safe and sends to the rightful recipient. `lastError` is redacted (failure class, SMTP code, relay host or push-service host); the full error is in the worker logs (search by `event_id`).
+- Email tasks land in the DLQ after `QUEUE_MAX_ATTEMPTS` for transient SMTP failures (network, 4xx). Invalid recipients and 5xx RCPT replies are dropped with a `Warn` log instead (retrying cannot succeed). Push tasks: transport errors, 429 and 5xx retry; 404/410 prune the subscription; other 4xx are dropped.
+- Email and push are delivered only when `cmd/worker` runs with `SMTP_*` (and `PUSH_VAPID_*`) set.
+
+## Outbox relay (undispatched domain events)
+- `domain_events.dispatched_at IS NULL` means fan-out (webhook scheduling, in-app notification, email/push enqueue) has not completed. `cmd/worker` re-dispatches such rows older than `OUTBOX_RELAY_MIN_AGE_SEC` (30) and younger than `OUTBOX_RELAY_MAX_AGE_SEC` (86400) every `OUTBOX_RELAY_INTERVAL_SEC` (15), up to `OUTBOX_RELAY_MAX_ATTEMPTS` (10). One replica sweeps at a time (Redis lock `lock:outbox:relay`).
+- Stuck events: `SELECT id, topic, occurred_at, dispatch_attempts, last_dispatch_error FROM domain_events WHERE dispatched_at IS NULL ORDER BY occurred_at DESC LIMIT 50;`. After fixing the cause (usually Redis), reset the counter to let the relay retry: `UPDATE domain_events SET dispatch_attempts = 0 WHERE id = '<id>';` (only events younger than the max age are swept).
+- Rows written before migration 000047 or by old binaries during a rollout get `dispatched_at = now()` from the column default and are never re-dispatched.
+
+## Migrations 000047 / 000048 (outbox columns, notifications unique index)
+- 000047 adds `domain_events.dispatched_at` (`DEFAULT now()`), `dispatch_attempts`, `last_dispatch_error` and `notifications.event_id`. Each `ALTER` runs in its own explicit transaction with `SET LOCAL lock_timeout = '5s'`; both are metadata-only (no rewrite, no backfill). If the second transaction times out after the first committed, version 47 is dirty: run `./bin/migrate.new force 46` and then `up` again (the `IF NOT EXISTS` clauses skip the committed part).
+- 000048 builds `uq_notifications_event_user` with `CREATE UNIQUE INDEX CONCURRENTLY` (never blocks reads or writes). If the build fails or is interrupted, version 48 is dirty and Postgres may leave an INVALID index: run `./bin/migrate.new force 47`, then `psql "$DATABASE_URL" -c 'DROP INDEX CONCURRENTLY IF EXISTS uq_notifications_event_user;'`, then `up` again. Check validity with `SELECT indisvalid FROM pg_index WHERE indexrelid = 'uq_notifications_event_user'::regclass;`.
+- The new binaries need both versions: `InsertDomainEvent` names the new columns and `CreateNotification` uses `ON CONFLICT (event_id, user_id) WHERE event_id IS NOT NULL`. Do not restart api/worker on the new binaries until version 48 is clean (`deploy.yml` already restarts only after a successful migration).
+- Rollback order: roll the api/worker binaries back **first**, then `migrate down` (48, then 47). Running `down` under the new binaries breaks event inserts.
 
 ## Scaling
 - Tambah replicas API/worker; pantau queue_depth & webhook latency p95.

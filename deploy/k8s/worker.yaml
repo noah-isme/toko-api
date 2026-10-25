@@ -27,6 +27,9 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # The worker sends order/payment/shipment email and web push, so it
+          # needs the same SMTP_* and PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY
+          # (secret) and PUSH_VAPID_SUBJECT (config) values as the API.
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

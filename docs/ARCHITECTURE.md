@@ -30,9 +30,9 @@ Toko API is a Go modular monolith backed by PostgreSQL and Redis. The repository
 | Binary | Source | Purpose |
 |--------|--------|---------|
 | `api` | `cmd/api` | HTTP API server — all REST endpoints |
-| `worker` | `cmd/worker` | Background webhook-delivery consumer |
+| `worker` | `cmd/worker` | Background consumers for the `webhook-delivery`, `email-delivery` and `push-delivery` queues, plus the outbox relay that re-dispatches undispatched domain events |
 | `migrate` | `cmd/migrate` | Schema migration runner (embeds SQL files) |
-| tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`) |
+| tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`, `vapid_keygen`) |
 
 ## Package Architecture
 
@@ -53,14 +53,14 @@ internal/
 ├── db/
 │   ├── gen/        # sqlc-generated Go code (DO NOT EDIT)
 │   └── queries/    # SQL source files for sqlc
-├── events/         # Domain event bus with notifier fan-out
+├── events/         # Domain event bus (domain_events outbox), fan-out, outbox relay
 ├── favorites/      # Wishlist / favorites
 ├── health/         # Liveness and readiness probes
 ├── http/           # HTTP-layer helpers
 ├── lock/           # Distributed locking (Redis)
 ├── loyalty/        # Points-based loyalty program
 ├── notifications/  # In-app notification centre
-├── notify/         # Outbound webhook delivery with HMAC, retry, DLQ
+├── notify/         # Outbound webhook delivery (HMAC, retry, DLQ) and queued transactional email
 ├── obs/            # Observability: Prometheus, OpenTelemetry, structured logging
 ├── order/          # Order queries and admin status transitions
 ├── payment/        # Payment intent, webhook handlers (Midtrans, Xendit)
@@ -100,9 +100,15 @@ internal/
 | Payment webhook replay | `wh:{provider}:{sha256(body)}` |
 | Shipping webhook replay | `shwh:{courier}:{sha256(body)}` |
 | Outbound webhook replay | `wh:{endpoint_uuid}:{event_uuid}` |
-| Distributed delivery locks | `lock:delivery:{delivery_uuid}` |
+| Distributed delivery locks | `lock:delivery:{delivery_uuid}`, `lock:outbox:relay` (one outbox relay sweep at a time) |
 | Task queue | `{QUEUE_REDIS_PREFIX}:queue:{kind}`, `{QUEUE_REDIS_PREFIX}:{kind}:processing`, and `{QUEUE_REDIS_PREFIX}:dedup:{kind}:{key}` (default prefix: `q`) |
 | Rate limiting | `{RATE_LIMIT_REDIS_PREFIX}{scope}:{key}` (default prefix: `rl:`) |
+
+## Domain Events and Notification Delivery
+
+Emitters (checkout, payment webhooks, shipping) call `events.Bus.EmitLogged` after their business transaction commits. The bus inserts a `domain_events` row with `dispatched_at = NULL` (the table is the outbox), then fans out: webhook deliveries are scheduled, in-app notifications are created (unique per event and user), and opaque `{eventId, topic}` tasks are enqueued for `email-delivery` and `push-delivery` (deduplicated by event id). When every handler succeeds the row is marked dispatched; otherwise the failure is recorded and the worker's outbox relay re-dispatches it. Emit failures are logged with the request logger and never fail the business operation; `EmitLogged` runs detached from client cancellation.
+
+`cmd/worker` loads the event for each email/push task, renders the message and sends it (SMTP, or VAPID web push to the user's stored subscriptions honouring push preferences). Failures retry with backoff and land in `queue_dlq` after `QUEUE_MAX_ATTEMPTS`; errors stored there are redacted so the global admin DLQ exposes no recipient address or endpoint URL.
 
 ## Request Flow
 
@@ -148,7 +154,8 @@ Both paths expect PostgreSQL and Redis configuration from the deployment environ
 | **Midtrans** | Payment gateway | `internal/payment` |
 | **Xendit** | Payment gateway (alt) | `internal/payment` |
 | **RajaOngkir** | Shipping rates + tracking | `internal/shipping` |
-| **SMTP** | Transactional email | `internal/common` (SMTPSender) |
+| **SMTP** | Transactional email (order/payment/shipment mail sent by `cmd/worker` from the `email-delivery` queue; auth mail sent inline) | `internal/common` (SMTPSender), `internal/notify` (EmailWorker) |
+| **Web Push services** (FCM, Mozilla, WNS, Apple) | VAPID web push from the `push-delivery` queue and `POST /push/send-test` | `internal/push` (WebPushSender, SSRF-safe client from `common.NewOutboundHTTPClient`) |
 | **Prometheus** | Metrics export | `internal/obs` |
 | **OpenTelemetry** | Distributed tracing | `internal/obs` |
 

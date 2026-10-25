@@ -696,7 +696,9 @@ Returns DLQ entries filtered by kind with pagination.
 
 **Query parameters:**
 
-- `kind` — optional queue kind filter (e.g. `webhook`)
+- `kind` — optional queue kind filter. Kinds produced by the worker: `webhook-delivery`, `email-delivery`, `push-delivery`
+
+For `email-delivery` and `push-delivery` the `message.payload` is only `{ "eventId": "<uuid>", "topic": "<topic>" }` (no recipient, subject, body, user id or endpoint), and `lastError` is a redacted failure class such as `email-delivery: smtp data failed (smtp 451) via smtp.example.com` or `push-delivery: 1 of 1 subscription(s) failed: push: status 503 from fcm.googleapis.com` (host and status only, never the endpoint URL). Replaying such an entry re-renders the message from the stored domain event.
 - `limit` — page size, capped at `200` (handler default `50`)
 - `offset` — items to skip (default `0`)
 
@@ -754,7 +756,7 @@ Re-enqueues DLQ entries either by ID list or by batch kind.
 ```
 
 - `ids` — optional array of DLQ entry UUIDs to replay individually
-- `kind` — optional queue kind to replay in batch
+- `kind` — optional queue kind to replay in batch (`webhook-delivery`, `email-delivery`, `push-delivery`)
 - `limit` — cap for batch replay when using `kind` (default handler page size)
 
 At least one of `ids` or `kind` is required. When `ids` is provided, `kind` is ignored for those IDs.
