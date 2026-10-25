@@ -34,16 +34,16 @@ func (q *Queries) AdminGetOrderStatus(ctx context.Context, arg AdminGetOrderStat
 
 const adminUpdateOrderStatusIfAllowed = `-- name: AdminUpdateOrderStatusIfAllowed :one
 UPDATE orders
-SET status = $1,
+SET status = $1::order_status,
     updated_at = now()
 WHERE id = $2
   AND tenant_id = $3
   AND (
-        (orders.status = 'PENDING_PAYMENT' AND $1 IN ('PAID', 'CANCELLED')) OR
-        (orders.status = 'PAID' AND $1 IN ('PACKED', 'CANCELLED')) OR
-        (orders.status = 'PACKED' AND $1 = 'SHIPPED') OR
-        (orders.status = 'SHIPPED' AND $1 = 'OUT_FOR_DELIVERY') OR
-        (orders.status = 'OUT_FOR_DELIVERY' AND $1 = 'DELIVERED')
+        (orders.status = 'PENDING_PAYMENT' AND $1::order_status IN ('PAID', 'CANCELLED')) OR
+        (orders.status = 'PAID' AND $1::order_status IN ('PACKED', 'CANCELLED')) OR
+        (orders.status = 'PACKED' AND $1::order_status = 'SHIPPED') OR
+        (orders.status = 'SHIPPED' AND $1::order_status = 'OUT_FOR_DELIVERY') OR
+        (orders.status = 'OUT_FOR_DELIVERY' AND $1::order_status = 'DELIVERED')
       )
 RETURNING id
 `

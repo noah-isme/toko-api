@@ -8,15 +8,15 @@ WHERE id = sqlc.arg(id)
 
 -- name: AdminUpdateOrderStatusIfAllowed :one
 UPDATE orders
-SET status = sqlc.arg(status),
+SET status = sqlc.arg(status)::order_status,
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND tenant_id = sqlc.arg(tenant_id)
   AND (
-        (orders.status = 'PENDING_PAYMENT' AND sqlc.arg(status) IN ('PAID', 'CANCELLED')) OR
-        (orders.status = 'PAID' AND sqlc.arg(status) IN ('PACKED', 'CANCELLED')) OR
-        (orders.status = 'PACKED' AND sqlc.arg(status) = 'SHIPPED') OR
-        (orders.status = 'SHIPPED' AND sqlc.arg(status) = 'OUT_FOR_DELIVERY') OR
-        (orders.status = 'OUT_FOR_DELIVERY' AND sqlc.arg(status) = 'DELIVERED')
+        (orders.status = 'PENDING_PAYMENT' AND sqlc.arg(status)::order_status IN ('PAID', 'CANCELLED')) OR
+        (orders.status = 'PAID' AND sqlc.arg(status)::order_status IN ('PACKED', 'CANCELLED')) OR
+        (orders.status = 'PACKED' AND sqlc.arg(status)::order_status = 'SHIPPED') OR
+        (orders.status = 'SHIPPED' AND sqlc.arg(status)::order_status = 'OUT_FOR_DELIVERY') OR
+        (orders.status = 'OUT_FOR_DELIVERY' AND sqlc.arg(status)::order_status = 'DELIVERED')
       )
 RETURNING id;
