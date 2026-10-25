@@ -22,7 +22,8 @@ Admin workflows are available under `/api/v1/admin/returns` and `/api/v1/admin/s
 - Within `IDEMPOTENCY_TTL_SEC` (default 600 s) a repeated key answers `409 IDEMPOTENT_REPLAY`
   without running the handler.
 - **Exception:** a 5xx response releases the key immediately, so the same key can be reused to
-  retry a failed request (this applies to every route using the middleware).
+  retry a failed request (this applies to every route using the middleware). A handler panic,
+  which ends as a 500, releases it too.
 - Keys are global, not scoped per user or route: generate a fresh key (e.g. a UUID) per logical
   operation and reuse it only to retry that operation.
 
@@ -121,7 +122,7 @@ Errors (`{"error": {"code", "message", "details"}}`):
 | 409 | `REFUND_ALREADY_ISSUED` | this return already has a recorded refund |
 | 409 | `PAYMENT_NOT_REFUNDABLE` | no `PAID`/`PARTIALLY_REFUNDED` payment for the order |
 | 409 | `REFUND_EXCEEDS_REFUNDABLE` | `amount > refundableAmount`, or nothing left. Details `{requested, refundable}` |
-| 409 | `REFUND_IN_PROGRESS` | another request for this return is calling the gateway (retry in about 60 s); or the previous attempt has an unknown outcome and the body `amount` differs from it (details `{refundId, pendingAmount}`: retry with that amount or without a body) |
+| 409 | `REFUND_IN_PROGRESS` | another request for this return is calling the gateway (retry in about 60 s); or the previous attempt has an unknown outcome and the body `amount` differs from it (details `{refundId, pendingAmount}`: retry with that amount or without a body); or message "refund state requires reconciliation by an operator" (details `{refundId}`): the refunds row cannot be resolved by the API (payment provider changed since the unknown-outcome attempt, or no payment for an accepted refund); retrying does not help, an operator must reconcile it with the gateway |
 | 409 | `REFUND_UNSUPPORTED` | the payment provider has no refund support |
 | 409 | `IDEMPOTENT_REPLAY` | same `Idempotency-Key` within the TTL after a 2xx/4xx response |
 | 502 | `REFUND_FAILED` | gateway rejected or did not answer; `message` carries the gateway error. Details `{refundId, retryable}` (see below) |
@@ -133,8 +134,9 @@ Errors (`{"error": {"code", "message", "details"}}`):
 - `false`: the gateway definitively rejected the refund (e.g. Midtrans `412` "Merchant cannot
   modify the status of the transaction", Midtrans `202` denied, Xendit `INSUFFICIENT_BALANCE`).
   No money moved. Fix the cause, then retry; the retry uses a new gateway key.
-- `true`: the outcome is unknown (timeout, gateway 5xx, Midtrans `201`, Xendit `409` duplicate or
-  in-progress). Retry as is. The retry first asks the gateway whether the previous key was
+- `true`: the outcome is unknown (timeout, gateway 5xx, a Midtrans body `status_code` of 5xx even
+  under HTTP 200, Midtrans `201`, Xendit `409` duplicate or in-progress, or a failed lookup or local
+  configuration error while retrying an unknown-outcome key). Retry as is. The retry first asks the gateway whether the previous key was
   applied (Midtrans transaction status `refunds[].refund_key`, Xendit refund list
   `reference_id`) and only then re-sends the **same** key with the same amount and reason, so
   money cannot move twice. The return stays locked (`RETURN_REFUND_PENDING`) until a retry

@@ -1446,10 +1446,22 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200': { description: Order cancelled }
+        '400':
+          description: >
+            `INVALID_STATE` when the order is not `pending_payment` (only pending orders
+            can be cancelled), or `BAD_REQUEST` for an invalid order or user id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: '`NOT_FOUND`: no order with this id for the current user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '409':
           description: >
-            Order cannot be cancelled, or `IDEMPOTENT_REPLAY` (the same `Idempotency-Key`
-            was used within the TTL and the first response was not a 5xx).
+            `IDEMPOTENT_REPLAY`: the same `Idempotency-Key` was used within the TTL and
+            the first response was not a 5xx.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
@@ -3225,7 +3237,11 @@ paths:
             `REFUND_EXCEEDS_REFUNDABLE` (`amount` larger than what is left, or nothing left; details `{requested, refundable}`);
             `REFUND_IN_PROGRESS` (another request for this return is calling the gateway, retry in about 60 s;
             or the previous attempt has an unknown outcome and the body `amount` differs from it: details
-            `{refundId, pendingAmount}`, retry with that amount or without a body);
+            `{refundId, pendingAmount}`, retry with that amount or without a body; or, with message
+            "refund state requires reconciliation by an operator" and details `{refundId}`, the refunds
+            row is in a state the API cannot resolve on its own (e.g. the payment provider changed
+            since the unknown-outcome attempt, or no payment exists for an accepted refund): retrying
+            does not help, an operator must reconcile it with the gateway);
             `REFUND_UNSUPPORTED` (the payment provider has no refund support);
             `IDEMPOTENT_REPLAY` (same `Idempotency-Key` within the TTL after a 2xx/4xx response).
           content:
@@ -3337,7 +3353,7 @@ components:
         the header the request is processed normally. Within `IDEMPOTENCY_TTL_SEC` (default 600 s)
         a request repeating a key gets `409 IDEMPOTENT_REPLAY` without being processed, **except**
         that a 5xx response releases the key immediately, so the same key may be reused to retry a
-        failed request. Keys are global (not scoped per user or route): generate a fresh one per
+        failed request (a handler panic, which ends as a 500, also releases it). Keys are global (not scoped per user or route): generate a fresh one per
         logical operation.
   schemas:
     ReturnRequest:
