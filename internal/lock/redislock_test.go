@@ -66,3 +66,49 @@ func TestWithLockIdempotent(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, []string{"first", "second"}, order)
 }
+
+func TestTryLockReturnsFalseWhenHeld(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	locker := lock.Locker{R: client}
+	ctx := context.Background()
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		acquired, err := locker.TryLock(ctx, "job", time.Minute, func(context.Context) error {
+			close(held)
+			<-release
+			return nil
+		})
+		require.NoError(t, err)
+		require.True(t, acquired)
+	}()
+	<-held
+
+	ran := false
+	acquired, err := locker.TryLock(ctx, "job", time.Minute, func(context.Context) error {
+		ran = true
+		return nil
+	})
+	require.NoError(t, err)
+	require.False(t, acquired)
+	require.False(t, ran)
+
+	close(release)
+	<-done
+	acquired, err = locker.TryLock(ctx, "job", time.Minute, func(context.Context) error {
+		ran = true
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.True(t, ran)
+	require.False(t, mr.Exists("job"), "lock must be released after fn returns")
+}
