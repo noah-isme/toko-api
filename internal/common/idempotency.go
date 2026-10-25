@@ -43,13 +43,44 @@ func (i Idem) Middleware(next http.Handler) http.Handler {
 			_, _ = io.WriteString(w, "{\"error\":{\"code\":\"IDEMPOTENT_REPLAY\",\"message\":\"duplicate request\"}}")
 			return
 		}
+		rec := &idemStatusRecorder{ResponseWriter: w}
 		defer func() {
-			// ensure the key expires even if handler panics
+			// A 5xx means the request failed (or must be retried to complete, as with
+			// a refund awaiting reconciliation): release the key so the client can
+			// retry with the same Idempotency-Key. Otherwise keep it for the TTL; this
+			// also runs when the handler panics (status unset), so the key still expires.
+			if rec.status >= http.StatusInternalServerError {
+				_ = i.R.Del(context.Background(), key).Err()
+				return
+			}
 			_ = i.R.Expire(context.Background(), key, i.TTL).Err()
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(rec, r)
 	})
 }
+
+// idemStatusRecorder records the response status for the idempotency middleware.
+type idemStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *idemStatusRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *idemStatusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer (Flush, deadlines).
+func (r *idemStatusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func commonJSONError(w http.ResponseWriter, err error) {
 	if err == nil {
