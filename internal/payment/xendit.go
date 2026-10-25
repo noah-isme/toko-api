@@ -191,7 +191,7 @@ func (x Xendit) Refund(ctx context.Context, req RefundRequest) (RefundResult, er
 	}
 	var result xenditRefund
 	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: strings.TrimSpace(string(responseBody))}
+		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(string(responseBody))}
 	}
 	if result.ID == "" {
 		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: "xendit refund response missing id"}
@@ -228,14 +228,14 @@ func (x Xendit) LookupRefund(ctx context.Context, req RefundRequest) (RefundResu
 	}
 	if status < 200 || status >= 300 {
 		// A failed lookup never proves absence: keep the outcome unknown.
-		return RefundResult{}, false, &RefundError{Code: "HTTP_" + strconv.Itoa(status), Message: strings.TrimSpace(string(responseBody))}
+		return RefundResult{}, false, &RefundError{Code: "HTTP_" + strconv.Itoa(status), Message: truncateProviderMessage(string(responseBody))}
 	}
 	var result struct {
 		Data    []xenditRefund `json:"data"`
 		HasMore bool           `json:"has_more"`
 	}
 	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return RefundResult{}, false, &RefundError{Code: "UNPARSABLE", Message: strings.TrimSpace(string(responseBody))}
+		return RefundResult{}, false, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(string(responseBody))}
 	}
 	for _, refund := range result.Data {
 		if refund.ReferenceID == req.RefundKey && refund.ID != "" {
@@ -278,10 +278,10 @@ func xenditRefundHTTPError(status int, body []byte) error {
 	}
 	text := strings.TrimSpace(string(body))
 	code := "HTTP_" + strconv.Itoa(status)
-	message := text
+	message := truncateProviderMessage(text)
 	if json.Unmarshal(body, &parsed) == nil && parsed.ErrorCode != "" {
 		code = parsed.ErrorCode
-		message = parsed.Message
+		message = truncateProviderMessage(parsed.Message)
 	}
 	upper := strings.ToUpper(code)
 	switch {
@@ -306,6 +306,18 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// maxProviderMessageRunes caps provider text copied into errors: a gateway 5xx can
+// carry up to 1 MiB of HTML, which must not reach API messages or failure_reason.
+const maxProviderMessageRunes = 300
+
+func truncateProviderMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if len([]rune(s)) <= maxProviderMessageRunes {
+		return s
+	}
+	return truncateRunes(s, maxProviderMessageRunes) + "..."
 }
 
 func (x Xendit) setAuth(request *http.Request) {

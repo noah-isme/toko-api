@@ -17,11 +17,25 @@ ALTER TABLE refunds ADD COLUMN IF NOT EXISTS payment_id UUID;
 
 -- Pre-existing rows were only ever written after a gateway success.
 UPDATE refunds SET settled_at = created_at WHERE provider_ref <> '' AND settled_at IS NULL;
+-- One pass (DISTINCT ON) instead of a correlated subquery per row: there is no index
+-- on payments(order_id) and ACCESS EXCLUSIVE is held on refunds here.
 UPDATE refunds f
-SET payment_id = (
-  SELECT p.id FROM payments p
-  WHERE p.order_id = f.order_id AND p.tenant_id = f.tenant_id
-  ORDER BY p.created_at DESC
-  LIMIT 1
-)
-WHERE f.payment_id IS NULL;
+SET payment_id = lp.id
+FROM (
+  SELECT DISTINCT ON (p.order_id, p.tenant_id) p.id, p.order_id, p.tenant_id
+  FROM payments p
+  JOIN refunds r ON r.order_id = p.order_id AND r.tenant_id = p.tenant_id AND r.payment_id IS NULL
+  ORDER BY p.order_id, p.tenant_id, p.created_at DESC
+) lp
+WHERE f.payment_id IS NULL AND lp.order_id = f.order_id AND lp.tenant_id = f.tenant_id;
+
+-- Payments fully refunded by the pre-000043 handler have status REFUNDED but
+-- refunded_amount 0. Align them with the new rule (REFUNDED <=> refunded_amount equals
+-- the paid amount). Not reverted by the down migration: it is a data correction, and
+-- 000043 down drops the column.
+UPDATE payments p
+SET refunded_amount = COALESCE(p.amount, o.pricing_total)
+FROM orders o
+WHERE o.id = p.order_id AND o.tenant_id = p.tenant_id
+  AND p.status = 'REFUNDED' AND p.refunded_amount = 0
+  AND COALESCE(p.amount, o.pricing_total) > 0;

@@ -250,7 +250,7 @@ func (h *Handler) reserveRefund(ctx context.Context, tenantID, returnID pgtype.U
 		rowProvider, rowReason                       string
 	)
 	err = tx.QueryRow(ctx, `SELECT id, status, provider_ref, COALESCE(provider_status,''), provider_status IS NULL,
-	        settled_at IS NOT NULL, updated_at > now() - make_interval(secs => $3), amount, attempt, payment_id, provider, COALESCE(reason,'')
+	        settled_at IS NOT NULL, updated_at > clock_timestamp() - make_interval(secs => $3), amount, attempt, payment_id, provider, COALESCE(reason,'')
 	   FROM refunds WHERE return_id=$1 AND tenant_id=$2 FOR UPDATE`, returnID, tenantID, refundInFlightSeconds).
 		Scan(&att.refundID, &rowStatus, &rowProviderRef, &rowProviderStatus, &providerStatusNull, &settled, &recent, &rowAmount, &rowAttempt, &rowPaymentID, &rowProvider, &rowReason)
 	switch {
@@ -270,6 +270,18 @@ func (h *Handler) reserveRefund(ctx context.Context, tenantID, returnID pgtype.U
 			// The gateway accepted this refund; only local records are missing.
 			att.mode = refundModeReconcile
 			att.paymentID = rowPaymentID
+			if !att.paymentID.Valid {
+				// Written by the pre-000044 handler during the deploy window (after the
+				// payment_id backfill ran): use the order's latest payment in this tenant.
+				if err := tx.QueryRow(ctx, `SELECT id FROM payments WHERE order_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 1`,
+					att.orderID, tenantID).Scan(&att.paymentID); err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						return att, &apiError{status: 409, code: "REFUND_IN_PROGRESS", message: "refund state requires reconciliation by an operator",
+							details: map[string]any{"refundId": cart.UUIDString(att.refundID)}}
+					}
+					return att, internalError("failed to load payment")
+				}
+			}
 			att.provider = rowProvider
 			att.amount = rowAmount
 			att.attempt = rowAttempt
@@ -367,20 +379,22 @@ func (h *Handler) reserveRefund(ctx context.Context, tenantID, returnID pgtype.U
 
 	switch att.mode {
 	case refundModeFresh:
-		err = tx.QueryRow(ctx, `INSERT INTO refunds(tenant_id,return_id,order_id,payment_id,provider,provider_ref,amount,reason,status,attempt)
-		    VALUES($1,$2,$3,$4,$5,'',$6,$7,'PENDING',0) RETURNING id, attempt`,
+		err = tx.QueryRow(ctx, `INSERT INTO refunds(tenant_id,return_id,order_id,payment_id,provider,provider_ref,amount,reason,status,attempt,updated_at)
+		    VALUES($1,$2,$3,$4,$5,'',$6,$7,'PENDING',0,clock_timestamp()) RETURNING id, attempt`,
 			tenantID, returnID, att.orderID, att.paymentID, att.provider, att.amount, att.reason).Scan(&att.refundID, &att.attempt)
 	case refundModeNewAttempt:
 		err = tx.QueryRow(ctx, `UPDATE refunds SET status='PENDING', attempt=attempt+1, amount=$3, reason=$4, provider=$5, payment_id=$6,
-		        provider_status=NULL, failure_reason=NULL, updated_at=now()
+		        provider_status=NULL, failure_reason=NULL, updated_at=clock_timestamp()
 		  WHERE id=$1 AND tenant_id=$2 AND status='FAILED' AND settled_at IS NULL RETURNING attempt`,
 			att.refundID, tenantID, att.amount, att.reason, att.provider, att.paymentID).Scan(&att.attempt)
 	case refundModeRetrySameKey:
-		// provider_status=NULL + updated_at=now() is the in-flight marker, so a
+		// provider_status=NULL + updated_at=clock_timestamp() is the in-flight marker
+		// (clock_timestamp, not now(): time spent waiting on FOR UPDATE must not eat
+		// into the in-flight window), so a
 		// concurrent retry gets REFUND_IN_PROGRESS instead of a parallel gateway call.
 		// reason and amount are left untouched: the resend must be byte-identical.
 		var tag pgconn.CommandTag
-		tag, err = tx.Exec(ctx, `UPDATE refunds SET provider_status=NULL, payment_id=$4, updated_at=now()
+		tag, err = tx.Exec(ctx, `UPDATE refunds SET provider_status=NULL, payment_id=$4, updated_at=clock_timestamp()
 		  WHERE id=$1 AND tenant_id=$2 AND attempt=$3 AND status='PENDING' AND provider_ref='' AND settled_at IS NULL`,
 			att.refundID, tenantID, att.attempt, att.paymentID)
 		if err == nil && tag.RowsAffected() != 1 {
@@ -408,18 +422,43 @@ func (h *Handler) callRefundGateway(r *http.Request, att refundAttempt) (payment
 		Currency:   "IDR",
 		Reason:     att.reason,
 	}
-	if att.mode == refundModeRetrySameKey {
-		if lookup, ok := att.gateway.(payment.RefundLookupProvider); ok {
-			res, found, err := lookup.LookupRefund(ctx, req)
-			if err != nil {
+	if att.mode != refundModeRetrySameKey {
+		return att.gateway.Refund(ctx, req)
+	}
+	// The previous call with this key has an unknown outcome. Nothing short of the
+	// gateway's own verdict on the key may rotate it: a failed lookup (found=false)
+	// or a local validation error (misconfiguration) stays indeterminate.
+	if lookup, ok := att.gateway.(payment.RefundLookupProvider); ok {
+		res, found, err := lookup.LookupRefund(ctx, req)
+		if err != nil {
+			if found {
+				// The gateway reports this key's refund itself as failed: definite.
 				return payment.RefundResult{}, fmt.Errorf("refund lookup: %w", err)
 			}
-			if found {
-				return res, nil
-			}
+			return payment.RefundResult{}, keepIndeterminate("refund lookup: ", err)
+		}
+		if found {
+			return res, nil
 		}
 	}
-	return att.gateway.Refund(ctx, req)
+	res, err := att.gateway.Refund(ctx, req)
+	if err != nil && payment.RefundErrorCode(err) == "INVALID_REQUEST" {
+		return payment.RefundResult{}, keepIndeterminate("", err)
+	}
+	return res, err
+}
+
+// keepIndeterminate downgrades a definite RefundError to indeterminate so the
+// caller keeps the gateway key. Other errors are already indeterminate.
+func keepIndeterminate(prefix string, err error) error {
+	var re *payment.RefundError
+	if errors.As(err, &re) && re.Definite {
+		return &payment.RefundError{Code: re.Code, Message: prefix + re.Message}
+	}
+	if prefix == "" {
+		return err
+	}
+	return fmt.Errorf("%s%w", prefix, err)
 }
 
 // recordGatewayFailure stores the Phase B outcome (the caller answers 502). Every update is
@@ -483,22 +522,30 @@ func (h *Handler) finalizeRefund(r *http.Request, att refundAttempt) (refundOutc
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var paid int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(p.amount, o.pricing_total) FROM payments p
-	    JOIN orders o ON o.id=p.order_id AND o.tenant_id=p.tenant_id
-	   WHERE p.id=$1 AND p.tenant_id=$2 FOR UPDATE OF p`, att.paymentID, att.tenantID).Scan(&paid); err != nil {
-		return out, fmt.Errorf("load payment: %w", err)
+	// Rows are locked in Phase A's order (returns, refunds, payments) so a
+	// concurrent Phase A cannot deadlock with this transaction.
+	var locked int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM returns WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, att.returnID, att.tenantID).Scan(&locked); err != nil {
+		return out, fmt.Errorf("lock return: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `UPDATE refunds SET provider_ref=$3, provider_status=$4, status=$5, settled_at=now(), updated_at=now()
+	if err := tx.QueryRow(ctx, `UPDATE refunds SET provider_ref=$3, provider_status=$4, status=$5, payment_id=COALESCE(payment_id, $7),
+	        settled_at=now(), updated_at=now()
 	   WHERE id=$1 AND tenant_id=$2 AND attempt=$6 AND settled_at IS NULL RETURNING created_at`,
-		att.refundID, att.tenantID, att.providerRef, att.providerStatus, att.status, att.attempt).Scan(&out.createdAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) && att.mode == refundModeReconcile {
+		att.refundID, att.tenantID, att.providerRef, att.providerStatus, att.status, att.attempt, att.paymentID).Scan(&out.createdAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// In any mode: a concurrent request may have settled this attempt.
 			var settled bool
 			if lookupErr := h.Pool.QueryRow(ctx, `SELECT settled_at IS NOT NULL FROM refunds WHERE id=$1 AND tenant_id=$2`, att.refundID, att.tenantID).Scan(&settled); lookupErr == nil && settled {
 				return out, errRefundAlreadySettled
 			}
 		}
 		return out, fmt.Errorf("settle refund row: %w", err)
+	}
+	var paid int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(p.amount, o.pricing_total) FROM payments p
+	    JOIN orders o ON o.id=p.order_id AND o.tenant_id=p.tenant_id
+	   WHERE p.id=$1 AND p.tenant_id=$2 FOR UPDATE OF p`, att.paymentID, att.tenantID).Scan(&paid); err != nil {
+		return out, fmt.Errorf("load payment: %w", err)
 	}
 	tag, err := tx.Exec(ctx, `UPDATE returns SET status='REFUNDED', updated_at=now() WHERE id=$1 AND tenant_id=$2`, att.returnID, att.tenantID)
 	if err != nil {

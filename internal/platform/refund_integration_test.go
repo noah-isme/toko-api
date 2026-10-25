@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/noah-isme/backend-toko/internal/common"
+	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/platform"
 	"github.com/noah-isme/backend-toko/internal/tenant"
@@ -1007,4 +1008,100 @@ func TestAdminRefundPendingGatewayStatus(t *testing.T) {
 	status, refunded := e.paymentRow(s.payment)
 	require.Equal(t, "REFUNDED", status)
 	require.Equal(t, orderTotal, refunded)
+}
+
+func TestAdminRefundRetrySameKeyNeverRotatesOnLocalErrors(t *testing.T) {
+	definiteLocal := &payment.RefundError{Definite: true, Code: "INVALID_REQUEST", Message: "server key is required"}
+	t.Run("lookup validation error", func(t *testing.T) {
+		e := newRTest(t)
+		s := e.seed(e.tenA, e.userA, "fakelookup")
+		e.seedRefundRow(e.tenA, s, "PENDING", "", "UNKNOWN", "fakelookup")
+		e.gw.lookupErr = definiteLocal
+		res := e.refund(e.tenA, s.ret, nil)
+		require.Equal(t, http.StatusBadGateway, res.Status, res.Raw)
+		require.Equal(t, true, res.details()["retryable"])
+		require.Equal(t, 0, e.gw.callCount())
+		row := e.refundRow(s.ret)
+		require.Equal(t, "PENDING", row.status)
+		require.Equal(t, "UNKNOWN", row.providerStatus)
+		require.Equal(t, 0, row.attempt)
+	})
+	t.Run("refund validation error", func(t *testing.T) {
+		e := newRTest(t)
+		s := e.seed(e.tenA, e.userA, "fake")
+		id := e.seedRefundRow(e.tenA, s, "PENDING", "", "UNKNOWN", "fake")
+		e.gw.set(payment.RefundResult{}, definiteLocal)
+		res := e.refund(e.tenA, s.ret, nil)
+		require.Equal(t, http.StatusBadGateway, res.Status, res.Raw)
+		require.Equal(t, true, res.details()["retryable"])
+		row := e.refundRow(s.ret)
+		require.Equal(t, "PENDING", row.status)
+		require.Equal(t, "UNKNOWN", row.providerStatus)
+		require.Equal(t, 0, row.attempt)
+
+		// Once configuration is fixed the same key is sent, never a rotated one.
+		e.gw.set(payment.RefundResult{}, nil)
+		e.gw.mu.Lock()
+		delete(e.gw.seen, "rf-"+id+"-0")
+		e.gw.mu.Unlock()
+		res = e.refund(e.tenA, s.ret, nil)
+		require.Equal(t, http.StatusOK, res.Status, res.Raw)
+		require.Equal(t, []string{"rf-" + id + "-0", "rf-" + id + "-0"}, e.gw.keys())
+	})
+}
+
+func TestAdminRefundReconcilesRowWithoutPaymentID(t *testing.T) {
+	// A row written by the pre-000044 handler during the deploy window: provider_ref
+	// set, settled_at NULL, payment_id NULL; the old handler already marked the
+	// payment REFUNDED without touching refunded_amount.
+	e := newRTest(t)
+	s := e.seed(e.tenA, e.userA, "fake")
+	e.seedRefundRow(e.tenA, s, "SUCCEEDED", "rfd-old", nil, "fake")
+	e.exec(`UPDATE refunds SET payment_id=NULL WHERE return_id=$1`, s.ret)
+	e.exec(`UPDATE payments SET status='REFUNDED' WHERE id=$1`, s.payment)
+	res := e.refund(e.tenA, s.ret, nil)
+	require.Equal(t, http.StatusOK, res.Status, res.Raw)
+	require.Equal(t, 0, e.gw.callCount())
+	row := e.refundRow(s.ret)
+	require.True(t, row.settled)
+	require.Equal(t, s.payment, row.paymentID)
+	status, refunded := e.paymentRow(s.payment)
+	require.Equal(t, "REFUNDED", status)
+	require.Equal(t, orderTotal, refunded)
+	require.Equal(t, "REFUNDED", e.returnStatus(s.ret))
+}
+
+// webhookProvider verifies every callback as a settlement of orderID.
+type webhookProvider struct {
+	noRefundProvider
+	orderID string
+	status  string
+}
+
+func (p webhookProvider) VerifyWebhook(*http.Request, []byte) (payment.WebhookVerifyResult, error) {
+	return payment.WebhookVerifyResult{Valid: true, OrderID: p.orderID, Status: p.status}, nil
+}
+
+func TestWebhookSettlementDoesNotRegressRefundedPayment(t *testing.T) {
+	for _, refundedStatus := range []string{"PARTIALLY_REFUNDED", "REFUNDED"} {
+		t.Run(refundedStatus, func(t *testing.T) {
+			e := newRTest(t)
+			s := e.seed(e.tenA, e.userA, "fake")
+			e.exec(`UPDATE payments SET status=$2::payment_status, refunded_amount=$3 WHERE id=$1`, s.payment, refundedStatus, orderTotal/2)
+			wh := payment.Webhook{Q: dbgen.New(e.pool), Pool: e.pool, Providers: map[string]payment.Provider{
+				"wh": webhookProvider{orderID: s.order, status: "PAID"},
+			}}
+			r := chi.NewRouter()
+			r.Post("/webhooks/{provider}", wh.Handle)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhooks/wh", strings.NewReader(`{"transaction_status":"settlement"}`)))
+			require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+			status, refunded := e.paymentRow(s.payment)
+			require.Equal(t, refundedStatus, status)
+			require.Equal(t, orderTotal/2, refunded)
+			var orderStatus string
+			require.NoError(t, e.pool.QueryRow(context.Background(), `SELECT status::text FROM orders WHERE id=$1`, s.order).Scan(&orderStatus))
+			require.Equal(t, "DELIVERED", orderStatus)
+		})
+	}
 }

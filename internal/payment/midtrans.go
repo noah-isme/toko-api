@@ -128,8 +128,9 @@ var (
 
 // Refund calls Midtrans' server-side refund endpoint with req.RefundKey as the
 // refund_key. Midtrans answers HTTP 200 for most outcomes, so the body status_code
-// decides: "200" is an accepted refund; "202" (denied), "412", "407" and other codes
-// are definite rejections; "201", 5xx, transport errors and unparsable bodies are
+// decides: "200" is an accepted refund; "202" (denied), "412", "407" and other 4xx
+// codes are definite rejections; "201", any 5xx (HTTP status or body status_code),
+// transport errors and unparsable bodies are
 // indeterminate and must be looked up (LookupRefund) before the key is sent again.
 func (m Midtrans) Refund(ctx context.Context, req RefundRequest) (RefundResult, error) {
 	if err := validateRefundRequest(req); err != nil {
@@ -165,7 +166,7 @@ func (m Midtrans) Refund(ctx context.Context, req RefundRequest) (RefundResult, 
 	}
 	text := strings.TrimSpace(string(responseBody))
 	if status >= 500 {
-		return RefundResult{}, &RefundError{Code: strconv.Itoa(status), Message: text}
+		return RefundResult{}, &RefundError{Code: strconv.Itoa(status), Message: truncateProviderMessage(text)}
 	}
 	var result struct {
 		RefundKey         string `json:"refund_key"`
@@ -181,7 +182,7 @@ func (m Midtrans) Refund(ctx context.Context, req RefundRequest) (RefundResult, 
 		return RefundResult{}, midtransRefundRejection(result.StatusCode, result.StatusMessage)
 	}
 	if decodeErr != nil {
-		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: text}
+		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(text)}
 	}
 	switch result.StatusCode {
 	case "200":
@@ -208,9 +209,15 @@ func (m Midtrans) Refund(ctx context.Context, req RefundRequest) (RefundResult, 
 // midtransRefundRejection classifies an explicit Midtrans error answer. Rejections
 // that may describe a key Midtrans already holds (duplicate refund_key) are kept
 // indeterminate so the key is never rotated on them.
+// Any server-class code (>= 500), whether it came as the HTTP status or inside an
+// HTTP 200 body, is indeterminate: the bank or Midtrans may have applied the refund.
 func midtransRefundRejection(code, message string) error {
 	if code == "" {
 		code = "MISSING_STATUS_CODE"
+	}
+	message = truncateProviderMessage(message)
+	if n, err := strconv.Atoi(strings.TrimSpace(code)); err == nil && n >= 500 {
+		return &RefundError{Code: code, Message: message}
 	}
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "duplicate") || strings.Contains(lower, "already") {
@@ -242,7 +249,7 @@ func (m Midtrans) LookupRefund(ctx context.Context, req RefundRequest) (RefundRe
 		if status == http.StatusNotFound {
 			return RefundResult{}, false, nil
 		}
-		return RefundResult{}, false, &RefundError{Code: strconv.Itoa(status), Message: strings.TrimSpace(string(responseBody))}
+		return RefundResult{}, false, &RefundError{Code: strconv.Itoa(status), Message: truncateProviderMessage(string(responseBody))}
 	}
 	var result struct {
 		StatusCode string `json:"status_code"`
@@ -251,7 +258,7 @@ func (m Midtrans) LookupRefund(ctx context.Context, req RefundRequest) (RefundRe
 		} `json:"refunds"`
 	}
 	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return RefundResult{}, false, &RefundError{Code: "UNPARSABLE", Message: strings.TrimSpace(string(responseBody))}
+		return RefundResult{}, false, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(string(responseBody))}
 	}
 	switch result.StatusCode {
 	case "404":

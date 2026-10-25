@@ -115,18 +115,19 @@ func TestIdemMiddlewareKeepsKeyOn4xx(t *testing.T) {
 	}
 }
 
-func TestIdemMiddlewareKeepsKeyOnPanic(t *testing.T) {
+func TestIdemMiddlewareReleasesKeyOnPanic(t *testing.T) {
 	idem, mr := newIdem(t)
 	h := idem.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	var recovered any
 	func() {
-		defer func() { _ = recover() }()
+		defer func() { recovered = recover() }()
 		idemCall(h, "k")
 	}()
-	if !mr.Exists(hashKey("k")) {
-		t.Fatal("key must be kept after a panic")
+	if recovered != "boom" {
+		t.Fatalf("panic must propagate to the recoverer, got %v", recovered)
 	}
-	if ttl := mr.TTL(hashKey("k")); ttl <= 0 {
-		t.Fatalf("key must have a TTL, got %v", ttl)
+	if mr.Exists(hashKey("k")) {
+		t.Fatal("key must be released after a panic (it ends as a 500)")
 	}
 }
 

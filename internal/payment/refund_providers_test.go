@@ -99,6 +99,40 @@ func TestMidtransRefundHTTP5xxIsIndeterminate(t *testing.T) {
 	}
 }
 
+func TestMidtransRefundBodyStatus5xxIsIndeterminate(t *testing.T) {
+	// Midtrans often answers HTTP 200 with the real code in the body. A server-class
+	// body code may hide an applied refund, so the key must never be rotated on it.
+	bodies := map[string]string{
+		"500": `{"status_code":"500","status_message":"Internal Server Error"}`,
+		"502": `{"status_code":"502","status_message":"Internal Server Error: Connection to the bank failed"}`,
+		"503": `{"status_code":"503","status_message":"Service Unavailable"}`,
+		"504": `{"status_code":"504","status_message":"Gateway Timeout"}`,
+	}
+	for code, body := range bodies {
+		for _, httpStatus := range []int{200, 400} {
+			m, _ := midtransWith(t, httpStatus, body)
+			res, err := m.Refund(context.Background(), midtransReq)
+			if err == nil || IsDefiniteRefundFailure(err) || res.ProviderRef != "" {
+				t.Fatalf("body %s (HTTP %d) must be indeterminate, got %+v %v", code, httpStatus, res, err)
+			}
+			if RefundErrorCode(err) != code {
+				t.Fatalf("body %s: code = %q", code, RefundErrorCode(err))
+			}
+		}
+	}
+}
+
+func TestMidtransRefundTruncatesLargeErrorBody(t *testing.T) {
+	m, _ := midtransWith(t, 502, "<html>"+strings.Repeat("x", 100000)+"</html>")
+	_, err := m.Refund(context.Background(), midtransReq)
+	if err == nil || IsDefiniteRefundFailure(err) {
+		t.Fatalf("want indeterminate, got %v", err)
+	}
+	if len(err.Error()) > 500 {
+		t.Fatalf("error message not truncated: %d bytes", len(err.Error()))
+	}
+}
+
 func TestMidtransRefundTransportErrorIsIndeterminate(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, context.DeadlineExceeded

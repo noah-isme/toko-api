@@ -45,10 +45,15 @@ func (i Idem) Middleware(next http.Handler) http.Handler {
 		}
 		rec := &idemStatusRecorder{ResponseWriter: w}
 		defer func() {
+			// A panic ends as a 500 from the recoverer: release the key like any
+			// other 5xx, then re-panic so the recoverer still handles it.
+			if p := recover(); p != nil {
+				_ = i.R.Del(context.Background(), key).Err()
+				panic(p)
+			}
 			// A 5xx means the request failed (or must be retried to complete, as with
 			// a refund awaiting reconciliation): release the key so the client can
-			// retry with the same Idempotency-Key. Otherwise keep it for the TTL; this
-			// also runs when the handler panics (status unset), so the key still expires.
+			// retry with the same Idempotency-Key. Otherwise keep it for the TTL.
 			if rec.status >= http.StatusInternalServerError {
 				_ = i.R.Del(context.Background(), key).Err()
 				return

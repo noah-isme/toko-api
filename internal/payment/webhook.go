@@ -145,10 +145,12 @@ func (h Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newStatus := normaliseWebhookStatus(result.Status)
-	if isRefundWebhookStatus(newStatus) {
-		// Refund notifications are recorded as events only: the admin refund flow
-		// is the single writer of payments.status and payments.refunded_amount, so a
-		// webhook can neither regress the payment nor race the refund finalisation.
+	if isRefundWebhookStatus(newStatus) || isRefundWebhookStatus(payment.Status) {
+		// Refund notifications, and any notification for a payment that has already
+		// been (partially) refunded, are recorded as events only: the admin refund
+		// flow is the single writer of payments.status and payments.refunded_amount.
+		// A re-delivered settlement therefore cannot move a refunded payment back to
+		// PAID, re-settle the order and voucher, or emit order.paid again.
 		span.SetAttributes(attribute.String("payment.webhook.status", string(newStatus)), attribute.Bool("payment.webhook.refund_event_only", true))
 		if err := q.InsertPaymentEvent(ctx, dbgen.InsertPaymentEventParams{
 			PaymentID: payment.ID,

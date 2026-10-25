@@ -40,9 +40,12 @@ func paymentMethodLabel(method string) string {
 	}
 }
 
+// paymentStatusLabel maps payments.status to the customer-facing label
+// ('pending' | 'paid' | 'failed'). A partially refunded payment was still paid:
+// the customer kept part of the order, so it must not read as awaiting payment.
 func paymentStatusLabel(status string) string {
 	switch status {
-	case "PAID":
+	case "PAID", "PARTIALLY_REFUNDED":
 		return "paid"
 	case "PENDING":
 		return "pending"
