@@ -195,7 +195,9 @@ export type ProductSortOption =
   | 'price:asc'
   | 'price:desc'
   | 'title:asc'
-  | 'title:desc';
+  | 'title:desc'
+  | 'popularity:desc'
+  | 'rating:desc';
 
 export interface ProductFilters {
   q?: string;
@@ -205,8 +207,44 @@ export interface ProductFilters {
   maxPrice?: number;
   inStock?: boolean;
   sort?: ProductSortOption;
+  /** Comma-separated extras; only 'facets' is recognised. */
+  include?: 'facets';
   page?: number;
   limit?: number;
+}
+
+/** GET /api/v1/products `meta`: present only when `q` is non-empty. */
+export interface ProductSearchMeta {
+  searchMode: 'fts' | 'fuzzy';
+  /** Present only when totalItems is 0 and suggestions exist (max 5). */
+  suggestions?: ProductSuggestion[];
+}
+
+export interface ProductSuggestion {
+  title: string;
+  slug: string;
+}
+
+export interface FacetTerm {
+  id: string;
+  name: string;
+  slug: string;
+  count: number;
+}
+
+/** Covers min <= price < max; max is null for the last bucket. */
+export interface PriceBucket {
+  min: number;
+  max: number | null;
+  count: number;
+}
+
+/** GET /api/v1/products `facets`: present only with include=facets. */
+export interface ProductFacets {
+  categories: FacetTerm[];
+  brands: FacetTerm[];
+  price: { buckets: PriceBucket[] };
+  inStock: { true: number; false: number };
 }
 
 // ============================================================================

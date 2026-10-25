@@ -424,9 +424,19 @@ paths:
   /api/v1/products:
     get:
       summary: List products
+      description: >-
+        Lists products with filters, sorting and pagination. When `q` is set the
+        search uses full-text matching (`simple` config, no stemming) over title
+        and description; if that finds nothing and `q` has at least 3 characters,
+        it falls back to typo-tolerant trigram matching on the title
+        (`meta.searchMode = fuzzy`). When both find nothing, `meta.suggestions`
+        offers up to 5 closest titles. `include=facets` adds facet counts.
+        `meta` is present only when `q` is non-empty and `facets` only when
+        requested, so the response is unchanged for clients that send neither.
       parameters:
         - in: query
           name: q
+          description: Search text (websearch syntax). Typo-tolerant fallback for 3+ characters.
           schema:
             type: string
         - in: query
@@ -451,6 +461,14 @@ paths:
             type: boolean
         - in: query
           name: sort
+          description: >-
+            Sort order. `popularity:desc` = units sold in paid orders of this
+            tenant (PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED),
+            recomputed by the worker every few minutes, so it can lag slightly.
+            `rating:desc` = average review rating, ties broken by review count.
+            Bare `popularity` / `rating` are aliases of the `:desc` forms.
+            Unknown values fall back to the default order (relevance when `q`
+            is set, otherwise newest first).
           schema:
             type: string
             enum:
@@ -458,6 +476,19 @@ paths:
               - price:desc
               - title:asc
               - title:desc
+              - popularity:desc
+              - rating:desc
+              - popularity
+              - rating
+        - in: query
+          name: include
+          description: >-
+            Comma-separated extras. Only `facets` is recognised; any other
+            token returns 400 with `details.field = "include"`. Empty tokens
+            are ignored.
+          schema:
+            type: string
+            example: facets
         - in: query
           name: page
           schema:
@@ -482,6 +513,16 @@ paths:
                       $ref: '#/components/schemas/ProductListItem'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ProductSearchMeta'
+                  facets:
+                    $ref: '#/components/schemas/ProductFacets'
+        '400':
+          description: Invalid filter (`page`, `limit`, `minPrice`, `maxPrice`, `price`, `inStock` or `include`); `error.details.field` names it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/products/{slug}:
     get:
       summary: Get product detail by slug
@@ -4155,6 +4196,101 @@ components:
           type: string
         slug:
           type: string
+    ProductSearchMeta:
+      type: object
+      description: Present only when `q` is non-empty.
+      required: [searchMode]
+      properties:
+        searchMode:
+          type: string
+          enum: [fts, fuzzy]
+          description: >-
+            `fts` = full-text matches (or nothing matched); `fuzzy` = full-text
+            found nothing and `data` holds typo-tolerant title matches (show
+            "results for similar products").
+        suggestions:
+          type: array
+          maxItems: 5
+          description: Closest titles; present only when `pagination.totalItems` is 0 and suggestions exist.
+          items:
+            $ref: '#/components/schemas/Suggestion'
+    Suggestion:
+      type: object
+      required: [title, slug]
+      properties:
+        title:
+          type: string
+        slug:
+          type: string
+    ProductFacets:
+      type: object
+      description: >-
+        Present only when `include=facets`. Each dimension honours `q` (in the
+        same `searchMode` as `data`) and every other active filter, but ignores
+        its own filter.
+      required: [categories, brands, price, inStock]
+      properties:
+        categories:
+          type: array
+          description: Top 50 by count desc, then name. Ignores `category`.
+          items:
+            $ref: '#/components/schemas/FacetTerm'
+        brands:
+          type: array
+          description: Top 50 by count desc, then name. Ignores `brand`.
+          items:
+            $ref: '#/components/schemas/FacetTerm'
+        price:
+          type: object
+          required: [buckets]
+          properties:
+            buckets:
+              type: array
+              description: >-
+                Always all 9 buckets in ascending order, zero counts included.
+                Edges (IDR): 50000, 100000, 250000, 500000, 1000000, 2500000,
+                5000000, 10000000. Ignores `minPrice`/`maxPrice`.
+              items:
+                $ref: '#/components/schemas/PriceBucket'
+        inStock:
+          type: object
+          description: Ignores `inStock`.
+          required: ['true', 'false']
+          properties:
+            'true':
+              type: integer
+              format: int64
+            'false':
+              type: integer
+              format: int64
+    FacetTerm:
+      type: object
+      required: [id, name, slug, count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        count:
+          type: integer
+          format: int64
+    PriceBucket:
+      type: object
+      description: Covers `min <= price < max`; `max` is null for the last, open-ended bucket.
+      required: [min, max, count]
+      properties:
+        min:
+          type: integer
+          format: int64
+        max:
+          type: [integer, 'null']
+          format: int64
+        count:
+          type: integer
+          format: int64
     ProductListItem:
       type: object
       description: >-
