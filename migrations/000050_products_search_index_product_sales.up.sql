@@ -5,10 +5,17 @@ SET LOCAL lock_timeout = '5s';
 -- never takes ACCESS EXCLUSIVE on products: before the backfill it takes EXCLUSIVE on
 -- products (LOCK TABLE ... IN EXCLUSIVE MODE), then the backfill UPDATE takes ROW EXCLUSIVE
 -- and row-locks the rows it fills, the two GIN builds take SHARE, and the product_sales FK
--- takes SHARE ROW EXCLUSIVE, all held until commit. Product READS (storefront list/detail,
--- cart, checkout) continue throughout; product WRITES and row locks (stock flag updates,
+-- takes SHARE ROW EXCLUSIVE, all held until commit. Plain product READS (storefront
+-- list/detail, cart and checkout totals) continue throughout; product WRITES and row locks (stock flag updates,
 -- admin catalog edits, FOR NO KEY UPDATE in bulk/import) wait from the start until the
--- file commits. Taking EXCLUSIVE first matters: without it the backfill row-locks rows
+-- file commits. So does every INSERT into a table that references products: EXCLUSIVE
+-- conflicts with the ROW SHARE that the foreign-key check (SELECT ... FOR KEY SHARE) takes
+-- on the referenced product. These flows wait for the whole window: checkout inventory reservations, add-to-cart (cart_items), favorites and
+-- reviews, product alert subscriptions, product questions, user_product_views and
+-- order_product_pairs, and campaign items. The 5 s lock_timeout also means the file must
+-- wait for any open transaction that has inserted a row referencing products (a checkout
+-- or cart write left open), not only for admin edits; it fails with `lock timeout`
+-- instead. Taking EXCLUSIVE first matters: without it the backfill row-locks rows
 -- while concurrent writers still hold ROW EXCLUSIVE, and the later CREATE INDEX (SHARE)
 -- and a writer waiting on a backfilled row deadlock. SHARE is not enough either: it
 -- admits ROW SHARE, so a writer that already holds a product row lock
