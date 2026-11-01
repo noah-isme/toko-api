@@ -1,5 +1,9 @@
 SET LOCAL lock_timeout = '5s';
 
+-- Same lock order as the up file: ACCESS EXCLUSIVE first, so the updates below
+-- never hold row locks while the ALTER waits to upgrade (deadlock-free).
+LOCK TABLE tenant_memberships IN ACCESS EXCLUSIVE MODE;
+
 -- Fail closed: staff roles that did not exist before map to CUSTOMER, and the
 -- ADMIN rows created by the up backfill revert to CUSTOMER. Both updates are
 -- valid under the old and the new CHECK, so they run before the ALTER.
