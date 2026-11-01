@@ -85,3 +85,42 @@ WHERE id = $1;
 		t.Fatal("expected non-admin query files to remain outside this bounded check")
 	}
 }
+
+func TestCheckFileCatchesUnscopedCTEAdminRead(t *testing.T) {
+	path := writeQueryFile(t, "admin_reports.sql", `-- name: AdminReportFirstOrders :many
+WITH first_orders AS (
+    SELECT o.user_id, MIN(o.created_at) AS first_at
+    FROM orders o
+    GROUP BY o.user_id
+)
+SELECT user_id, first_at FROM first_orders;
+`)
+
+	ok, err := checkFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected an unscoped CTE admin query to fail")
+	}
+}
+
+func TestCheckFileAllowsTenantScopedCTEAdminRead(t *testing.T) {
+	path := writeQueryFile(t, "admin_reports.sql", `-- name: AdminReportFirstOrders :many
+WITH first_orders AS (
+    SELECT o.user_id, MIN(o.created_at) AS first_at
+    FROM orders o
+    WHERE o.tenant_id = sqlc.arg(tenant_id)
+    GROUP BY o.user_id
+)
+SELECT user_id, first_at FROM first_orders;
+`)
+
+	ok, err := checkFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected a tenant-scoped CTE admin query to pass")
+	}
+}

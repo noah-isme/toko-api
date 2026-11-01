@@ -447,6 +447,7 @@ func main() {
 	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache}
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
+	adminReports := &admin.ReportsHandler{Q: queries}
 
 	reviewsSvc := &reviews.Service{Q: queries}
 	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
@@ -858,12 +859,19 @@ func main() {
 			admin.Get("/newsletter/subscribers", newsletterHandler.AdminList)
 
 			admin.Get("/analytics/overview", adminAnalytics.Overview)
+
+			// Tenant-scoped reports; format=csv streams a CSV attachment.
+			admin.Get("/reports/sales-by-category", adminReports.SalesByCategory)
+			admin.Get("/reports/sales-by-product", adminReports.SalesByProduct)
+			admin.Get("/reports/conversion", adminReports.Conversion)
+			admin.Get("/reports/customers", adminReports.Customers)
 		})
 
 		v.Route("/analytics", func(an chi.Router) {
 			an.Use(authMiddleware.RequireAuth)
 			an.Use(tenantMembership)
 			an.Use(requireRole(queries, "admin"))
+			an.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "analytics"}))
 			an.Get("/sales", analyticsHandler.Sales)
 			an.Get("/top-products", analyticsHandler.TopProducts)
 			an.Get("/overview", analyticsHandler.Overview)

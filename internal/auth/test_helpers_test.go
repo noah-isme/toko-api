@@ -733,22 +733,6 @@ func (f *fakeQueries) UpdateOrderStatusIfAllowed(context.Context, dbgen.UpdateOr
 	return pgtype.UUID{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetSalesDailyRange(context.Context, dbgen.GetSalesDailyRangeParams) ([]dbgen.GetSalesDailyRangeRow, error) {
-	return nil, errNotImplemented
-}
-
-func (f *fakeQueries) GetTopProducts(context.Context, dbgen.GetTopProductsParams) ([]dbgen.MvTopProduct, error) {
-	return nil, errNotImplemented
-}
-
-func (f *fakeQueries) RefreshSalesDaily(context.Context) error {
-	return errNotImplemented
-}
-
-func (f *fakeQueries) RefreshTopProducts(context.Context) error {
-	return errNotImplemented
-}
-
 func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
 	return dbgen.InsertDomainEventRow{}, errNotImplemented
 }

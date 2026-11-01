@@ -132,9 +132,12 @@ func TestRangeWindow(t *testing.T) {
 		{"-5d", "30d", 30},
 	}
 	for _, tc := range cases {
-		label, start := rangeWindow(tc.input)
+		label, start, end := rangeWindow(tc.input)
 		if label != tc.label {
 			t.Errorf("rangeWindow(%q) label = %q, want %q", tc.input, label, tc.label)
+		}
+		if end.Valid {
+			t.Errorf("rangeWindow(%q) rolling windows must have no end bound", tc.input)
 		}
 		if tc.days < 0 {
 			if start.Valid {

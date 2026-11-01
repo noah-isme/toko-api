@@ -38,8 +38,8 @@ Toko API is a Go modular monolith backed by PostgreSQL and Redis. The repository
 
 ```
 internal/
-├── admin/          # Admin CRUD handlers (catalog, orders, analytics)
-├── analytics/      # Sales analytics service with materialized views
+├── admin/          # Admin CRUD handlers (catalog, orders, analytics, reports + CSV)
+├── analytics/      # Tenant-scoped sales analytics (live queries + Redis cache)
 ├── app/            # Application wiring helpers
 ├── audit/          # Audit logging with sampling and HTTP recorder
 ├── auth/           # JWT authentication, sessions, password reset, email verification

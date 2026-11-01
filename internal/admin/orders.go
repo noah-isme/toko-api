@@ -206,9 +206,13 @@ func (h *OrdersHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": detail})
 }
 
+// orderStatsDTO: totalRevenue/averageOrderValue follow the revenue rule
+// (docs/contracts/analytics.md); totalOrders and the status counters count
+// every order in range.
 type orderStatsDTO struct {
 	TotalOrders       int64 `json:"totalOrders"`
 	TotalRevenue      int64 `json:"totalRevenue"`
+	RevenueOrders     int64 `json:"revenueOrders"`
 	PendingOrders     int64 `json:"pendingOrders"`
 	PaidOrders        int64 `json:"paidOrders"`
 	ShippedOrders     int64 `json:"shippedOrders"`
@@ -241,6 +245,7 @@ func (h *OrdersHandler) OrderStats(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": orderStatsDTO{
 		TotalOrders:       stats.TotalOrders,
 		TotalRevenue:      stats.TotalRevenue,
+		RevenueOrders:     stats.RevenueOrders,
 		PendingOrders:     stats.PendingOrders,
 		PaidOrders:        stats.PaidOrders,
 		ShippedOrders:     stats.ShippedOrders,

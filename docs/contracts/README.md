@@ -23,7 +23,7 @@
 - [Loyalty](loyalty.md)
 - [Web Push](push.md)
 - [Favorites](favorites.md)
-- [Analytics](analytics.md)
+- [Analytics](analytics.md) (revenue rule, tenant timezone, admin reports and CSV export)
 - [Admin](admin.md)
 - [Webhooks](webhooks.md)
 - [Testing & Development](testing.md)
