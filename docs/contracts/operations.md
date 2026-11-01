@@ -11,4 +11,4 @@ Tenant and admin operational contracts:
 - `GET /api/v1/tenant`
 - `POST /api/v1/onboarding`
 
-All operations are tenant-scoped and require an authenticated tenant member; admin paths additionally require the `admin` role.
+All operations are tenant-scoped and require an authenticated tenant member; admin paths additionally require a staff role holding the route's permission (see [admin.md, Permissions per endpoint](admin.md#permissions-per-endpoint)).

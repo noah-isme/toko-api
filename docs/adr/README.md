@@ -16,6 +16,7 @@ This directory contains Architecture Decision Records (ADRs) for the Toko API.
 | [008](008-redis-task-queue.md) | Redis-based task queue over external broker | Accepted | 2024-05 |
 | [009](009-circuit-breaker-resilience.md) | In-process circuit breaker for webhook delivery | Accepted | 2024-05 |
 | [010](010-observability-stack.md) | Prometheus + OpenTelemetry + zerolog | Accepted | 2024-03 |
+| [011](011-tenant-rbac.md) | Tenant-scoped staff roles and permissions | Accepted | 2026-10 |
 
 ## Format
 

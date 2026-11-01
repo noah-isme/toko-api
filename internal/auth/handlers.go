@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/common"
+	"github.com/noah-isme/backend-toko/internal/rbac"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
@@ -167,6 +168,11 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeError(w, err)
 		return
+	}
+	if role, ok := rbac.RoleFromContext(r.Context()); ok {
+		perms := rbac.PermissionStrings(role)
+		user.Role = string(role)
+		user.Permissions = &perms
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": user})
 }

@@ -50,7 +50,7 @@ func TestWebhookReplayProtection(t *testing.T) {
 		NotifyOnDelivered:      true,
 	}
 
-	_, err := svc.Create(ctx, toPGUUID(orderID), "jne", "TRACK123")
+	_, err := svc.Create(ctx, testTenantID, toPGUUID(orderID), "jne", "TRACK123")
 	require.NoError(t, err)
 
 	replay := &fakeReplayStore{results: []bool{true, false}}

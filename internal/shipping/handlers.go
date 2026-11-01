@@ -12,6 +12,7 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Handler exposes HTTP endpoints for shipment creation and retrieval.
@@ -101,7 +102,17 @@ func (h *Handler) AdminCreate(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid payload", nil)
 		return
 	}
-	shipment, err := h.Svc.Create(r.Context(), oID, req.Courier, req.TrackingNumber)
+	tenantRaw, ok := tenant.FromContext(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	tID, err := parseUUID(tenantRaw)
+	if err != nil {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	shipment, err := h.Svc.Create(r.Context(), tID, oID, req.Courier, req.TrackingNumber)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrOrderNotEligible):

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -54,6 +53,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/qa"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
+	"github.com/noah-isme/backend-toko/internal/rbac"
 	"github.com/noah-isme/backend-toko/internal/recommendations"
 	"github.com/noah-isme/backend-toko/internal/resilience"
 	"github.com/noah-isme/backend-toko/internal/reviews"
@@ -288,7 +288,7 @@ func main() {
 		baseDomain = baseURL.Hostname()
 	}
 	tenantResolver := tenant.NewResolver("X-Tenant-ID", baseDomain, defaultTenantIDStr)
-	tenantMembership := requireTenantMembership(pool)
+	tenantMembership := rbac.RequireMembership(queries)
 
 	cartSvc := &cart.Service{
 		Q:                          queries,
@@ -537,6 +537,7 @@ func main() {
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
 	adminReports := &admin.ReportsHandler{Q: queries}
+	staffHandler := &rbac.StaffHandler{Pool: pool, Q: queries}
 
 	reviewsSvc := &reviews.Service{Q: queries}
 	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
@@ -915,101 +916,33 @@ func main() {
 			authR.Post("/notifications/{id}/read", notificationsHandler.MarkRead)
 		})
 
-		v.Route("/admin", func(admin chi.Router) {
-			admin.Use(authMiddleware.RequireAuth)
-			admin.Use(tenantMembership)
-			admin.Use(requireRole(queries, "admin"))
-			admin.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}))
-			admin.Post("/vouchers", voucherHandler.Create)
-			admin.Put("/vouchers/{code}", voucherHandler.Update)
-			admin.Post("/vouchers/preview", voucherHandler.Preview)
-			admin.Post("/flash-sales", campaignHandler.AdminCreate)
-			admin.Get("/flash-sales", campaignHandler.AdminList)
-			admin.Get("/flash-sales/{id}", campaignHandler.AdminGet)
-			admin.Patch("/flash-sales/{id}", campaignHandler.AdminUpdate)
-			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
-			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
-			admin.Post("/orders/{id}/confirm-payment", webhookHandler.AdminConfirmPayment)
-			admin.Post("/webhooks", notifyAdmin.CreateEndpoint)
-			admin.Put("/webhooks/{id}", notifyAdmin.UpdateEndpoint)
-			admin.Get("/webhooks", notifyAdmin.ListEndpoints)
-			admin.Delete("/webhooks/{id}", notifyAdmin.DeleteEndpoint)
-			admin.Get("/webhook-deliveries", notifyAdmin.ListDeliveries)
-			admin.Post("/webhook-deliveries/{id}/replay", notifyAdmin.ReplayDelivery)
-			admin.Get("/queue/dlq", queueAdmin.ListDLQ)
-			admin.Post("/queue/dlq/replay", queueAdmin.ReplayDLQ)
-			admin.Get("/queue/stats", queueAdmin.Stats)
-			admin.Get("/audit-logs", auditHandler.List)
-			admin.Get("/customers", platformHandler.Customers)
-			admin.Get("/inventory", platformHandler.InventoryList)
-			admin.Patch("/inventory/{variantId}", platformHandler.InventoryUpdate)
-			admin.Get("/returns", platformHandler.AdminReturnList)
-			admin.Patch("/returns/{returnId}", platformHandler.AdminReturnStatus)
-			admin.With(idem.Middleware).Post("/returns/{returnId}/refund", platformHandler.AdminRefund)
-			admin.Get("/support/tickets", platformHandler.AdminTicketList)
-			admin.Get("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessages)
-			admin.Patch("/support/tickets/{ticketId}", platformHandler.AdminTicketStatus)
-			admin.Post("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessage)
-			admin.Get("/settings", platformHandler.SettingsGet)
-			admin.Patch("/settings", platformHandler.SettingsUpdate)
-			admin.Post("/onboarding", platformHandler.Onboarding)
-
-			// Catalog management. The static catalog-ops paths are registered
-			// before "/products/{id}" so chi does not treat them as ids.
-			admin.Get("/products", adminCatalog.ListProducts)
-			admin.Post("/products", adminCatalog.CreateProduct)
-			admin.Post("/products/bulk/price", adminCatalog.BulkPrice)     // rbac: catalog:write
-			admin.Post("/products/bulk/stock", adminCatalog.BulkStock)     // rbac: inventory:write
-			admin.Post("/products/bulk/status", adminCatalog.BulkStatus)   // rbac: catalog:write
-			admin.Get("/products/export", adminCatalog.ExportProductsCSV)  // rbac: catalog:read
-			admin.Post("/products/import", adminCatalog.ImportProductsCSV) // rbac: catalog:write + inventory:write
-			admin.Get("/products/{id}", adminCatalog.GetProduct)
-			admin.Patch("/products/{id}", adminCatalog.UpdateProduct)
-			admin.Delete("/products/{id}", adminCatalog.DeleteProduct)
-			admin.Patch("/products/{id}/stock", adminCatalog.UpdateProductStock)
-
-			admin.Get("/categories", adminCatalog.ListCategories)
-			admin.Post("/categories", adminCatalog.CreateCategory)
-			admin.Patch("/categories/{id}", adminCatalog.UpdateCategory)
-			admin.Delete("/categories/{id}", adminCatalog.DeleteCategory)
-
-			admin.Get("/brands", adminCatalog.ListBrands)
-			admin.Post("/brands", adminCatalog.CreateBrand)
-			admin.Patch("/brands/{id}", adminCatalog.UpdateBrand)
-			admin.Delete("/brands/{id}", adminCatalog.DeleteBrand)
-
-			// Order and voucher management reads. "/orders/stats" is registered
-			// before "/orders/{id}" so chi does not treat "stats" as an id.
-			admin.Get("/orders", adminOrders.ListOrders)
-			admin.Get("/orders/stats", adminOrders.OrderStats)
-			admin.Get("/orders/export", adminOrders.ExportOrdersCSV) // rbac: orders:read + customers:read
-			admin.Get("/orders/{id}", adminOrders.GetOrder)
-			admin.Get("/orders/{id}/invoice", invoiceHandler.AdminInvoice)
-
-			admin.Get("/vouchers", adminOrders.ListVouchers)
-			admin.Get("/vouchers/stats", adminOrders.VoucherStats)
-			admin.Delete("/vouchers/{code}", adminOrders.DeleteVoucher)
-
-			admin.Get("/newsletter/subscribers", newsletterHandler.AdminList)
-
-			admin.Get("/analytics/overview", adminAnalytics.Overview)
-
-			// Tenant-scoped reports; format=csv streams a CSV attachment.
-			admin.Get("/reports/sales-by-category", adminReports.SalesByCategory)
-			admin.Get("/reports/sales-by-product", adminReports.SalesByProduct)
-			admin.Get("/reports/conversion", adminReports.Conversion)
-			admin.Get("/reports/customers", adminReports.Customers)
-		})
-
-		v.Route("/analytics", func(an chi.Router) {
-			an.Use(authMiddleware.RequireAuth)
-			an.Use(tenantMembership)
-			an.Use(requireRole(queries, "admin"))
-			an.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "analytics"}))
-			an.Get("/sales", analyticsHandler.Sales)
-			an.Get("/top-products", analyticsHandler.TopProducts)
-			an.Get("/overview", analyticsHandler.Overview)
-		})
+		adminRoutes := adminDeps{
+			RequireAuth:    authMiddleware.RequireAuth,
+			Membership:     tenantMembership,
+			PlatformAdmin:  rbac.RequirePlatformAdmin(queries),
+			Audit:          auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}),
+			AnalyticsAudit: auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "analytics"}),
+			Idempotency:    idem.Middleware,
+			Vouchers:       voucherHandler,
+			Campaigns:      campaignHandler,
+			Shipping:       shipHandler,
+			Orders:         orderAdmin,
+			Notify:         notifyAdmin,
+			Queue:          queueAdmin,
+			AuditLogs:      auditHandler,
+			Platform:       platformHandler,
+			Catalog:        adminCatalog,
+			AdminOrders:    adminOrders,
+			AdminAnalytics: adminAnalytics,
+			AdminReports:   adminReports,
+			Invoices:       invoiceHandler,
+			Payments:       webhookHandler,
+			Newsletter:     newsletterHandler,
+			Analytics:      analyticsHandler,
+			Staff:          staffHandler,
+		}
+		v.Route("/admin", func(a chi.Router) { registerAdminRoutes(a, adminRoutes) })
+		v.Route("/analytics", func(an chi.Router) { registerAnalyticsRoutes(an, adminRoutes) })
 
 		v.Route("/payments", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
@@ -1074,73 +1007,6 @@ func main() {
 		if err := <-alertsStopped; err != nil {
 			logger.Warn().Err(err).Msg("alerts runner did not finish before shutdown grace elapsed")
 		}
-	}
-}
-
-func requireRole(q dbgen.Querier, role string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if q == nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "role validator not configured", nil)
-				return
-			}
-			userID, ok := common.UserID(r.Context())
-			if !ok {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			uid, err := cart.ToUUID(userID)
-			if err != nil {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			user, err := q.GetUserByID(r.Context(), uid)
-			if err != nil {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			if !slices.Contains(user.Roles, role) {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "insufficient permissions", nil)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// requireTenantMembership prevents an authenticated user from selecting an
-// arbitrary tenant with X-Tenant-ID. Public catalogue requests remain open,
-// while every authenticated workflow requires an ACTIVE membership row.
-func requireTenantMembership(pool *pgxpool.Pool) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if pool == nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "tenant membership store not configured", nil)
-				return
-			}
-			userID, hasUser := common.UserID(r.Context())
-			tenantID, hasTenant := tenant.FromContext(r.Context())
-			if !hasUser || !hasTenant {
-				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication and tenant are required", nil)
-				return
-			}
-			uid, userErr := cart.ToUUID(userID)
-			tid, tenantErr := cart.ToUUID(tenantID)
-			if userErr != nil || tenantErr != nil {
-				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authentication or tenant context", nil)
-				return
-			}
-			var member bool
-			if err := pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND status='ACTIVE')`, tid, uid).Scan(&member); err != nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to validate tenant membership", nil)
-				return
-			}
-			if !member {
-				common.JSONError(w, http.StatusForbidden, "TENANT_FORBIDDEN", "user is not a member of this tenant", nil)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
 	}
 }
 

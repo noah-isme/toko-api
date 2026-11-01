@@ -42,13 +42,13 @@ type slowVoucherSettler struct {
 	inner *voucher.Service
 }
 
-func (s slowVoucherSettler) Settle(ctx context.Context, code string, orderID, userID pgtype.UUID, amount int64) error {
+func (s slowVoucherSettler) Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID, userID pgtype.UUID, amount int64) error {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return s.inner.Settle(ctx, code, orderID, userID, amount)
+	return s.inner.Settle(ctx, tenantID, code, orderID, userID, amount)
 }
 
 func randHex() string {

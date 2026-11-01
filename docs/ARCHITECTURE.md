@@ -195,7 +195,7 @@ Both paths expect PostgreSQL and Redis configuration from the deployment environ
 | Concern | Implementation |
 |---------|---------------|
 | Authentication | HS256 JWT access tokens plus PostgreSQL-backed refresh sessions via `lestrrat-go/jwx` |
-| Multi-tenancy | Header/subdomain resolver + membership middleware |
+| Multi-tenancy | Header/subdomain resolver + membership middleware + tenant role permissions (`internal/rbac`); platform-global admin resources stay behind the global `users.roles` admin check |
 | Rate limiting | Redis sliding-window (global, IP, user, login) |
 | Idempotency | Redis-backed `Idem` middleware |
 | Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client and the worker's shipment-tracking calls; payment and shipping-rate clients currently use their own HTTP clients |

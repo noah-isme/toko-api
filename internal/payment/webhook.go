@@ -49,7 +49,7 @@ type Webhook struct {
 
 // VoucherSettler records voucher usage as part of order settlement.
 type VoucherSettler interface {
-	Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error
+	Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error
 }
 
 // webhookError is a handled failure that maps to an HTTP error response.
@@ -389,7 +389,7 @@ func (h Webhook) settlePaid(ctx context.Context, q *dbgen.Queries, order dbgen.O
 			if amount < 0 {
 				amount = 0
 			}
-			if err := h.Voucher.Settle(ctx, code, order.ID, order.UserID, amount); err != nil {
+			if err := h.Voucher.Settle(ctx, order.TenantID, code, order.ID, order.UserID, amount); err != nil {
 				return false, nil, 0, fmt.Errorf("settle voucher: %w", err)
 			}
 		}

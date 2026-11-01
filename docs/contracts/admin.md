@@ -2,7 +2,39 @@
 
 > **Last Updated:** 2026-10-25
 
-All admin endpoints require **admin authentication**.
+All admin endpoints require a bearer token, a resolved tenant (`X-Tenant-ID` or
+subdomain), an ACTIVE membership in that tenant with a **staff role**, and the
+endpoint's **permission** (see [Permissions per endpoint](#permissions-per-endpoint)
+and [auth.md 1.12](auth.md#112-roles--permissions)). A missing permission
+returns `403 FORBIDDEN` with `details.required` naming it:
+
+```json
+{ "error": { "code": "FORBIDDEN", "message": "insufficient permissions", "details": { "required": "orders:write" } } }
+```
+
+`details.required` is `"staff"` for a member whose role is `customer` and
+`"platform-admin"` for the platform-global endpoints. Reading, changing or
+deleting a resource of another tenant by id or code returns `404`, never `403`,
+a product cannot reference another tenant's brand or category, and a category
+cannot have another tenant's category as `parentId` (`400`).
+
+**Known gap (open, not yet resolved):** voucher codes, product slugs, category
+slugs, brand names and slugs, and variant SKUs are still unique across **all**
+tenants (database-wide unique constraints). Creating or renaming one of these
+to a value another tenant already uses returns `409 CONFLICT`, which reveals
+that the value exists somewhere on the platform and lets one tenant reserve a
+value for everyone. Per-tenant uniqueness needs schema migrations that are not
+part of this change; see ADR-011, Consequences.
+
+Every `/api/v1/admin/*` request from an ACTIVE member of the tenant is audited
+with `resource_type = "admin"`, the route, actor and final status, including
+requests denied with `403 FORBIDDEN` (staff, platform-admin or permission
+denials, for example a customer probing `/admin`). Requests rejected before
+that (`401 UNAUTHORIZED`, `403 TENANT_FORBIDDEN`) are not audited. Mutations are
+never dropped by audit sampling (only GET/HEAD/OPTIONS can be sampled); staff
+changes also record `metadata.targetUserId`, `email`, `previousRole` and
+`newRole`. `/api/v1/analytics/*` requests are audited the same way with
+`resource_type = "analytics"`.
 
 Dashboard overview, order stats and the reports (`/api/v1/admin/analytics/overview`, `/api/v1/admin/orders/stats`, `/api/v1/admin/reports/*`, including CSV export and the revenue rule) are documented in [Analytics](analytics.md).
 
@@ -346,7 +378,7 @@ Creates a new voucher rule.
 }
 ```
 
-Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (duplicate code), `INTERNAL`.
+Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (duplicate code; codes are currently unique across all tenants, so this can also mean another tenant uses the code), `INTERNAL`.
 
 ---
 
@@ -485,8 +517,9 @@ created when the order has none) with a `payment_events` row
 `{source: "admin", reason: "manual_confirmation", actorId, note}`, the order moves
 `PENDING_PAYMENT` → `PAID` through the status guard, reservations and flash-sale quota are
 committed, the voucher is settled and `order.paid` is emitted (customer email, in-app
-`order_paid`, outbound webhooks). Admin role required; the call is audit-logged like other admin
-routes. Only orders of the caller's tenant can be confirmed.
+`order_paid`, outbound webhooks). Permission `refunds:write` (owner, admin, manager): settling a
+payment is a money operation, so `orders:write` (fulfillment) is not enough; the call is
+audit-logged like other admin routes. Only orders of the caller's tenant can be confirmed.
 
 **Request** (body optional):
 
@@ -924,15 +957,16 @@ Note: the backend currently returns a raw array, not the standard `{ "data": ...
 ```
 
 Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `AUDIT_NOT_CONFIGURED`, `AUDIT_QUERY_FAILED`, `INTERNAL`.
+
 ---
 
 # Catalog operations (6.20–6.28)
 
-All routes below are under `/api/v1/admin`, need a bearer admin token and `X-Tenant-ID`, and use the standard envelope `{"data": ...}` / `{"error": {"code", "message", "details"}}`. Money is in minor units (integers); timestamps are RFC3339 UTC. Full schemas: `openapi.yaml` (each route carries `x-required-permission`).
+All routes below are under `/api/v1/admin`, need a bearer token of a staff member and `X-Tenant-ID`, and use the standard envelope `{"data": ...}` / `{"error": {"code", "message", "details"}}`. Money is in minor units (integers); timestamps are RFC3339 UTC. Full schemas: `openapi.yaml` (each route carries `x-permission`).
 
-### Required permissions (for the RBAC integration)
+### Required permissions
 
-This branch still guards the whole `/admin` group with the `admin` role. When the RBAC stream lands, register each route with these permissions (fail closed):
+Each route is guarded as below (see also [Permissions per endpoint](#permissions-per-endpoint)); a route listing two permissions needs both, and a denial names the first one missing in `details.required`:
 
 | Route | Permission(s) |
 |---|---|
@@ -1176,12 +1210,224 @@ Authorization: Bearer <admin_token>
 ```
 
 Admin version of [Orders 4.6](orders.md#46-download-invoice-pdf) for any order
-in the active tenant. Requires the `admin` role and an active tenant
+in the active tenant. Requires permission `orders:read` and an active tenant
 membership. Every call is written to the audit log (`resource_type: admin`),
 like other admin routes.
 
 - Same response headers and PDF as the customer endpoint. The invoice number is
   shared: whichever side downloads first assigns it.
 - Errors: `400 BAD_REQUEST` (invalid id), `401 UNAUTHORIZED`, `403 FORBIDDEN`
-  (not an admin or not a member), `404 NOT_FOUND` (not in this tenant),
+  (not staff, lacks `orders:read`, or not a member), `404 NOT_FOUND` (not in this tenant),
   `409 INVOICE_NOT_AVAILABLE` (not paid yet and no invoice issued), `500 INTERNAL`.
+
+---
+
+## 6.30 List Roles
+
+```http
+GET /api/v1/admin/roles
+Authorization: Bearer <token>
+```
+
+Permission: `staff:read`. Returns the seven staff roles in rank order with
+their permissions (the server's matrix; render role pickers from it). `owner`
+can be granted only by an owner; every other role by any holder of
+`staff:manage`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    { "role": "owner", "permissions": ["analytics:read", "catalog:read", "..."] },
+    { "role": "admin", "permissions": ["..."] },
+    { "role": "manager", "permissions": ["..."] },
+    { "role": "catalog", "permissions": ["catalog:read", "catalog:write", "inventory:read", "inventory:write", "promotions:read"] },
+    { "role": "fulfillment", "permissions": ["..."] },
+    { "role": "support", "permissions": ["..."] },
+    { "role": "analyst", "permissions": ["..."] }
+  ]
+}
+```
+
+---
+
+## 6.31 List Staff
+
+```http
+GET /api/v1/admin/staff?page=1&limit=20
+Authorization: Bearer <token>
+```
+
+Permission: `staff:read`. Memberships of the current tenant whose role is not
+`customer`, ordered by role rank (owner, admin, manager, then the rest) and
+then email. `limit` is clamped to `100`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "userId": "user-uuid",
+      "name": "Jane",
+      "email": "jane@shop.id",
+      "role": "manager",
+      "status": "ACTIVE",
+      "createdAt": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-10-25T00:00:00Z"
+    }
+  ],
+  "pagination": { "page": 1, "perPage": 20, "totalItems": 3 }
+}
+```
+
+`status` is the membership status (`INVITED`, `ACTIVE`, `SUSPENDED`); only
+ACTIVE members can use their role.
+
+---
+
+## 6.32 Assign Staff
+
+```http
+POST /api/v1/admin/staff
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`.
+
+```json
+{ "email": "jane@shop.id", "role": "manager" }
+```
+
+Grants a staff role to a user who is **already a member of this tenant** (they
+registered on this tenant's storefront). The email lookup is case-insensitive
+and limited to this tenant's members: an unknown email and an account that
+only exists in another tenant both return `404 USER_NOT_FOUND`, and nobody is
+enrolled into the tenant by this call. There is no invitation flow. A
+`SUSPENDED` membership is reactivated.
+
+**Response:** `201 Created` — `{ "data": StaffMember }` (shape as in 6.31).
+
+**Errors:**
+
+- `400 VALIDATION_ERROR` — invalid JSON, missing email, unknown role, or role `customer`.
+- `403 FORBIDDEN` (`details.required = "staff:manage"`) — no `staff:manage`.
+- `403 OWNER_REQUIRED` — role `owner` requested by a non-owner.
+- `403 TENANT_FORBIDDEN` — the caller's own membership stopped being ACTIVE.
+- `404 USER_NOT_FOUND` — no member of this tenant has that email.
+- `409 STAFF_EXISTS` — the user is already staff; use 6.33.
+
+---
+
+## 6.33 Change Staff Role
+
+```http
+PATCH /api/v1/admin/staff/{userId}
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`.
+
+```json
+{ "role": "support" }
+```
+
+**Response:** `200 OK` — `{ "data": StaffMember }`.
+
+**Errors:**
+
+- `400 VALIDATION_ERROR` — `userId` is not a UUID, unknown role, or role `customer` (use 6.34).
+- `403 FORBIDDEN` / `403 TENANT_FORBIDDEN` — as in 6.32.
+- `403 OWNER_REQUIRED` — the target is an `owner`, or the new role is `owner`, and the caller is not an owner.
+- `404 STAFF_NOT_FOUND` — the user has no staff membership in this tenant.
+- `409 LAST_OWNER` — the target is the only ACTIVE owner. A `SUSPENDED` owner is never protected and never counted.
+
+Callers may change their own role, subject to `LAST_OWNER`.
+
+---
+
+## 6.34 Revoke Staff
+
+```http
+DELETE /api/v1/admin/staff/{userId}
+Authorization: Bearer <token>
+```
+
+Permission: `staff:manage`. Sets the membership role back to `customer`; the
+membership itself is kept so the person keeps storefront access.
+
+**Response:** `204 No Content`.
+
+**Errors:** `400 VALIDATION_ERROR`, `403 FORBIDDEN`, `403 OWNER_REQUIRED`,
+`403 TENANT_FORBIDDEN`, `404 STAFF_NOT_FOUND`, `409 LAST_OWNER` (as in 6.33).
+
+Staff mutations (6.32-6.34) run in one transaction serialized per tenant, and
+the caller's role is re-read inside it, so concurrent changes can never leave
+a tenant without an ACTIVE owner or let a just-demoted caller act on a stale
+role.
+
+---
+
+## Permissions per endpoint
+
+`owner` and `admin` hold every tenant permission. Rows marked
+**platform-admin** are outside the tenant matrix: they require the global
+`users.roles` to contain `admin` (`403 FORBIDDEN`, `details.required =
+"platform-admin"` otherwise), so no tenant role grants them.
+
+| Endpoint | Permission |
+|---|---|
+| `GET /admin/products`, `GET /admin/products/{id}`, `GET /admin/categories`, `GET /admin/brands` | `catalog:read` |
+| `POST /admin/products`, `PATCH/DELETE /admin/products/{id}`, `POST /admin/categories`, `PATCH/DELETE /admin/categories/{id}`, `POST /admin/brands`, `PATCH/DELETE /admin/brands/{id}` | `catalog:write` |
+| `POST /admin/products/bulk/price`, `POST /admin/products/bulk/status` | `catalog:write` |
+| `GET /admin/products/export` | `catalog:read` |
+| `POST /admin/products/import` | `catalog:write` **and** `inventory:write` |
+| `GET /admin/inventory` | `inventory:read` |
+| `PATCH /admin/products/{id}/stock`, `PATCH /admin/inventory/{variantId}`, `POST /admin/products/bulk/stock` | `inventory:write` |
+| `GET /admin/orders`, `GET /admin/orders/stats`, `GET /admin/orders/{id}`, `GET /admin/orders/{id}/invoice` | `orders:read` |
+| `GET /admin/orders/export` | `orders:read` **and** `customers:read` |
+| `PATCH /admin/orders/{id}/status`, `POST /admin/orders/{id}/shipment` | `orders:write` |
+| `GET /admin/returns` | `returns:read` |
+| `PATCH /admin/returns/{returnId}` | `returns:write` |
+| `POST /admin/returns/{returnId}/refund`, `POST /admin/orders/{id}/confirm-payment` | `refunds:write` |
+| `GET /admin/customers`, `GET /admin/newsletter/subscribers` | `customers:read` |
+| `GET /admin/support/tickets`, `GET /admin/support/tickets/{ticketId}/messages` | `support:read` |
+| `PATCH /admin/support/tickets/{ticketId}`, `POST /admin/support/tickets/{ticketId}/messages` | `support:write` |
+| `GET /admin/vouchers`, `GET /admin/vouchers/stats`, `POST /admin/vouchers/preview`, `GET /admin/flash-sales`, `GET /admin/flash-sales/{id}` | `promotions:read` |
+| `POST /admin/vouchers`, `PUT /admin/vouchers/{code}`, `DELETE /admin/vouchers/{code}`, `POST /admin/flash-sales`, `PATCH /admin/flash-sales/{id}` | `promotions:write` |
+| `GET /admin/analytics/overview`, `GET /admin/reports/sales-by-category`, `GET /admin/reports/sales-by-product`, `GET /admin/reports/conversion`, `GET /admin/reports/customers` | `analytics:read` |
+| `GET /analytics/sales`, `GET /analytics/top-products`, `GET /analytics/overview` | `analytics:read` |
+| `GET /admin/settings` | `settings:read` |
+| `PATCH /admin/settings`, `POST /admin/onboarding` | `settings:write` |
+| `GET /admin/roles`, `GET /admin/staff` | `staff:read` |
+| `POST /admin/staff`, `PATCH /admin/staff/{userId}`, `DELETE /admin/staff/{userId}` | `staff:manage` |
+| `POST/GET /admin/webhooks`, `PUT/DELETE /admin/webhooks/{id}`, `GET /admin/webhook-deliveries`, `POST /admin/webhook-deliveries/{id}/replay`, `GET /admin/queue/dlq`, `POST /admin/queue/dlq/replay`, `GET /admin/queue/stats`, `GET /admin/audit-logs` | **platform-admin** |
+
+Each operation in `openapi.yaml` carries the same value as `x-permission` (a list when every listed permission is required).
+
+Voucher, order-status and shipment writes are tenant-scoped: a voucher code or
+order id of another tenant returns `404`, and a voucher can only be redeemed
+(cart, checkout, payment settlement) in the tenant that created it.
+
+### Adding an admin route (backend)
+
+Register every new `/api/v1/admin` or `/api/v1/analytics` route in
+`cmd/api/routes_admin.go` with chi's `Method`, which accepts an
+`http.Handler` (`Get`/`Post`/... only accept an `http.HandlerFunc` and will not
+compile with a guard):
+
+```go
+a.Method(http.MethodGet, "/reports", rbac.Require(rbac.PermAnalyticsRead, d.Reports.List)) // tenant-scoped
+p.Method(http.MethodGet, "/system", rbac.RequirePlatform(d.System.Get))                    // platform-global, inside the platform group
+a.Method(http.MethodPost, "/import", rbac.RequireAll(d.Import.Run, rbac.PermCatalogWrite, rbac.PermInventoryWrite)) // needs both
+```
+
+Pick a permission from the list above (extend the matrix in
+`internal/rbac/roles.go` and this table if none fits). A route registered
+any other way is still blocked for customers by the group-level
+`rbac.RequireStaff`, and `TestAdminRoutesAreGuarded` (`cmd/api/routes_test.go`)
+fails until it is wrapped and added to the test's expected-route table. Add
+`x-permission` to its `openapi.yaml` operation.

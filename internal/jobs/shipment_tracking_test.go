@@ -54,6 +54,12 @@ func (f *fakeShipQueries) GetShipmentByOrder(_ context.Context, orderID pgtype.U
 	return dbgen.GetShipmentByOrderRow{ID: s.ID, OrderID: s.OrderID, Status: s.Status, Courier: s.Courier, TrackingNumber: s.TrackingNumber, LastStatus: s.LastStatus, LastEventAt: s.LastEventAt}, nil
 }
 
+// GetOrderByTenant is only used by shipping.Service.Create, which the tracking
+// job never calls.
+func (f *fakeShipQueries) GetOrderByTenant(context.Context, dbgen.GetOrderByTenantParams) (dbgen.GetOrderByTenantRow, error) {
+	return dbgen.GetOrderByTenantRow{}, pgx.ErrNoRows
+}
+
 func (f *fakeShipQueries) CreateShipment(context.Context, dbgen.CreateShipmentParams) (dbgen.CreateShipmentRow, error) {
 	return dbgen.CreateShipmentRow{}, errors.New("not used")
 }

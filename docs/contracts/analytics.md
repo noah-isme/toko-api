@@ -2,7 +2,7 @@
 
 > **Last Updated:** 2026-10-25
 
-All analytics and report endpoints require **admin authentication** (`Authorization: Bearer <admin_token>`, role `admin`, tenant membership) and are recorded in the audit log.
+All analytics and report endpoints require a bearer token of a staff member with an ACTIVE membership in the tenant and the `analytics:read` permission (see [admin.md, Permissions per endpoint](admin.md#permissions-per-endpoint)); they are recorded in the audit log.
 
 ## Tenant scope
 

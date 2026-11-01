@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
@@ -88,7 +89,9 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 }
 
 // Settle records voucher usage at order payment time ensuring idempotency.
-func (s *Service) Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
+// tenantID is the order's tenant: a voucher owned by another tenant is treated
+// like an unknown code and never settled against the order.
+func (s *Service) Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
 	if s == nil || s.Q == nil {
 		return errors.New("voucher service not configured")
 	}
@@ -101,6 +104,17 @@ func (s *Service) Settle(ctx context.Context, code string, orderID pgtype.UUID, 
 			return nil
 		}
 		return err
+	}
+	if !tenantID.Valid || voucher.TenantID != tenantID {
+		// Checkout already drops a foreign code (discount 0), so reaching this
+		// means the order carries another tenant's voucher code. Skip
+		// settlement, but leave a trace so such orders can be found.
+		zerolog.Ctx(ctx).Warn().
+			Str("order_id", uuidText(orderID)).
+			Str("order_tenant_id", uuidText(tenantID)).
+			Str("voucher_tenant_id", uuidText(voucher.TenantID)).
+			Msg("voucher settlement skipped: voucher belongs to another tenant")
+		return nil
 	}
 	if amount < 0 {
 		amount = 0
@@ -196,4 +210,11 @@ func parseUUID(value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
+}
+
+func uuidText(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	return uuid.UUID(id.Bytes).String()
 }

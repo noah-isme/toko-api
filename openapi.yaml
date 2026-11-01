@@ -128,6 +128,66 @@ paths:
       responses:
         '204':
           description: Logged out; refresh cookie cleared
+  /api/v1/auth/logout/all:
+    post:
+      summary: Revoke every session of the current user
+      description: >-
+        Revokes all refresh tokens of the authenticated user on every device
+        and clears the refresh cookie on this response. Access tokens already
+        issued stay valid until they expire.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: All sessions revoked; refresh cookie cleared
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/auth/sessions:
+    get:
+      summary: List the active sessions of the current user
+      description: >-
+        One entry per stored refresh-token session of the user, newest first.
+        Expired sessions are only purged when they are next used, so they can
+        still appear. `lastActive` is the session's creation time and
+        `current` is always false today (the current session is not tracked).
+        `location` is never set yet.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/me:
     get:
       summary: Get the current authenticated user
@@ -1563,6 +1623,52 @@ paths:
   /api/v1/carts/{id}/apply-voucher:
     post:
       summary: Apply voucher
+      description: >-
+        Vouchers belong to one tenant. A code that belongs to another tenant
+        is treated exactly like an unknown code (404).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Voucher applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      discount:
+                        type: integer
+                        format: int64
+        '400':
+          description: Invalid payload, or the voucher is not active, expired, used up or below minimum spend (BAD_REQUEST)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Cart not found, or voucher code unknown or owned by another tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/carts/{id}/voucher:
     delete:
       summary: Remove voucher
@@ -1776,6 +1882,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/{id}/shipment:
     post:
+      x-permission: orders:write
       summary: Create shipment for order
       description: Registers courier and tracking data for an order.
       security:
@@ -1820,6 +1927,7 @@ paths:
           description: Server error
   /api/v1/admin/orders/{id}/status:
     patch:
+      x-permission: orders:write
       summary: Update order status (admin restricted)
       description: Advances the order status using state-machine validation.
       security:
@@ -1855,6 +1963,7 @@ paths:
           description: Server error
   /api/v1/admin/orders/{id}/confirm-payment:
     post:
+      x-permission: refunds:write
       summary: Confirm a manual payment (admin)
       description: |
         Settles a PENDING_PAYMENT order after an admin verified a manual bank transfer, exactly like a
@@ -1906,7 +2015,36 @@ paths:
               schema: { $ref: '#/components/schemas/ApiError' }
         '500': { description: Server error }
   /api/v1/admin/vouchers:
+    get:
+      x-permission: promotions:read
+      summary: List vouchers (admin)
+      description: Paginated voucher list for the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: search, in: query, description: Match on voucher code, schema: { type: string } }
+        - { name: kind, in: query, description: Discount kind filter, schema: { type: string, enum: [fixed_amount, percent] } }
+      responses:
+        '200':
+          description: Voucher page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminVoucher' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Invalid kind filter (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
     post:
+      x-permission: promotions:write
       summary: Create voucher
       description: Creates a new voucher rule.
       security:
@@ -1940,7 +2078,24 @@ paths:
         '500':
           description: Server error
   /api/v1/admin/vouchers/{code}:
+    delete:
+      x-permission: promotions:write
+      summary: Delete voucher (admin)
+      description: Deletes an unused voucher of the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Voucher deleted }
+        '400': { description: Missing code (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Voucher not found in this tenant (`NOT_FOUND`) }
+        '409': { description: Voucher has been used and cannot be deleted (`CONFLICT`) }
+        '500': { description: Server error }
     put:
+      x-permission: promotions:write
       summary: Update voucher
       description: Updates the voucher identified by its code.
       security:
@@ -1982,6 +2137,7 @@ paths:
           description: Server error
   /api/v1/admin/vouchers/preview:
     post:
+      x-permission: promotions:read
       summary: Preview voucher discount (dry-run)
       description: Dry-run evaluation of a voucher for a given cart context.
       security:
@@ -2014,6 +2170,7 @@ paths:
           description: Server error
   /api/v1/admin/webhooks:
     post:
+      x-permission: platform-admin
       summary: Create webhook endpoint
       description: |
         Registers a new webhook endpoint. Catalog topics `product.price_changed`,
@@ -2029,6 +2186,8 @@ paths:
         streams): this endpoint does not yet set `tenant_id` on the new row,
         so tenant-scoped delivery only reaches endpoints whose tenant was
         assigned directly in the database until that lands.
+
+        Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -2053,8 +2212,9 @@ paths:
         '500':
           description: Server error
     get:
+      x-permission: platform-admin
       summary: List webhook endpoints
-      description: Returns configured webhook endpoints.
+      description: Returns configured webhook endpoints. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2094,8 +2254,9 @@ paths:
           description: Server error
   /api/v1/admin/webhooks/{id}:
     put:
+      x-permission: platform-admin
       summary: Update webhook endpoint
-      description: Updates the webhook endpoint identified by id.
+      description: Updates the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2130,8 +2291,9 @@ paths:
         '500':
           description: Server error
     delete:
+      x-permission: platform-admin
       summary: Delete webhook endpoint
-      description: Removes the webhook endpoint identified by id.
+      description: Removes the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2157,8 +2319,9 @@ paths:
           description: Server error
   /api/v1/admin/webhook-deliveries:
     get:
+      x-permission: platform-admin
       summary: List webhook deliveries
-      description: Returns webhook delivery attempts with optional filtering.
+      description: Returns webhook delivery attempts with optional filtering. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2218,8 +2381,9 @@ paths:
           description: Server error
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
+      x-permission: platform-admin
       summary: Replay a webhook delivery
-      description: Resets the delivery for retry and releases any related DLQ lock.
+      description: Resets the delivery for retry and releases any related DLQ lock. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2249,8 +2413,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq:
     get:
+      x-permission: platform-admin
       summary: List dead-letter queue items
-      description: Returns DLQ entries filtered by kind with pagination.
+      description: Returns DLQ entries filtered by kind with pagination. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2288,8 +2453,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq/replay:
     post:
+      x-permission: platform-admin
       summary: Replay DLQ items
-      description: Re-enqueues DLQ entries either by ID list or by batch kind.
+      description: Re-enqueues DLQ entries either by ID list or by batch kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -2315,8 +2481,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/stats:
     get:
+      x-permission: platform-admin
       summary: Queue depth and DLQ metrics
-      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind.
+      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2343,8 +2510,9 @@ paths:
           description: Server error
   /api/v1/admin/audit-logs:
     get:
+      x-permission: platform-admin
       summary: List audit logs (admin)
-      description: Returns a paginated list of audit logs.
+      description: Returns a paginated list of audit logs. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2379,11 +2547,12 @@ paths:
           description: Server error
   /api/v1/analytics/sales:
     get:
+      x-permission: analytics:read
       summary: Sales trend (daily)
       description: >-
         Returns daily sales aggregates for the requested date range, bucketed by tenant-local day
         (tenants.timezone). Range is inclusive of `from` and exclusive of `to`. When `from`/`to` are
-        omitted the `days` window ends at the next tenant-local midnight. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
+        omitted the `days` window ends at the next tenant-local midnight. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
       parameters:
@@ -2427,17 +2596,18 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden (admin required)
+          description: Forbidden (not staff or missing the x-permission)
         '500':
           description: Analytics service error
   /api/v1/analytics/top-products:
     get:
+      x-permission: analytics:read
       summary: Top products by qty
       description: >-
         Returns the tenant's top-selling products ordered by quantity sold (all time unless `from`/`to`
         are given). Item-level gross: sums order_items.subtotal of orders matching the revenue rule
         (partially refunded orders keep their full item value, fully refunded orders are excluded).
-        Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
+        Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
       parameters:
@@ -2483,15 +2653,16 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden (admin required)
+          description: Forbidden (not staff or missing the x-permission)
         '500':
           description: Analytics service error
   /api/v1/analytics/overview:
     get:
+      x-permission: analytics:read
       summary: Overview for dashboard
       description: >-
         Aggregated order and revenue metrics for the requested date range (sum of /analytics/sales
-        rows). Default window is `days` (default 30) whole tenant-local days. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
+        rows). Default window is `days` (default 30) whole tenant-local days. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
       parameters:
@@ -2548,6 +2719,7 @@ paths:
           description: Invalid email format or missing body
   /api/v1/admin/newsletter/subscribers:
     get:
+      x-permission: customers:read
       summary: List newsletter subscribers
       security: [{ bearerAuth: [] }]
       parameters:
@@ -2557,7 +2729,31 @@ paths:
         '200':
           description: List of subscribers
   /api/v1/admin/flash-sales:
+    get:
+      x-permission: promotions:read
+      summary: List flash-sale campaigns
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Campaign page (each campaign includes its items)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/FlashSaleCampaign' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
     post:
+      x-permission: promotions:write
       summary: Create a flash-sale campaign
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -2584,7 +2780,28 @@ paths:
                       stockLimit: { type: integer, minimum: 1, nullable: true, description: 'null or absent means unlimited; 0 is rejected with 400' }
       responses: { '201': { description: Campaign created } }
   /api/v1/admin/flash-sales/{id}:
+    get:
+      x-permission: promotions:read
+      summary: Get a flash-sale campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The campaign with all its items
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/FlashSaleCampaign' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Campaign not found for this tenant (`NOT_FOUND`) }
+        '500': { description: Server error }
     patch:
+      x-permission: promotions:write
       summary: Update a flash-sale campaign (full or partial)
       description: >
         Partial update: absent fields are left unchanged, and a bare
@@ -2900,6 +3117,7 @@ paths:
           description: Server error
   /api/v1/admin/products:
     get:
+      x-permission: catalog:read
       summary: List products (admin)
       description: |
         Paginated product list for the admin dashboard. Unlike the public catalog
@@ -2969,6 +3187,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create product (admin)
       security:
         - bearerAuth: []
@@ -2993,15 +3212,15 @@ paths:
                     properties:
                       id: { type: string, format: uuid }
                       slug: { type: string }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
-        '409': { description: Slug already exists }
+        '409': { description: "Slug already exists. Slugs are currently unique across all tenants, so this can also mean another tenant uses it." }
         '500': { description: Server error }
   /api/v1/admin/products/bulk/price:
     post:
       summary: Bulk price update (admin)
-      x-required-permission: [catalog:write]
+      x-permission: catalog:write
       description: |
         All-or-nothing update of up to 500 items (request body at most 1 MiB).
         A `productId` item sets the product price (and `compareAt` when sent)
@@ -3068,7 +3287,7 @@ paths:
   /api/v1/admin/products/bulk/stock:
     post:
       summary: Bulk variant stock update (admin)
-      x-required-permission: [inventory:write]
+      x-permission: inventory:write
       description: |
         All-or-nothing, up to 500 items. Each item targets one variant and sends
         either an absolute `stock` or a `delta`. Deltas are applied atomically
@@ -3118,7 +3337,7 @@ paths:
   /api/v1/admin/products/bulk/status:
     post:
       summary: Bulk product status (publish / draft / archive)
-      x-required-permission: [catalog:write]
+      x-permission: catalog:write
       description: |
         All-or-nothing, up to 500 items. Non-published (draft, archived)
         products disappear from public listing, detail, search, related
@@ -3164,7 +3383,7 @@ paths:
   /api/v1/admin/products/export:
     get:
       summary: Export products as CSV (one row per variant)
-      x-required-permission: [catalog:read]
+      x-permission: catalog:read
       description: |
         Streams every product matching the list filters (no pagination), one
         row per variant; a product without variants yields one row with empty
@@ -3207,7 +3426,7 @@ paths:
   /api/v1/admin/products/import:
     post:
       summary: Import products or stock from CSV (dry run by default)
-      x-required-permission: [catalog:write, inventory:write]
+      x-permission: [catalog:write, inventory:write]
       description: |
         Multipart upload (field `file`, at most 5 MiB, at most 5000 data rows,
         CSV only; .xlsx is rejected). This route is exempt from the global
@@ -3333,6 +3552,7 @@ paths:
                       details: { $ref: '#/components/schemas/ImportResult' }
   /api/v1/admin/products/{id}:
     get:
+      x-permission: catalog:read
       summary: Get product detail (admin)
       description: Accepts either a product UUID or a product slug.
       security:
@@ -3359,6 +3579,7 @@ paths:
         '404': { description: Product not found }
         '500': { description: Server error }
     patch:
+      x-permission: catalog:write
       summary: Update product (admin)
       description: |
         Partial update. Only keys present in the request body are changed;
@@ -3379,13 +3600,14 @@ paths:
               $ref: '#/components/schemas/AdminProductUpdateRequest'
       responses:
         '204': { description: Product updated }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Product not found }
-        '409': { description: Slug already exists }
+        '409': { description: "Slug already exists. Slugs are currently unique across all tenants, so this can also mean another tenant uses it." }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete product (admin)
       security:
         - bearerAuth: []
@@ -3404,6 +3626,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/products/{id}/stock:
     patch:
+      x-permission: inventory:write
       summary: Update product stock (admin)
       description: |
         Writes the primary variant stock, creating a variant when the product has
@@ -3448,6 +3671,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/categories:
     get:
+      x-permission: catalog:read
       summary: List categories (admin)
       security:
         - bearerAuth: []
@@ -3468,6 +3692,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create category (admin)
       security:
         - bearerAuth: []
@@ -3488,13 +3713,14 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '409': { description: Slug already exists }
         '500': { description: Server error }
   /api/v1/admin/categories/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update category (admin)
       security:
         - bearerAuth: []
@@ -3520,13 +3746,14 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Category not found }
         '409': { description: Slug already exists }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete category (admin)
       description: Child categories and products have their reference set to null.
       security:
@@ -3544,6 +3771,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/brands:
     get:
+      x-permission: catalog:read
       summary: List brands (admin)
       security:
         - bearerAuth: []
@@ -3564,6 +3792,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create brand (admin)
       security:
         - bearerAuth: []
@@ -3591,6 +3820,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/brands/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update brand (admin)
       security:
         - bearerAuth: []
@@ -3623,6 +3853,7 @@ paths:
         '409': { description: Brand name or slug already exists }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete brand (admin)
       description: Products referencing the brand have their reference set to null.
       security:
@@ -3640,6 +3871,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders:
     get:
+      x-permission: orders:read
       summary: List orders (admin)
       description: Cross-user order list with customer, payment, and shipment summary fields.
       security:
@@ -3689,7 +3921,7 @@ paths:
   /api/v1/admin/orders/export:
     get:
       summary: Export orders as CSV (one row per order)
-      x-required-permission: [orders:read, customers:read]
+      x-permission: [orders:read, customers:read]
       description: |
         Streams every order matching the list filters (no pagination), newest
         first. Same CSV conventions as the products export (UTF-8 BOM, comma,
@@ -3721,6 +3953,7 @@ paths:
         '403': { description: Forbidden }
   /api/v1/admin/orders/stats:
     get:
+      x-permission: orders:read
       summary: Order statistics (admin)
       description: >-
         Order counters for the tenant in [startDate, endDate). totalRevenue, revenueOrders and
@@ -3756,6 +3989,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/{id}:
     get:
+      x-permission: orders:read
       summary: Get order detail (admin)
       security:
         - bearerAuth: []
@@ -3782,8 +4016,9 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/{id}/invoice:
     get:
+      x-permission: orders:read
       summary: Download invoice PDF for an order (admin)
-      description: Same document and numbering as GET /api/v1/orders/{orderId}/invoice, for any order in the active tenant. Requires admin role; audited.
+      description: Same document and numbering as GET /api/v1/orders/{orderId}/invoice, for any order in the active tenant. Requires `orders:read`; audited.
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -3820,6 +4055,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/vouchers/stats:
     get:
+      x-permission: promotions:read
       summary: Voucher statistics (admin)
       security:
         - bearerAuth: []
@@ -3844,6 +4080,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/analytics/overview:
     get:
+      x-permission: analytics:read
       summary: Dashboard overview (admin)
       description: >-
         Revenue, order, customer, and product counters plus top products by revenue (item-level gross
@@ -3875,6 +4112,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/reports/sales-by-category:
     get:
+      x-permission: analytics:read
       summary: Sales by category (admin report)
       description: >-
         Item-level sales per category for the tenant in [from, to): units, distinct orders and gross item revenue (order_items.subtotal) of orders matching the revenue rule. Partially refunded orders keep their full item value; fully refunded orders are excluded, so totals can differ from order-level revenue. Products without a category are grouped as Uncategorized (categoryId null). Sorted by revenue desc.
@@ -3907,10 +4145,11 @@ paths:
                   are prefixed with a single quote.
         '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
         '401': { description: Unauthorized }
-        '403': { description: Forbidden (admin required) }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
         '500': { description: INTERNAL }
   /api/v1/admin/reports/sales-by-product:
     get:
+      x-permission: analytics:read
       summary: Sales by product (admin report, paginated)
       description: >-
         Item-level sales per product for the tenant in [from, to), same rule and amount basis as sales-by-category, sorted by revenue desc. format=csv ignores page/limit and streams up to 100,000 rows.
@@ -3959,10 +4198,11 @@ paths:
                   are prefixed with a single quote.
         '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
         '401': { description: Unauthorized }
-        '403': { description: Forbidden (admin required) }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
         '500': { description: INTERNAL }
   /api/v1/admin/reports/conversion:
     get:
+      x-permission: analytics:read
       summary: Checkout conversion funnel (admin report)
       description: >-
         Carts created -> checkouts started (orders created) -> paid orders for the tenant in [from, to). checkoutsStarted = paidOrders + pendingOrders + cancelledOrders + refundedOrders. Rates are 4-decimal fractions, 0 when the denominator is 0, and can exceed 1 (a cart can be checked out several times). Approximation: anonymous carts that never reach checkout are included.
@@ -3995,10 +4235,11 @@ paths:
                   are prefixed with a single quote.
         '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
         '401': { description: Unauthorized }
-        '403': { description: Forbidden (admin required) }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
         '500': { description: INTERNAL }
   /api/v1/admin/reports/customers:
     get:
+      x-permission: analytics:read
       summary: New vs returning customers (admin report)
       description: >-
         Customers (signed-in users with at least one revenue-rule order in [from, to)) split into new (first revenue-rule order at this tenant is at or after from) and returning; each user counted once. revenueFromNew + revenueFromReturning + guestRevenue equals the range's net revenue. daily is per tenant-local day over customer orders only; daily rows do not sum to the summary.
@@ -4031,7 +4272,7 @@ paths:
                   are prefixed with a single quote.
         '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
         '401': { description: Unauthorized }
-        '403': { description: Forbidden (admin required) }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
         '500': { description: INTERNAL }
   /api/v1/tenant:
     get:
@@ -4142,11 +4383,13 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/customers:
     get:
+      x-permission: customers:read
       summary: List customers for the current tenant
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Customer list } }
   /api/v1/admin/inventory:
     get:
+      x-permission: inventory:read
       summary: List variant inventory
       description: |
         Every variant of the tenant with its stock status against the effective
@@ -4182,6 +4425,7 @@ paths:
         '400': { description: Invalid stockStatus or lowStock }
   /api/v1/admin/inventory/{variantId}:
     patch:
+      x-permission: inventory:write
       summary: Set or adjust variant stock
       description: Emits `product.stock_changed` (source `single`) when the stock changes.
       security: [{ bearerAuth: [] }]
@@ -4199,6 +4443,7 @@ paths:
       responses: { '200': { description: Inventory updated } }
   /api/v1/admin/returns:
     get:
+      x-permission: returns:read
       summary: List tenant return requests
       security: [{ bearerAuth: [] }]
       responses:
@@ -4214,6 +4459,7 @@ paths:
                     items: { $ref: '#/components/schemas/AdminReturn' }
   /api/v1/admin/returns/{returnId}:
     patch:
+      x-permission: returns:write
       summary: Update return workflow status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -4241,6 +4487,7 @@ paths:
               schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/returns/{returnId}/refund:
     post:
+      x-permission: refunds:write
       summary: Issue (or complete) a provider-backed refund for a return
       description: >
         Refunds `amount` (default: the whole remaining refundable amount of the order's payment)
@@ -4319,11 +4566,13 @@ paths:
               schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/support/tickets:
     get:
+      x-permission: support:read
       summary: List tenant support tickets
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Support tickets } }
   /api/v1/admin/support/tickets/{ticketId}:
     patch:
+      x-permission: support:write
       summary: Update support ticket status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -4336,6 +4585,7 @@ paths:
       responses: { '200': { description: Ticket status updated } }
   /api/v1/admin/support/tickets/{ticketId}/messages:
     get:
+      x-permission: support:read
       summary: List messages for a tenant support ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -4352,6 +4602,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/SupportMessage' }
     post:
+      x-permission: support:write
       summary: Add an agent message to a ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -4364,6 +4615,7 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/settings:
     get:
+      x-permission: settings:read
       summary: Read tenant store configuration
       description: |
         Free-form per-key settings. Key `inventory` holds
@@ -4372,6 +4624,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Store configuration } }
     patch:
+      x-permission: settings:write
       summary: Update tenant store configuration
       description: |
         Upserts each top-level key. `inventory.lowStockThreshold` must be an
@@ -4386,6 +4639,7 @@ paths:
       responses: { '200': { description: Store configuration updated } }
   /api/v1/admin/onboarding:
     post:
+      x-permission: settings:write
       summary: Complete tenant onboarding
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -4393,6 +4647,194 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: true }
       responses: { '200': { description: Tenant onboarding saved } }
+  /api/v1/admin/roles:
+    get:
+      x-permission: staff:read
+      summary: List staff roles and their permissions
+      description: >
+        The seven staff roles in rank order (owner first) with the permissions
+        each grants. `owner` can only be granted by an owner; every other role
+        can be granted by any holder of `staff:manage`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Role matrix
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RoleDefinition' }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /api/v1/admin/staff:
+    get:
+      x-permission: staff:read
+      summary: List staff of the current tenant
+      description: >
+        Memberships of the current tenant whose role is not `customer`, ordered
+        by role rank (owner, admin, manager, then the rest) and then email.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 }, description: Values above 100 are clamped to 100 }
+      responses:
+        '200':
+          description: Staff page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/StaffMember' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Missing tenant (`MISSING_TENANT`) }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    post:
+      x-permission: staff:manage
+      summary: Grant a staff role to an existing member
+      description: >
+        Looks the user up by email (case-insensitive) among the members of the
+        current tenant only: a person must first have an account on this
+        tenant's storefront. An unknown email and a user who is not a member of
+        this tenant both return `404 USER_NOT_FOUND`. A SUSPENDED membership is
+        reactivated. Runs in a transaction serialized per tenant; the actor's
+        role is re-read inside it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffAssignRequest' }
+      responses:
+        '201':
+          description: Role granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid payload, missing email, unknown role or role `customer` (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`, `details.required = "staff:manage"`),
+            `OWNER_REQUIRED` (role `owner` requested by a non-owner) or
+            `TENANT_FORBIDDEN` (actor's membership is no longer ACTIVE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No member of this tenant has that email (`USER_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The user is already staff; use PATCH (`STAFF_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/admin/staff/{userId}:
+    patch:
+      x-permission: staff:manage
+      summary: Change a staff member's role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffRoleUpdateRequest' }
+      responses:
+        '200':
+          description: Role changed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid user id, unknown role or role `customer` (use DELETE) (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`), `OWNER_REQUIRED` (target is an owner
+            or the new role is `owner`, and the actor is not an owner) or
+            `TENANT_FORBIDDEN`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    delete:
+      x-permission: staff:manage
+      summary: Revoke a staff role
+      description: Sets the membership role back to `customer`; the membership itself is kept.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Role revoked }
+        '400':
+          description: Invalid user id (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: "`FORBIDDEN`, `OWNER_REQUIRED` or `TENANT_FORBIDDEN` (see PATCH)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
 
 components:
   parameters:
@@ -5684,6 +6126,20 @@ components:
           type: array
           items:
             type: string
+          description: Legacy global roles. Containing `admin` grants the platform-admin routes.
+        role:
+          type: string
+          enum: [owner, admin, manager, catalog, fulfillment, support, analyst, customer]
+          description: >
+            Caller's role in the resolved tenant. Present on GET /auth/me only
+            (absent from login/register responses); `customer` for non-staff.
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+          description: >
+            Permissions of `role` (empty for `customer`). Present on GET /auth/me
+            only. Gate tenant-scoped UI on this list. `roles` (legacy, global)
+            containing `admin` is still what grants the platform-admin routes.
         emailVerified:
           type: boolean
         createdAt:
@@ -6228,6 +6684,44 @@ components:
               type: string
             details:
               description: Free-form additional context.
+    Role:
+      type: string
+      description: Tenant staff role slug.
+      enum: [owner, admin, manager, catalog, fulfillment, support, analyst]
+    Permission:
+      type: string
+      description: Stable permission identifier. Gate UI on these, not on the role.
+      enum: [catalog:read, catalog:write, inventory:read, inventory:write, orders:read, orders:write, returns:read, returns:write, refunds:write, customers:read, support:read, support:write, promotions:read, promotions:write, analytics:read, settings:read, settings:write, staff:read, staff:manage]
+    RoleDefinition:
+      type: object
+      required: [role, permissions]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+    StaffMember:
+      type: object
+      required: [userId, name, email, role, status, createdAt, updatedAt]
+      properties:
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [INVITED, ACTIVE, SUSPENDED], description: Membership status }
+        createdAt: { type: string, format: date-time, description: Membership creation time }
+        updatedAt: { type: string, format: date-time }
+    StaffAssignRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, description: Email of an existing member of this tenant (case-insensitive) }
+        role: { $ref: '#/components/schemas/Role' }
+    StaffRoleUpdateRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
     Pagination:
       type: object
       required: [page, perPage, totalItems]

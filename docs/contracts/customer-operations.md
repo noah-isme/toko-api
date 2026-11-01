@@ -69,7 +69,7 @@ A `FAILED` refund does not block status changes.
 
 ### `POST /api/v1/admin/returns/{returnId}/refund`
 
-Admin role, audit-logged. Headers: `Authorization: Bearer <token>`, optional `Idempotency-Key`.
+Permission `refunds:write`, audit-logged. Headers: `Authorization: Bearer <token>`, optional `Idempotency-Key`.
 
 Request body (optional, `Content-Type: application/json`):
 
