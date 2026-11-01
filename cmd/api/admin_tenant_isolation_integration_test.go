@@ -21,6 +21,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/order"
 	"github.com/noah-isme/backend-toko/internal/rbac"
 	"github.com/noah-isme/backend-toko/internal/shipping"
@@ -121,8 +122,9 @@ func newIsolationITest(t *testing.T) *isolationITest {
 		Vouchers:      &voucher.Handler{Q: e.q, Svc: &voucher.Service{Q: e.q}, Pool: pool},
 		Staff:         &rbac.StaffHandler{Pool: pool, Q: e.q},
 		Catalog:       &admin.CatalogHandler{Q: e.q},
-		// Platform handlers stay nil: they are nil-safe (500) and only the
-		// guard outcome matters here.
+		Notify:        &notify.AdminHandler{Store: notify.NewStore(e.q)},
+		// The remaining platform handlers stay nil: they are nil-safe (500)
+		// and only the guard outcome matters here.
 	}
 	r := chi.NewRouter()
 	r.Route("/api/v1/admin", func(a chi.Router) { registerAdminRoutes(a, d) })

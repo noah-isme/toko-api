@@ -614,7 +614,9 @@ Content-Type: application/json
 Authorization: Bearer <admin_token>
 ```
 
-Registers a new webhook endpoint.
+Registers a new webhook endpoint for the request's tenant. `tenant_id` is set
+from the resolved tenant (never from the body), so the endpoint receives exactly
+that tenant's domain events (see [Webhooks](webhooks.md)).
 
 **Request:**
 
@@ -662,7 +664,8 @@ Content-Type: application/json
 Authorization: Bearer <admin_token>
 ```
 
-Updates the webhook endpoint identified by `{id}`.
+Updates the request tenant's webhook endpoint identified by `{id}`. An endpoint
+of another tenant is `404 NOT_FOUND` and stays unchanged.
 
 **Request:** same shape as creation.
 
@@ -681,7 +684,7 @@ GET /api/v1/admin/webhooks?limit=50&offset=0
 Authorization: Bearer <admin_token>
 ```
 
-Returns configured webhook endpoints.
+Returns the request tenant's webhook endpoints (never another tenant's).
 
 **Query parameters:**
 
@@ -719,7 +722,8 @@ DELETE /api/v1/admin/webhooks/{id}
 Authorization: Bearer <admin_token>
 ```
 
-Removes the webhook endpoint identified by `{id}`.
+Removes the request tenant's webhook endpoint identified by `{id}`. An unknown
+id or an endpoint of another tenant is `404 NOT_FOUND` and nothing is deleted.
 
 **Response:** `204 No Content`
 

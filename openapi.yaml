@@ -2182,10 +2182,10 @@ paths:
         webhook uses the order's tenant) and are likewise delivered only to
         that tenant's endpoints; an event without a tenant reaches none.
 
-        Known limitation (pre-existing, tracked with the notifications/RBAC
-        streams): this endpoint does not yet set `tenant_id` on the new row,
-        so tenant-scoped delivery only reaches endpoints whose tenant was
-        assigned directly in the database until that lands.
+        The endpoint belongs to the request's tenant (`tenant_id` is set from
+        the resolved tenant, never from the body), so it receives exactly that
+        tenant's events. List, update and delete only ever see the request
+        tenant's endpoints.
 
         Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
@@ -2214,7 +2214,7 @@ paths:
     get:
       x-permission: platform-admin
       summary: List webhook endpoints
-      description: Returns configured webhook endpoints. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
+      description: Returns the request tenant's webhook endpoints (never another tenant's). Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2256,7 +2256,7 @@ paths:
     put:
       x-permission: platform-admin
       summary: Update webhook endpoint
-      description: Updates the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
+      description: Updates the request tenant's webhook endpoint identified by id; an endpoint of another tenant is `404 NOT_FOUND`. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2287,13 +2287,13 @@ paths:
         '403':
           description: Forbidden
         '404':
-          description: Endpoint not found
+          description: Endpoint not found, or owned by another tenant (NOT_FOUND)
         '500':
           description: Server error
     delete:
       x-permission: platform-admin
       summary: Delete webhook endpoint
-      description: Removes the webhook endpoint identified by id. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
+      description: Removes the request tenant's webhook endpoint identified by id; an unknown id or an endpoint of another tenant is `404 NOT_FOUND` and nothing is deleted. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -2314,7 +2314,7 @@ paths:
         '403':
           description: Forbidden
         '404':
-          description: Endpoint not found
+          description: Endpoint not found, or owned by another tenant (NOT_FOUND)
         '500':
           description: Server error
   /api/v1/admin/webhook-deliveries:

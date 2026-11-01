@@ -105,7 +105,9 @@ func (r *retryStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookEndp
 	return nil, nil
 }
 
-func (r *retryStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
+func (r *retryStore) DeleteWebhookEndpoint(context.Context, dbgen.DeleteWebhookEndpointParams) (int64, error) {
+	return 0, nil
+}
 
 func (r *retryStore) ListActiveEndpointsForTopicAndTenant(context.Context, dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error) {
 	return nil, nil
@@ -232,7 +234,9 @@ func (s *scheduleStore) ListWebhookEndpoints(context.Context, dbgen.ListWebhookE
 	return nil, nil
 }
 
-func (s *scheduleStore) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error { return nil }
+func (s *scheduleStore) DeleteWebhookEndpoint(context.Context, dbgen.DeleteWebhookEndpointParams) (int64, error) {
+	return 0, nil
+}
 
 func (s *scheduleStore) ListActiveEndpointsForTopicAndTenant(_ context.Context, arg dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error) {
 	s.askedTenants = append(s.askedTenants, arg.TenantID)

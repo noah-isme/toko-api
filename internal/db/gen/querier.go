@@ -191,6 +191,9 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	// Tenant-scoped voucher writes for the admin API (moved from voucher_rules.sql).
 	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
+	// Endpoints are tenant-owned (webhook_endpoints.tenant_id): the admin API
+	// creates them in the request's tenant and only ever reads, changes or deletes
+	// the endpoints of that tenant.
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
@@ -207,7 +210,7 @@ type Querier interface {
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteStaleProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
-	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
+	DeleteWebhookEndpoint(ctx context.Context, arg DeleteWebhookEndpointParams) (int64, error)
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
 	// Used by Subscribe when the target became sellable (or cheaper) between the
 	// subscription check and its commit, so the drainer re-evaluates it.

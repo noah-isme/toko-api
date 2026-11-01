@@ -67,7 +67,9 @@ Common error codes: `PAYMENT_NOT_CONFIGURED`, `PROVIDER_NOT_SUPPORTED`, `INVALID
 ### Outbound webhooks (domain events)
 
 Domain events are delivered only to the active webhook endpoints of the **event's tenant** (the
-order's tenant). Events emitted without a tenant are not delivered (logged as a warning). Topics:
+order's tenant). Endpoints belong to the tenant they were created in (`POST /api/v1/admin/webhooks`
+stores the request's tenant), and the admin API only lists, updates or deletes the request tenant's
+endpoints. Events emitted without a tenant are not delivered (logged as a warning). Topics:
 `order.created`, `order.paid`, `order.canceled`, `payment.failed`, `payment.expired`,
 `payment.late` (ops only, see payment.md 6.5), `payment.proof_unreviewed` (ops only, see
 payment.md 6.4), `shipment.shipped`, `shipment.out_for_delivery`,

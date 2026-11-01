@@ -125,8 +125,8 @@ func (f *fakeQueries) ListAddressesByUser(context.Context, dbgen.ListAddressesBy
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error {
-	return errNotImplemented
+func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, dbgen.DeleteWebhookEndpointParams) (int64, error) {
+	return 0, errNotImplemented
 }
 
 func (f *fakeQueries) ListAuditLogs(context.Context, dbgen.ListAuditLogsParams) ([]dbgen.AuditLog, error) {

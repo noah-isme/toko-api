@@ -48,8 +48,11 @@ authorization boundary at the tenant membership.
 - **Negative:** Changing the matrix needs a deploy; there is no per-tenant
   custom role.
 - **Negative:** `users.roles` still matters for platform-admin routes and some
-  legacy customer counts; tenant-scoping webhooks, audit logs and analytics is
-  follow-up work for their owners.
+  legacy customer counts. Webhook endpoints are tenant-owned (created in, and
+  listed, changed or deleted only within, the request's tenant, and delivered
+  only that tenant's events), but managing them still needs the platform-admin
+  role; tenant-scoping webhook deliveries, audit logs and the queue is follow-up
+  work for their owners.
 - **Resolved (decision: per-tenant uniqueness):** `vouchers.code`,
   `products.slug`, `categories.slug`, `brands.name`, `brands.slug` and
   `product_variants.sku` used to be unique database-wide, so once self-service
