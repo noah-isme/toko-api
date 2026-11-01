@@ -668,6 +668,8 @@ type Product struct {
 	TenantID           pgtype.UUID        `json:"tenant_id"`
 	Description        pgtype.Text        `json:"description"`
 	SearchVector       interface{}        `json:"search_vector"`
+	Status             string             `json:"status"`
+	LowStockThreshold  pgtype.Int4        `json:"low_stock_threshold"`
 	SearchVectorSimple interface{}        `json:"search_vector_simple"`
 }
 

@@ -47,11 +47,11 @@ func csvOptional(v *string) string {
 	return *v
 }
 
-// csvStream writes an RFC 4180 CSV attachment (UTF-8 with BOM so Excel reads
+// reportCSVStream writes an RFC 4180 CSV attachment (UTF-8 with BOM so Excel reads
 // non-ASCII text correctly) and flushes to the client every csvFlushEvery rows
 // when the writer chain supports it. Once the first byte is written the status
 // is 200, so a later failure can only truncate the file; it is logged.
-type csvStream struct {
+type reportCSVStream struct {
 	ctx  context.Context
 	rc   *http.ResponseController
 	cw   *csv.Writer
@@ -62,7 +62,7 @@ func reportFilename(report string, s reportScope) string {
 	return fmt.Sprintf("%s_%s_%s.csv", report, s.from.In(s.loc).Format(time.DateOnly), s.to.In(s.loc).Format(time.DateOnly))
 }
 
-func startCSV(ctx context.Context, w http.ResponseWriter, filename string, header []string) *csvStream {
+func startCSV(ctx context.Context, w http.ResponseWriter, filename string, header []string) *reportCSVStream {
 	h := w.Header()
 	h.Set("Content-Type", "text/csv; charset=utf-8")
 	// The filename is server-generated (report name and dates only).
@@ -70,12 +70,12 @@ func startCSV(ctx context.Context, w http.ResponseWriter, filename string, heade
 	h.Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("\xEF\xBB\xBF"))
-	s := &csvStream{ctx: ctx, rc: http.NewResponseController(w), cw: csv.NewWriter(w)}
+	s := &reportCSVStream{ctx: ctx, rc: http.NewResponseController(w), cw: csv.NewWriter(w)}
 	_ = s.cw.Write(header)
 	return s
 }
 
-func (s *csvStream) write(record []string) error {
+func (s *reportCSVStream) write(record []string) error {
 	if err := s.cw.Write(record); err != nil {
 		return err
 	}
@@ -92,14 +92,14 @@ func (s *csvStream) write(record []string) error {
 	return nil
 }
 
-func (s *csvStream) close() {
+func (s *reportCSVStream) close() {
 	s.cw.Flush()
 	if err := s.cw.Error(); err != nil {
 		zerolog.Ctx(s.ctx).Warn().Err(err).Msg("csv export: flush failed")
 	}
 }
 
-func (s *csvStream) abort(report string, err error) {
+func (s *reportCSVStream) abort(report string, err error) {
 	s.cw.Flush()
 	zerolog.Ctx(s.ctx).Error().Err(err).Str("report", report).Int("rows_written", s.rows).Msg("csv export truncated")
 }

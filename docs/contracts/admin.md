@@ -926,7 +926,249 @@ Note: the backend currently returns a raw array, not the standard `{ "data": ...
 Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `AUDIT_NOT_CONFIGURED`, `AUDIT_QUERY_FAILED`, `INTERNAL`.
 ---
 
-## 6.20 Download Order Invoice (PDF)
+# Catalog operations (6.20–6.28)
+
+All routes below are under `/api/v1/admin`, need a bearer admin token and `X-Tenant-ID`, and use the standard envelope `{"data": ...}` / `{"error": {"code", "message", "details"}}`. Money is in minor units (integers); timestamps are RFC3339 UTC. Full schemas: `openapi.yaml` (each route carries `x-required-permission`).
+
+### Required permissions (for the RBAC integration)
+
+This branch still guards the whole `/admin` group with the `admin` role. When the RBAC stream lands, register each route with these permissions (fail closed):
+
+| Route | Permission(s) |
+|---|---|
+| `POST /admin/products/bulk/price`, `POST /admin/products/bulk/status` | `catalog:write` |
+| `POST /admin/products/bulk/stock` | `inventory:write` |
+| `GET /admin/products/export` | `catalog:read` |
+| `POST /admin/products/import` | `catalog:write` **and** `inventory:write` |
+| `GET /admin/orders/export` | `orders:read` **and** `customers:read` (the file has customer name/email) |
+| `GET /admin/inventory` (new filters), `GET /admin/analytics/overview` (new counts) | unchanged (`inventory:read`, `analytics:read`) |
+
+The frontend should hide bulk/import/export controls when `/auth/me.permissions` lacks them.
+
+## 6.20 Product List: Sort, Status and Stock Filters
+
+```http
+GET /api/v1/admin/products?page=1&limit=20&sort=price:asc&status=published&stockStatus=low
+```
+
+Backward compatible: existing parameters keep their meaning; omitting `sort` keeps the previous order.
+
+- `sort` — `name|price|stock|created|updated`, optional `:asc|:desc`. Bare `name|price|stock` sort ascending, bare `created|updated` descending. Default `created:desc`. `stock` = sum of variant stock. Invalid → `400 BAD_REQUEST`.
+- `status` — `draft|published|archived` (omit for all). Invalid → 400.
+- `stockStatus` — `in|low|out` (see 6.26). Invalid → 400.
+
+Each `AdminProduct` (list and detail) gains:
+
+```json
+{ "status": "published", "stockStatus": "low", "lowStockThreshold": null }
+```
+
+`lowStockThreshold` is the product override (`null` = tenant default). `POST /admin/products` and `PATCH /admin/products/{id}` accept `status` (default `published`) and `lowStockThreshold` (0..1000000; `null` on PATCH clears the override). A draft or archived product disappears from the storefront (list, detail → 404, search, related, recommendations, favourites, flash sales) and cannot be added to a cart (`400 BAD_REQUEST`, "product is not available"); a line added earlier fails at checkout with `409 PRODUCT_UNAVAILABLE`, `details: {productId, slug}`, and nothing is reserved or ordered.
+
+## 6.21 Bulk Price Update
+
+```http
+POST /api/v1/admin/products/bulk/price
+Content-Type: application/json
+
+{
+  "items": [
+    { "productId": "p-uuid-1", "price": 125000, "compareAt": 150000 },
+    { "productId": "p-uuid-2", "price": 99000, "applyTo": "product" },
+    { "variantId": "v-uuid-9", "price": 105000 }
+  ]
+}
+```
+
+- Product item: `productId`, `price`, optional `compareAt` (omit = keep, `null` = clear), optional `applyTo`:
+  - `both` (default): sets the product price **and every variant price**, so listing and cart agree (the cart charges the variant price). Flattens per-variant price differences.
+  - `product`: listing price only; the cart keeps charging each variant's own price.
+  - `variants`: variant prices only (`compareAt` not allowed).
+- Variant item: `variantId`, `price` (no `applyTo`/`compareAt`). A variant whose product is also targeted with `applyTo` `both|variants` is a `DUPLICATE`.
+
+**Response:** `200 OK`
+
+```json
+{
+  "data": {
+    "updated": 3,
+    "items": [
+      { "productId": "p-uuid-1", "slug": "sepatu-lari", "price": 125000, "compareAt": 150000, "applyTo": "both", "variantsUpdated": 2 },
+      { "productId": "p-uuid-2", "slug": "kaos", "price": 99000, "compareAt": null, "applyTo": "product", "variantsUpdated": 0 },
+      { "variantId": "v-uuid-9", "productId": "p-uuid-3", "sku": "TOPI-1", "price": 105000 }
+    ]
+  }
+}
+```
+
+## 6.22 Bulk Stock Update
+
+```http
+POST /api/v1/admin/products/bulk/stock
+
+{ "items": [ { "variantId": "v-uuid-1", "stock": 40 }, { "variantId": "v-uuid-2", "delta": -3 } ] }
+```
+
+Each item sends exactly one of `stock` (absolute, ≥ 0) or `delta`. Deltas apply against the **live** stock after the row is locked, so concurrent checkouts are respected (stock 10, a checkout reserves 3, `delta +5` → 12). A result below zero rejects the row (`NEGATIVE_RESULT`); nothing is clamped. A result above 2147483647 is `OUT_OF_RANGE`. Products are locked before their variants (the same order as bulk price and import), so concurrent catalog writers do not deadlock; see the lock rules below for how this interacts with checkout. `inStock` of each touched product is recomputed.
+
+**Response:** `200 OK` — `{"data": {"updated": 2, "items": [{"variantId", "productId", "sku", "stock", "inStock"}]}}` (`stock` after the update; `inStock` is `null` for products that did not change).
+
+## 6.23 Bulk Status (Publish / Draft / Archive)
+
+```http
+POST /api/v1/admin/products/bulk/status
+
+{ "items": [ { "productId": "p-uuid-1", "status": "draft" } ] }
+```
+
+**Response:** `200 OK` — `{"data": {"updated": 1, "items": [{"productId", "slug", "status"}]}}`. Visibility effects as in 6.20.
+
+### Bulk rules (6.21–6.23)
+
+- All-or-nothing; 1..500 items; body ≤ 1 MiB; unknown JSON fields are rejected.
+- Targets are locked in id order with a 5 s lock timeout, so a bulk request never stalls checkout for longer.
+- Lock order and strength (bulk price, bulk stock and import alike): products first, then variants, each in id order, all with `FOR NO KEY UPDATE`. Catalog writers therefore serialize against each other, but the product and variant locks do not conflict with the `FOR KEY SHARE` locks that foreign-key checks take. Checkout reserves stock (row-locks the variant) and then inserts `inventory_reservations` (key-share on the product), and add-to-cart inserts `cart_items` (key-share on product and variant). Add-to-cart never waits on a running catalog write; checkout waits only when it reserves a variant the catalog write already holds (and vice versa, bounded by the 5 s timeout), and checkout's variant-then-product order cannot form a cycle with the catalog writer's product-then-variant order.
+- Residual cases, bounded by the 5 s lock timeout and answered as `409 CONFLICT` (retry): an import that changes a product's `slug` or a variant's `sku` (unique columns) upgrades that row lock to `FOR UPDATE` strength when it writes, which conflicts with key-share again for that row; a multi-item checkout that locks two variants in the opposite order to the catalog writer's id order can deadlock with it (as two such checkouts already can with each other). Postgres aborts one side; a checkout that loses gets `409 CONFLICT` with `details.retryable: true` (see the checkout contract) instead of the raw driver error.
+- Errors (nothing is changed in any error case):
+  - `400 BAD_REQUEST` (malformed, empty `items`) or `400 TOO_MANY_ROWS` (`details: {max, got}`)
+  - `413 PAYLOAD_TOO_LARGE` (JSON envelope; the global `SECURITY_BODY_LIMIT_BYTES` cap, 1 MiB by default, answers in the same shape)
+  - `409 CONFLICT` — a concurrent change held a lock > 5 s or a deadlock was detected; retry
+  - `422 VALIDATION_FAILED` with every bad item:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "one or more items are invalid; nothing was changed",
+    "details": { "rows": [ { "index": 1, "field": "price", "code": "NEGATIVE", "message": "price must be zero or greater" } ] }
+  }
+}
+```
+
+  Row codes: `MISSING`, `AMBIGUOUS` (both ids, or both `stock` and `delta`), `INVALID_UUID`, `NEGATIVE`, `NOT_FOUND` (missing or another store's id; never distinguished), `DUPLICATE`, `INVALID_STATUS`, `INVALID_APPLY_TO`, `NEGATIVE_RESULT`, `OUT_OF_RANGE`, `NOT_ALLOWED`.
+- Side effects match single updates: catalog cache invalidation and one `product.*` event per changed value (6.28).
+- Audit: besides the `/admin` middleware row, each bulk request that changed something writes one explicit row (`catalog.bulk.price|stock|status`, resource `catalog_bulk`) **in the same transaction**, with `metadata.items[] = {productId, variantId?, sku?, slug, changes: {field: {from, to}}}`, the actor user id and the server request id (chi's request id; a client-sent `X-Request-ID` is reused, which is how the row can be correlated with the client's request). The same request id and actor appear in the `product.*` event payloads.
+
+## 6.24 Export Products (CSV)
+
+```http
+GET /api/v1/admin/products/export?search=&category=&brand=&inStock=&status=&stockStatus=
+```
+
+Streams `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="products-YYYYMMDD-HHMMSS.csv"`. One row per variant; a product without variants is one row with empty variant columns. Same filters as 6.20, no pagination.
+
+Columns, in order: `sku, product_id, variant_id, title, slug, status, price, compare_at, variant_price, stock, stock_baseline, low_stock_threshold, in_stock, stock_status, category_slug, brand_slug, description, attributes, created_at, updated_at`.
+
+- `stock_baseline` repeats `stock` at export time. Leave it alone when editing; the import uses it to protect sales made since the export (6.25).
+- `attributes` is a JSON object; `in_stock`, `stock_status`, `created_at`, `updated_at` are informational (ignored on import).
+
+**CSV conventions (both exports):** UTF-8 **with BOM** (decision: admins open the files in Excel with Indonesian regional settings, which garbles BOM-less UTF-8), comma delimiter, CRLF, RFC 4180 quoting. Text cells starting with `=`, `+`, `-`, `@`, TAB or CR are prefixed with `'` (formula-injection safety); numeric columns are never prefixed. Errors before the first byte return JSON; a failure mid-stream truncates the file (status already 200), so compare the row count with the list total. Download via `fetch` + blob (bearer token), not a bare link. Excel with an Indonesian list separator (`;`) opens a double-clicked comma file in one column; tell admins to use **Data > From Text/CSV** (delimiter: comma). The import accepts either `,` or `;`, so a file re-saved by Excel with `;` imports fine.
+
+## 6.25 Import Products / Stock (CSV, dry run)
+
+```http
+POST /api/v1/admin/products/import?type=products&dryRun=true
+Content-Type: multipart/form-data   (field "file")
+```
+
+- `type` — `products` or `stock` (required). `dryRun` — default `true`; send `false` to apply.
+- File ≤ 5 MiB, ≤ 5000 data rows, CSV only (an `.xlsx` is `400 UNSUPPORTED_FILE`; non-UTF-8 is `400 INVALID_ENCODING`). This route is exempt from the global 1 MiB request-body cap (`SECURITY_BODY_LIMIT_BYTES`); the handler caps the multipart body at 5 MiB + 64 KiB and answers `413 PAYLOAD_TOO_LARGE` as JSON. Held in memory only; contents are never logged.
+- Optional BOM; `,` or `;` delimiter detected on the header line; headers lower-case, any order. Unknown / duplicate / missing required header → `400 INVALID_HEADER | DUPLICATE_HEADER | MISSING_HEADER` with `details.header`; zero writes.
+- `type=products`: required `sku`; optional `variant_id, product_id, title, slug, status, price, compare_at, variant_price, stock, stock_baseline, low_stock_threshold, category_slug, brand_slug, description, attributes`; ignored `in_stock, stock_status, created_at, updated_at` (so an export re-imports as is).
+- `type=stock`: required `sku, stock`; optional `variant_id, stock_baseline`. Never creates anything; unknown keys are `UNKNOWN_SKU` / `UNKNOWN_VARIANT`.
+
+**Row identity** (resolved for every row before anything is written):
+
+1. `variant_id` present → that variant (`update`). A non-empty `sku` that differs from the stored SKU is `SKU_MISMATCH` (catches Excel-mangled SKUs such as `1.23E+12` instead of creating a duplicate); a variant without SKU gets the row's `sku` assigned (`type=products` only).
+2. else `sku` found in this store → `update`.
+3. else (unknown `sku`): with `product_id` → `create_variant` on that product; without → rows sharing the same `slug` (or slugified `title`) create **one** new product (`create`; every row of the group reports the same `slug`), unless that slug already names a product of this store (`create_variant`). A derived slug taken by another store gets `-2`…`-20`; an explicit taken slug is `SLUG_TAKEN`; a SKU used by another store is `SKU_TAKEN`.
+4. `sku` and `variant_id` empty but `product_id` present → product-level update only (this is how products without variants export); a non-empty variant column on that row is `NO_VARIANT`.
+5. nothing → `MISSING`.
+
+A row carrying `variant_id` or `product_id` never creates a product. Keys must be unique in the file (`DUPLICATE_SKU`, `DUPLICATE_VARIANT`). Rows of one product must carry identical product-level cells (`CONFLICTING_PRODUCT_VALUES`); product-level changes appear on the product's first row.
+
+**Empty cells:** `compare_at`, `low_stock_threshold`, `description`, `category_slug`, `brand_slug` — empty clears. Every other column — empty leaves the value unchanged (create defaults: status `published`, stock `0`, variant price = product price, attributes `{}`; `title` and `price` are required to create: `MISSING_FOR_CREATE`). `0` is a value, never "empty". A `'` before a formula trigger is removed, so `'=X` stores `=X` (text that literally starts with `'` plus a trigger cannot be stored through an import). `title` and `description` are compared ignoring CR characters (a CSV round trip turns CRLF into LF and drops a lone CR), so an unchanged export re-imports as `unchanged`.
+
+**Prices:** `price` is the product (listing) price only; `variant_price` is what the cart charges. Editing only `price` leaves variant prices as they are, so listing and cart disagree — edit `variant_price` on every row of that product too (or use bulk price with `applyTo=both`).
+
+**Stock and sales since the export** (no silent overselling):
+
+| File `stock` vs `stock_baseline` | Live stock | Result |
+|---|---|---|
+| equal (cell untouched) | anything | no change |
+| different | equals baseline | stock set to the file value |
+| different | different from baseline and file | row rejected `STALE_STOCK` |
+
+Without `stock_baseline`: `type=stock` sets absolute counts (its purpose); `type=products` refuses to change the stock of an existing variant (`STOCK_BASELINE_REQUIRED`). Stock always applies on create.
+
+**Response:** `200 OK` (dry run, applied, or a commit with nothing to change) / `422 VALIDATION_FAILED` (any rejected row; `error.details` has the same object; nothing written in either mode):
+
+```json
+{
+  "data": {
+    "dryRun": true,
+    "type": "products",
+    "summary": { "total": 120, "create": 2, "createVariant": 1, "update": 10, "unchanged": 105, "rejected": 2 },
+    "rows": [
+      { "row": 2, "sku": "ABC-1", "variantId": "v-uuid", "productId": "p-uuid", "slug": "sepatu", "action": "update",
+        "changes": { "stock": { "from": 4, "to": 10 }, "variant_price": { "from": 10000, "to": 12000 } }, "errors": [] },
+      { "row": 3, "sku": "NEW-1", "slug": "sepatu-lari-2", "action": "create",
+        "changes": { "title": { "from": null, "to": "Sepatu Lari" }, "price": { "from": null, "to": 250000 } }, "errors": [] },
+      { "row": 7, "sku": "", "action": "reject", "changes": {},
+        "errors": [ { "field": "sku", "code": "MISSING", "message": "sku, variant_id or product_id is required" } ] }
+    ]
+  }
+}
+```
+
+Actions: `create`, `create_variant`, `update`, `unchanged`, `reject`. `row` is the spreadsheet row (header = row 1; blank rows count). Row codes: `MISSING`, `INVALID_ROW`, `INVALID_NUMBER`, `INVALID_UUID`, `NEGATIVE`, `OUT_OF_RANGE`, `INVALID_STATUS`, `INVALID_JSON`, `INVALID_SLUG`, `DUPLICATE_SKU`, `DUPLICATE_VARIANT`, `SKU_TAKEN`, `SKU_MISMATCH`, `PRODUCT_MISMATCH`, `SLUG_TAKEN`, `UNKNOWN_SKU`, `UNKNOWN_VARIANT`, `UNKNOWN_PRODUCT`, `MISSING_FOR_CREATE`, `UNKNOWN_CATEGORY`, `UNKNOWN_BRAND`, `CONFLICTING_PRODUCT_VALUES`, `NO_VARIANT`, `STALE_STOCK`, `STOCK_BASELINE_REQUIRED`.
+
+Other errors: `400` (bad `type`/`dryRun`, missing file, `UNSUPPORTED_FILE`, `INVALID_ENCODING`, `EMPTY_FILE`, `INVALID_CSV` with `details.row`, `TOO_MANY_ROWS`, header errors), `413 PAYLOAD_TOO_LARGE`, `409 CONFLICT` (lock timeout, deadlock or a unique slug/SKU race — retry).
+
+The preview is not stored: a commit re-plans the file in the transaction that writes, so show the **commit** response as the source of truth. Re-importing an unchanged file reports every row `unchanged`, writes nothing, emits no events and writes no audit row. A committed import writes one `catalog.import.commit` audit row (`resource_type: catalog_import`, metadata `{type, summary, rows: [...changed rows with from/to]}`) in the same transaction; a rejected run (either mode) writes `catalog.import.rejected` (`{type, dryRun, summary, rejected}`).
+
+## 6.26 Low Stock: Inventory Filter, Tenant Default, Overview
+
+Classification (`internal/catalog/lowstock.go`): `out` at stock 0, `low` at 1..threshold, `in` above. Per variant on the inventory list, per product (sum of variants) on the product list, export and overview; a product without variants follows its `inStock` flag. Threshold = product `lowStockThreshold`, else the tenant default, else `5`; `0` never reports low.
+
+```http
+GET /api/v1/admin/inventory?stockStatus=low      (or ?lowStock=true)
+```
+
+Items gain `stockStatus` and `lowStockThreshold` (effective):
+
+```json
+{ "data": [ { "variantId": "v", "productId": "p", "sku": "A-1", "productTitle": "Topi", "price": 1000, "stock": 3, "stockStatus": "low", "lowStockThreshold": 5 } ] }
+```
+
+Tenant default: `GET /api/v1/admin/settings` → `data.inventory.lowStockThreshold` (absent = 5); `PATCH /api/v1/admin/settings` with `{"inventory": {"lowStockThreshold": 10}}` (integer 0..1000000, else 400).
+
+Overview: `GET /api/v1/admin/analytics/overview` adds `lowStockProducts` and `outOfStockProducts` (all other fields unchanged).
+
+## 6.27 Export Orders (CSV)
+
+```http
+GET /api/v1/admin/orders/export?status=PAID&search=&startDate=2026-03-01&endDate=2026-04-01
+```
+
+One row per order, newest first, same filters as `GET /admin/orders`. Dates are UTC: `startDate` inclusive, `endDate` **exclusive** (convert the user's local range before sending). Filename `orders-YYYYMMDD-HHMMSS.csv`; CSV conventions as 6.24.
+
+Columns: `order_number, order_id, status, payment_status, customer_name, customer_email, currency, subtotal, discount, tax, shipping, total, voucher_code, items_count, courier, tracking_number, created_at, updated_at`.
+
+## 6.28 Product Domain Events (Webhooks)
+
+Topics `product.price_changed` (fields `price`, `compare_at`; variant price changes carry `variantId`/`sku`), `product.stock_changed`, `product.status_changed`. Payload:
+
+```json
+{ "tenantId": "t", "productId": "p", "slug": "sepatu", "variantId": "v", "sku": "A-1", "field": "stock", "old": 10, "new": 7,
+  "source": "single|bulk|import", "requestId": "req-id", "actorUserId": "u" }
+```
+
+Emitted after commit by single updates (`PATCH /admin/products/{id}`, `PATCH /admin/products/{id}/stock`, `PATCH /admin/inventory/{variantId}`), bulk and import. Events are stamped with the tenant and delivered **only to that tenant's endpoints** (topic-subscribed or catch-all). Order, payment and shipment events are stamped with the emitting request's tenant (the payment webhook uses the order's tenant) and likewise reach only that tenant's endpoints; an event with no tenant reaches no endpoint. Payloads never contain customer data.
+
+---
+
+## 6.29 Download Order Invoice (PDF)
 
 ```http
 GET /api/v1/admin/orders/{id}/invoice

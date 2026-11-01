@@ -58,10 +58,22 @@ type Bus struct {
 	Notifiers []Notifier
 }
 
-// Emit records the event and dispatches it to all configured handlers. An error
-// wrapping ErrPersist means nothing was stored; any other error means the row
-// exists and its fan-out will be retried by the outbox relay.
+// Emit records the event stamped with the tenant in ctx (none when ctx has
+// none) and dispatches it to all configured handlers. An error wrapping
+// ErrPersist means nothing was stored; any other error means the row exists
+// and its fan-out will be retried by the outbox relay. Emitters whose ctx
+// tenant may differ from the owning tenant either set ctx to the owning tenant
+// first (the payment webhook does) or call EmitForTenant.
 func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, payload any) (dbgen.DomainEvent, error) {
+	return b.EmitForTenant(ctx, tenantFromContext(ctx), topic, aggregateID, payload)
+}
+
+// EmitForTenant records the event stamped with tenantID (domain_events.tenant_id)
+// and dispatches it. Webhook deliveries go only to that tenant's endpoints
+// (notify.Dispatcher.Schedule); an invalid (zero) tenantID stores the event
+// without a tenant, and Schedule then falls back to the ctx tenant (with
+// neither, no webhook endpoint receives it).
+func (b *Bus) EmitForTenant(ctx context.Context, tenantID pgtype.UUID, topic string, aggregateID pgtype.UUID, payload any) (dbgen.DomainEvent, error) {
 	if b == nil || b.Store == nil {
 		return dbgen.DomainEvent{}, fmt.Errorf("%w: store not configured", ErrPersist)
 	}
@@ -80,7 +92,7 @@ func (b *Bus) Emit(ctx context.Context, topic string, aggregateID pgtype.UUID, p
 		Topic:       topic,
 		AggregateID: aggregateID,
 		Payload:     encoded,
-		TenantID:    tenantFromContext(ctx),
+		TenantID:    tenantID,
 	})
 	if err != nil {
 		return dbgen.DomainEvent{}, fmt.Errorf("%w: %w", ErrPersist, err)

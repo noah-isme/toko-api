@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -36,6 +37,14 @@ func (q *statsQuerier) AdminCountProductsTotal(context.Context, pgtype.UUID) (in
 func (q *statsQuerier) AdminTopProductsByRevenue(_ context.Context, arg dbgen.AdminTopProductsByRevenueParams) ([]dbgen.AdminTopProductsByRevenueRow, error) {
 	q.topP = append(q.topP, arg)
 	return nil, nil
+}
+
+func (q *statsQuerier) GetTenantSetting(context.Context, dbgen.GetTenantSettingParams) ([]byte, error) {
+	return nil, pgx.ErrNoRows
+}
+
+func (q *statsQuerier) AdminStockStatusCounts(context.Context, dbgen.AdminStockStatusCountsParams) (dbgen.AdminStockStatusCountsRow, error) {
+	return dbgen.AdminStockStatusCountsRow{}, nil
 }
 
 var sampleStats = dbgen.AdminOrderStatsRow{TotalOrders: 7, TotalRevenue: 495000, RevenueOrders: 4, PendingOrders: 1, PaidOrders: 2, DeliveredOrders: 2, CancelledOrders: 1, AverageOrderValue: 123750}

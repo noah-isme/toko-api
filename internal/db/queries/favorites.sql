@@ -12,6 +12,7 @@ SELECT f.product_id, f.created_at, p.title as product_name, p.slug as product_sl
 FROM favorites f
 JOIN products p ON f.product_id = p.id
 WHERE f.user_id = $1 AND f.tenant_id = $2
+  AND p.status = 'published'
 ORDER BY f.created_at DESC;
 
 -- name: CheckFavorite :one

@@ -24,7 +24,8 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
   AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
-  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock));
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+  AND p.status = 'published';
 
 -- name: ListProductsPublic :many
 SELECT p.id,
@@ -62,6 +63,7 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
   AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
   AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+  AND p.status = 'published'
 ORDER BY CASE WHEN sqlc.arg(sort)::text = 'price:asc' THEN p.price END ASC,
          CASE WHEN sqlc.arg(sort)::text = 'price:desc' THEN p.price END DESC,
          CASE WHEN sqlc.arg(sort)::text = 'title:asc' THEN p.title END ASC,
@@ -188,6 +190,7 @@ SELECT id,
 FROM products
 WHERE slug = sqlc.arg(slug)
   AND tenant_id = sqlc.arg(tenant_id)
+  AND status = 'published'
 LIMIT 1;
 
 -- name: ListVariantsByProduct :many
@@ -233,6 +236,7 @@ FROM products p
 WHERE p.category_id = $1
   AND p.slug <> $2
   AND p.tenant_id = sqlc.arg(tenant_id)
+  AND p.status = 'published'
 ORDER BY p.created_at DESC
 LIMIT 8;
 
@@ -243,7 +247,8 @@ SELECT id,
        price,
        category_id,
        brand_id,
-       in_stock
+       in_stock,
+       status
 FROM products
 WHERE id = sqlc.arg(id)
   AND tenant_id = sqlc.arg(tenant_id)

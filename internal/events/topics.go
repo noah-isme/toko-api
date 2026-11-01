@@ -24,6 +24,14 @@ const (
 	// scheduler); see internal/alerts.
 	TopicAlertBackInStock = "alert.back_in_stock"
 	TopicAlertPriceDrop   = "alert.price_drop"
+
+	// Catalog topics, emitted by the admin catalog handlers (single, bulk and
+	// import paths) through Bus.EmitForTenant so webhook deliveries are scoped
+	// to the owning tenant. They carry no customer data and are deliberately not
+	// part of DefaultTopics (no notification templates or toggles).
+	TopicProductPriceChanged  = "product.price_changed"
+	TopicProductStockChanged  = "product.stock_changed"
+	TopicProductStatusChanged = "product.status_changed"
 )
 
 // DefaultTopics returns the canonical list of topics that support notifications.
@@ -43,7 +51,8 @@ func DefaultTopics() []string {
 }
 
 // RelayTopics are the topics the outbox relay re-dispatches: DefaultTopics
-// without the alert topics. Alert events are inserted by internal/alerts in
+// without the alert topics, plus the catalog (product.*) topics, whose only
+// consumers are tenant-scoped webhook endpoints. Alert events are inserted by internal/alerts in
 // its own transaction and delivered through their own durable outbox
 // (product_alert_deliveries) on a bus with only the email notifier; the
 // relay's bus would also schedule webhooks (alert payloads carry customer
@@ -56,7 +65,7 @@ func RelayTopics() []string {
 		}
 		out = append(out, topic)
 	}
-	return out
+	return append(out, TopicProductPriceChanged, TopicProductStockChanged, TopicProductStatusChanged)
 }
 
 // IsCustomerSilent reports whether a topic is an internal/ops signal that must

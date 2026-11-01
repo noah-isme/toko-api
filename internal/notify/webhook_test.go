@@ -349,3 +349,24 @@ func TestIdempotencyUniqueDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, store.enqueued)
 }
+
+func TestScheduleUsesEventTenantBeforeContext(t *testing.T) {
+	eventTenant, ctxTenant := uuid.New(), uuid.New()
+	store := &scheduleStore{endpoints: []dbgen.WebhookEndpoint{
+		{ID: toUUID(uuid.New()), TenantID: toUUID(eventTenant)},
+		{ID: toUUID(uuid.New()), TenantID: toUUID(ctxTenant)},
+	}}
+	dispatcher := &notify.Dispatcher{Store: store, Enabled: true}
+
+	// Stamped event, no ctx tenant (the outbox relay, the worker).
+	require.NoError(t, dispatcher.Schedule(context.Background(), dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "product.price_changed", TenantID: toUUID(eventTenant)}))
+	// Stamped event under another tenant's ctx: the event tenant wins.
+	require.NoError(t, dispatcher.Schedule(tenant.WithTenant(context.Background(), ctxTenant.String()),
+		dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "product.price_changed", TenantID: toUUID(eventTenant)}))
+	require.Equal(t, []pgtype.UUID{toUUID(eventTenant), toUUID(eventTenant)}, store.askedTenants)
+
+	// Unstamped event: the ctx tenant is the fallback; with neither nothing is scheduled.
+	require.NoError(t, dispatcher.Schedule(tenant.WithTenant(context.Background(), ctxTenant.String()), dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.paid"}))
+	require.NoError(t, dispatcher.Schedule(context.Background(), dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: "order.paid"}))
+	require.Equal(t, []pgtype.UUID{toUUID(eventTenant), toUUID(eventTenant), toUUID(ctxTenant)}, store.askedTenants)
+}

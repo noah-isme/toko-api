@@ -90,7 +90,7 @@ JSON object. The idempotency replay response is a JSON error with its own
 | `403` | CSRF failure, missing tenant membership, or insufficient role |
 | `404` | Resource not found |
 | `409` | Resource conflict or idempotency replay |
-| `413` | Request body exceeds the configured limit |
+| `413` | Request body exceeds the configured limit (JSON `PAYLOAD_TOO_LARGE`) |
 | `429` | Rate limit exceeded (plain-text response) |
 | `502` | Upstream shipping-provider failure |
 | `503` | Readiness or selected provider is unavailable |

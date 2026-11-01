@@ -49,9 +49,9 @@ type Dispatcher struct {
 }
 
 // Schedule enqueues deliveries for the active endpoints of the event's tenant
-// that subscribe to the topic. The tenant comes from ctx (tenant.WithTenant);
-// without one nothing is scheduled, so an event can never reach another
-// tenant's endpoints.
+// that subscribe to the topic. The tenant is event.TenantID, or the ctx tenant
+// (tenant.WithTenant) for an event stored without one; with neither nothing is
+// scheduled, so an event can never reach another tenant's endpoints.
 func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) error {
 	if d == nil || !d.Enabled || d.Store == nil {
 		return nil
@@ -59,13 +59,18 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 	if strings.TrimSpace(event.Topic) == "" {
 		return nil
 	}
-	tenantUUID, ok := tenantFromContext(ctx)
+	// The event's own tenant (stamped by events.Bus) wins; ctx is the fallback
+	// for events persisted without one.
+	tenantUUID, ok := event.TenantID, event.TenantID.Valid
+	if !ok {
+		tenantUUID, ok = tenantFromContext(ctx)
+	}
 	if !ok {
 		if d.Logger != nil {
 			d.Logger.Warn().
 				Str("topic", event.Topic).
 				Str("event_id", uuidFrom(event.ID)).
-				Msg("webhook dispatch skipped: no tenant in context")
+				Msg("webhook dispatch skipped: event has no tenant")
 		}
 		return nil
 	}

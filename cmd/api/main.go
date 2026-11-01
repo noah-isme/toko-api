@@ -534,7 +534,6 @@ func main() {
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
-	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache, Alerts: alertsRunner}
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
 	adminReports := &admin.ReportsHandler{Q: queries}
@@ -563,6 +562,18 @@ func main() {
 	}
 	auditEnabled := envBool("AUDIT_ENABLED", true) && auditSample > 0
 	auditSvc := &audit.Service{Store: queries, Enabled: auditEnabled, SamplingRate: auditSample}
+	// Catalog operations write explicit, unsampled audit rows inside their own
+	// transactions (bulk updates, imports) when auditing is enabled at all.
+	adminCatalog := &admin.CatalogHandler{
+		Q:            queries,
+		Cache:        catalogCache,
+		Pool:         pool,
+		Events:       bus,
+		AuditEnabled: auditEnabled,
+		Alerts:       alertsRunner,
+	}
+	platformHandler.Cache = catalogCache
+	platformHandler.Events = bus
 	auditHandler := audit.Handler{Store: auditSvc.Store}
 	auditRecorder := audit.HTTPRecorder{
 		Service: auditSvc,
@@ -722,7 +733,9 @@ func main() {
 	if strings.TrimSpace(corsOrigins) != "" {
 		r.Use(security.AllowCORS(corsOrigins))
 	}
-	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes)}.Middleware)
+	// The CSV import has its own 5 MiB cap (enforced in the handler), so it is
+	// exempt from the global limit; every other route keeps bodyLimitBytes.
+	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes), Overrides: admin.BodyLimitOverrides()}.Middleware)
 	if csrfEnabled {
 		r.Use(security.CSRF{
 			Header:         csrfHeader,
@@ -941,9 +954,15 @@ func main() {
 			admin.Patch("/settings", platformHandler.SettingsUpdate)
 			admin.Post("/onboarding", platformHandler.Onboarding)
 
-			// Catalog management.
+			// Catalog management. The static catalog-ops paths are registered
+			// before "/products/{id}" so chi does not treat them as ids.
 			admin.Get("/products", adminCatalog.ListProducts)
 			admin.Post("/products", adminCatalog.CreateProduct)
+			admin.Post("/products/bulk/price", adminCatalog.BulkPrice)     // rbac: catalog:write
+			admin.Post("/products/bulk/stock", adminCatalog.BulkStock)     // rbac: inventory:write
+			admin.Post("/products/bulk/status", adminCatalog.BulkStatus)   // rbac: catalog:write
+			admin.Get("/products/export", adminCatalog.ExportProductsCSV)  // rbac: catalog:read
+			admin.Post("/products/import", adminCatalog.ImportProductsCSV) // rbac: catalog:write + inventory:write
 			admin.Get("/products/{id}", adminCatalog.GetProduct)
 			admin.Patch("/products/{id}", adminCatalog.UpdateProduct)
 			admin.Delete("/products/{id}", adminCatalog.DeleteProduct)
@@ -963,6 +982,7 @@ func main() {
 			// before "/orders/{id}" so chi does not treat "stats" as an id.
 			admin.Get("/orders", adminOrders.ListOrders)
 			admin.Get("/orders/stats", adminOrders.OrderStats)
+			admin.Get("/orders/export", adminOrders.ExportOrdersCSV) // rbac: orders:read + customers:read
 			admin.Get("/orders/{id}", adminOrders.GetOrder)
 			admin.Get("/orders/{id}/invoice", invoiceHandler.AdminInvoice)
 
@@ -1006,6 +1026,12 @@ func main() {
 		v.Post("/webhooks/shipping/{courier}", shipWebhook.Handle)
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
+
+	// Fail fast if a body-limit override no longer names a mounted route
+	// (e.g. the admin prefix moved): CSV imports would silently get 413.
+	if err := checkBodyLimitOverrides(r, admin.BodyLimitOverrides()); err != nil {
+		logger.Fatal().Err(err).Msg("body limit overrides")
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr(),

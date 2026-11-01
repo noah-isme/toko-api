@@ -16,6 +16,7 @@ import (
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 type stubStore struct {
@@ -241,5 +242,20 @@ func TestRelayTopicsExcludeAlertTopics(t *testing.T) {
 	require.NotContains(t, topics, events.TopicAlertBackInStock)
 	require.NotContains(t, topics, events.TopicAlertPriceDrop)
 	require.Contains(t, topics, events.TopicOrderPaid)
-	require.Len(t, topics, len(events.DefaultTopics())-2)
+	require.Contains(t, topics, events.TopicProductStockChanged)
+	require.Len(t, topics, len(events.DefaultTopics())-2+3)
+}
+
+func TestEmitForTenantStampsTenant(t *testing.T) {
+	store := &stubStore{}
+	scheduler := &captureScheduler{}
+	notifier := &captureNotifier{}
+	bus := events.Bus{Store: store, Scheduler: scheduler, Notifiers: []events.Notifier{notifier}}
+
+	// The explicit tenant wins over the ctx tenant.
+	ctx := tenant.WithTenant(context.Background(), uuid.NewString())
+	tenantID := toUUID(uuid.New())
+	_, err := bus.EmitForTenant(ctx, tenantID, events.TopicProductPriceChanged, toUUID(uuid.New()), map[string]any{"field": "price"})
+	require.NoError(t, err)
+	require.Equal(t, tenantID, store.lastParams.TenantID)
 }

@@ -238,6 +238,12 @@ func (s *Service) addItem(ctx context.Context, cartID string, productID string, 
 	if err != nil {
 		return err
 	}
+	// Draft and archived products cannot be bought. GetProductForCart stays
+	// unfiltered because existing lines (qty updates, voucher eligibility) must
+	// still resolve; checkout re-checks the status of every line.
+	if product.Status != "published" {
+		return fmt.Errorf("product is not available: %w", ErrInvalidInput)
+	}
 	unitPrice := product.Price
 	if campaignID.Valid {
 		campaignPrice, err := s.flashSalePrice(ctx, campaignID, pID, qty)

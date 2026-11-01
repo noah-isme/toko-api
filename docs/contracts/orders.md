@@ -296,4 +296,4 @@ numbering transaction.
 | 409    | `INVOICE_NOT_AVAILABLE` | Order not paid yet (or cancelled) and no invoice was issued before. |
 | 500    | `INTERNAL`              | Rendering or database failure. |
 
-Admin equivalent: `GET /api/v1/admin/orders/{id}/invoice` ([Admin 6.20](admin.md#620-download-order-invoice-pdf)).
+Admin equivalent: `GET /api/v1/admin/orders/{id}/invoice` ([Admin 6.29](admin.md#629-download-order-invoice-pdf)).
