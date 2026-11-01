@@ -224,3 +224,93 @@ func TestIntegrationVariantsBackfill000058LargeCatalogGuard(t *testing.T) {
 
 	require.NoError(t, <-runMigrationAsync(ctx, conn, readMigration(t, variantsUp58)), "000058 must pass once the RUNBOOK backfill is done")
 }
+
+// TestIntegrationVariantsTenantTrigger000057UpdatePaths pins the 000057 UPDATE
+// trigger: an explicit tenant change is reverted, a product_id change re-derives
+// the tenant, a NULL tenant is filled by any update, and an ordinary stock update
+// of a row that already has its tenant never calls the plpgsql function.
+func TestIntegrationVariantsTenantTrigger000057UpdatePaths(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping Postgres integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+	const t1, t2 = "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"
+	const p1, p2 = "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000a2"
+	const legacy, filled = "00000000-0000-0000-0000-0000000000b1", "00000000-0000-0000-0000-0000000000b2"
+	newProbeSchema(t, ctx, conn, "mig_variants_trigger_", `
+		CREATE TABLE tenants (id uuid PRIMARY KEY);
+		CREATE TABLE products (id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id));
+		CREATE TABLE product_variants (
+			id uuid PRIMARY KEY,
+			product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+			stock int NOT NULL DEFAULT 0
+		);
+		INSERT INTO tenants VALUES ('`+t1+`'), ('`+t2+`');
+		INSERT INTO products VALUES ('`+p1+`', '`+t1+`'), ('`+p2+`', '`+t2+`');
+		INSERT INTO product_variants (id, product_id, stock) VALUES ('`+legacy+`', '`+p1+`', 5);`)
+	_, err = conn.Exec(ctx, readMigration(t, variantsUp57))
+	require.NoError(t, err, variantsUp57)
+
+	tenantOf := func(id string) *string {
+		var tenant *string
+		require.NoError(t, conn.QueryRow(ctx, `SELECT tenant_id::text FROM product_variants WHERE id = $1`, id).Scan(&tenant))
+		return tenant
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		_, err := conn.Exec(ctx, sql, args...)
+		require.NoError(t, err, sql)
+	}
+
+	// Written before 000057: NULL until any update touches it.
+	require.Nil(t, tenantOf(legacy))
+	exec(`UPDATE product_variants SET stock = stock - 1 WHERE id = $1`, legacy)
+	require.Equal(t, t1, *tenantOf(legacy), "a stock update fills a NULL tenant")
+
+	// Insert derives the tenant, whatever the caller passes.
+	exec(`INSERT INTO product_variants (id, product_id, tenant_id) VALUES ($1, $2, $3)`, filled, p1, t2)
+	require.Equal(t, t1, *tenantOf(filled))
+
+	exec(`UPDATE product_variants SET tenant_id = $2 WHERE id = $1`, filled, t2)
+	require.Equal(t, t1, *tenantOf(filled), "an explicit tenant change is reverted to the product's tenant")
+
+	exec(`UPDATE product_variants SET tenant_id = NULL WHERE id = $1`, filled)
+	require.Equal(t, t1, *tenantOf(filled), "an explicit NULL is re-filled")
+
+	exec(`UPDATE product_variants SET product_id = $2 WHERE id = $1`, filled, p2)
+	require.Equal(t, t2, *tenantOf(filled), "a product_id change re-derives the tenant")
+
+	exec(`UPDATE product_variants SET product_id = $2, tenant_id = $3 WHERE id = $1`, filled, p1, t2)
+	require.Equal(t, t1, *tenantOf(filled), "product and tenant changed together follow the product")
+
+	// Hot path: the WHEN clause keeps ordinary updates out of plpgsql.
+	var super bool
+	require.NoError(t, conn.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super))
+	if !super {
+		t.Log("not a superuser (track_functions); skipping the call-count check")
+		return
+	}
+	calls := func(tx pgx.Tx) int64 {
+		var n int64
+		require.NoError(t, tx.QueryRow(ctx, `SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_xact_user_functions
+			WHERE funcid = 'product_variants_set_tenant_id'::regproc`).Scan(&n))
+		return n
+	}
+	tx, err := conn.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	_, err = tx.Exec(ctx, `SET LOCAL track_functions = 'pl'`)
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, `UPDATE product_variants SET stock = stock - 1`)
+	require.NoError(t, err)
+	require.Zero(t, calls(tx), "a stock update of rows with a tenant must not call the trigger function")
+	_, err = tx.Exec(ctx, `UPDATE product_variants SET product_id = $2 WHERE id = $1`, filled, p2)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), calls(tx), "a product_id change calls it once")
+}
