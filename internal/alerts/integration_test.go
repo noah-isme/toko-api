@@ -135,13 +135,26 @@ func newEnv(t *testing.T) *env {
 // pass's batch, budget shares, Events and More here. Each flush transaction
 // therefore first retires the pending events of every tenant but this test's,
 // so only this test's events are visible to the pass that follows.
+//
+// By default the transaction is REPEATABLE READ so the retire UPDATE and the
+// dispatcher's ListPendingAlertEvents share one snapshot: under READ COMMITTED another
+// package's trigger could commit an event between the two statements and show up in the
+// pass. A test that runs flushes concurrently (readCommitted) keeps READ COMMITTED
+// instead: its flushes claim events with FOR UPDATE SKIP LOCKED, which under REPEATABLE
+// READ fails with a serialization error when the other flush commits first, and
+// production runs at READ COMMITTED.
 type isolatedPool struct {
-	pool    *pgxpool.Pool
-	tenants []string
+	pool          *pgxpool.Pool
+	tenants       []string
+	readCommitted bool
 }
 
 func (p isolatedPool) Begin(ctx context.Context) (pgx.Tx, error) {
-	tx, err := p.pool.Begin(ctx)
+	opts := pgx.TxOptions{IsoLevel: pgx.RepeatableRead} // snapshot starts at the retire UPDATE
+	if p.readCommitted {
+		opts = pgx.TxOptions{}
+	}
+	tx, err := p.pool.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +169,18 @@ func (p isolatedPool) Begin(ctx context.Context) (pgx.Tx, error) {
 }
 
 func (e *env) dispatcher(maxSubs, batch int) *alerts.Dispatcher {
+	return e.newDispatcher(maxSubs, batch, false)
+}
+
+// concurrentDispatcher is a dispatcher whose flushes may run at the same time as
+// another's; see isolatedPool.
+func (e *env) concurrentDispatcher(maxSubs, batch int) *alerts.Dispatcher {
+	return e.newDispatcher(maxSubs, batch, true)
+}
+
+func (e *env) newDispatcher(maxSubs, batch int, readCommitted bool) *alerts.Dispatcher {
 	return &alerts.Dispatcher{
-		Pool:             isolatedPool{pool: e.pool, tenants: []string{e.tenA, e.tenB}},
+		Pool:             isolatedPool{pool: e.pool, tenants: []string{e.tenA, e.tenB}, readCommitted: readCommitted},
 		Q:                e.q,
 		MaxSubscriptions: maxSubs,
 		BatchSize:        batch,
@@ -494,7 +517,7 @@ func TestIntegrationConcurrentFlushFiresOnce(t *testing.T) {
 		e.exec(`UPDATE products SET price=999000 WHERE id=$1`, prod)
 		require.Equal(t, 2, e.count(`SELECT count(*) FROM product_alert_events WHERE product_id=$1 AND processed_at IS NULL`, prod))
 
-		d1, d2 := e.dispatcher(0, 1), e.dispatcher(0, 1)
+		d1, d2 := e.concurrentDispatcher(0, 1), e.concurrentDispatcher(0, 1)
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
