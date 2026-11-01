@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
@@ -128,9 +129,35 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
+// isolatedPool is the dispatcher's pool in these tests. ListPendingAlertEvents
+// drains every tenant's outbox, and packages running in parallel (go test -p)
+// fire the alert triggers with their own catalog writes, which would change a
+// pass's batch, budget shares, Events and More here. Each flush transaction
+// therefore first retires the pending events of every tenant but this test's,
+// so only this test's events are visible to the pass that follows.
+type isolatedPool struct {
+	pool    *pgxpool.Pool
+	tenants []string
+}
+
+func (p isolatedPool) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE product_alert_events SET processed_at = now()
+		WHERE id IN (SELECT id FROM product_alert_events
+		             WHERE processed_at IS NULL AND tenant_id <> ALL($1::uuid[])
+		             FOR UPDATE SKIP LOCKED)`, p.tenants); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
+}
+
 func (e *env) dispatcher(maxSubs, batch int) *alerts.Dispatcher {
 	return &alerts.Dispatcher{
-		Pool:             e.pool,
+		Pool:             isolatedPool{pool: e.pool, tenants: []string{e.tenA, e.tenB}},
 		Q:                e.q,
 		MaxSubscriptions: maxSubs,
 		BatchSize:        batch,
@@ -305,11 +332,14 @@ func TestIntegrationBackInStockFiresOnce(t *testing.T) {
 	require.NoError(t, e.pool.QueryRow(e.ctx, `SELECT body FROM notifications WHERE user_id=$1`, user).Scan(&body))
 	require.Equal(t, "Kaos Hitam sudah tersedia kembali.", body)
 
-	// Second Flush has nothing to do.
-	res2, err := d.Flush(e.ctx)
+	// Second Flush has nothing to do for this tenant (asserted on this tenant's
+	// rows: the dispatcher drains every tenant's outbox).
+	require.Zero(t, e.count(`SELECT count(*) FROM product_alert_events WHERE tenant_id=$1 AND processed_at IS NULL`, e.tenA))
+	_, err := d.Flush(e.ctx)
 	require.NoError(t, err)
-	require.Equal(t, 0, res2.Events)
-	require.False(t, res2.More)
+	require.Equal(t, 1, e.notifications(user, alerts.KindBackInStock))
+	require.Equal(t, 1, e.domainEvents(sub))
+	require.Equal(t, 1, e.count(`SELECT count(*) FROM product_alert_deliveries pd JOIN domain_events de ON de.id=pd.event_id WHERE de.aggregate_id=$1`, sub))
 
 	// Going out of stock and back again does not re-fire (consumed).
 	e.exec(`UPDATE product_variants SET stock=0 WHERE id=$1`, variant)
