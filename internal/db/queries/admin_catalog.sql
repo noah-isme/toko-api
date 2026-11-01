@@ -327,26 +327,26 @@ SELECT id FROM products WHERE slug = sqlc.arg(slug) AND tenant_id = sqlc.arg(ten
 
 -- name: AdminReplaceProductImages :exec
 DELETE FROM product_images WHERE product_id = sqlc.arg(product_id)
-  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductImage :exec
 INSERT INTO product_images (product_id, url, sort_order)
 SELECT sqlc.arg(product_id), sqlc.arg(url), sqlc.arg(sort_order)
-WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminDeleteProductSpecs :exec
 DELETE FROM product_specs WHERE product_id = sqlc.arg(product_id)
-  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductSpec :exec
 INSERT INTO product_specs (product_id, key, value)
 SELECT sqlc.arg(product_id), sqlc.arg(key), sqlc.arg(value)
-WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminInsertProductVariant :one
 INSERT INTO product_variants (product_id, sku, price, stock, attributes)
 SELECT sqlc.arg(product_id), sqlc.narg(sku), sqlc.arg(price), sqlc.arg(stock), sqlc.arg(attributes)
-WHERE EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id))
 RETURNING id;
 
 -- name: AdminUpdateProductVariant :one
@@ -356,19 +356,19 @@ SET sku        = COALESCE(sqlc.narg(sku), sku),
     stock      = COALESCE(sqlc.narg(stock), stock),
     attributes = COALESCE(sqlc.narg(attributes), attributes)
 WHERE product_variants.id = sqlc.arg(id) AND product_id = sqlc.arg(product_id)
-  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
-RETURNING id, product_id, sku, price, stock, attributes;
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id))
+RETURNING id, product_id, sku, price, stock, attributes, tenant_id;
 
 -- name: AdminDeleteProductVariant :execrows
 DELETE FROM product_variants
 WHERE product_variants.id = sqlc.arg(id) AND product_id = sqlc.arg(product_id)
-  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id));
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id));
 
 -- name: AdminGetPrimaryVariant :one
-SELECT id, product_id, sku, price, stock, attributes
+SELECT id, product_id, sku, price, stock, attributes, tenant_id
 FROM product_variants
 WHERE product_id = sqlc.arg(product_id)
-  AND EXISTS (SELECT 1 FROM products WHERE id = sqlc.arg(product_id) AND tenant_id = sqlc.arg(tenant_id))
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = sqlc.arg(product_id) AND products.tenant_id = sqlc.arg(tenant_id))
 ORDER BY sku NULLS LAST, id
 LIMIT 1;
 

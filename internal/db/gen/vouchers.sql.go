@@ -14,12 +14,19 @@ import (
 const getVoucherByCode = `-- name: GetVoucherByCode :one
 SELECT id, code, value, min_spend, usage_limit, used_count, valid_from, valid_to, product_ids, category_ids, created_at, updated_at, kind, percent_bps, combinable, priority, per_user_limit, brand_ids, tenant_id
 FROM vouchers
-WHERE code = $1
-LIMIT 1
+WHERE tenant_id = $1
+  AND code = $2
 `
 
-func (q *Queries) GetVoucherByCode(ctx context.Context, code string) (Voucher, error) {
-	row := q.db.QueryRow(ctx, getVoucherByCode, code)
+type GetVoucherByCodeParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Code     string      `json:"code"`
+}
+
+// Voucher codes are unique per tenant (uq_vouchers_tenant_code), so a code is
+// only ever resolved within one tenant.
+func (q *Queries) GetVoucherByCode(ctx context.Context, arg GetVoucherByCodeParams) (Voucher, error) {
+	row := q.db.QueryRow(ctx, getVoucherByCode, arg.TenantID, arg.Code)
 	var i Voucher
 	err := row.Scan(
 		&i.ID,

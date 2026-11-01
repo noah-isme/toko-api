@@ -46,9 +46,14 @@ func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams
 const getCategoryBySlug = `-- name: GetCategoryBySlug :one
 SELECT id, name, slug, parent_id
 FROM categories
-WHERE slug = $1
-LIMIT 1
+WHERE tenant_id = $1
+  AND slug = $2
 `
+
+type GetCategoryBySlugParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Slug     string      `json:"slug"`
+}
 
 type GetCategoryBySlugRow struct {
 	ID       pgtype.UUID `json:"id"`
@@ -57,8 +62,8 @@ type GetCategoryBySlugRow struct {
 	ParentID pgtype.UUID `json:"parent_id"`
 }
 
-func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error) {
-	row := q.db.QueryRow(ctx, getCategoryBySlug, slug)
+func (q *Queries) GetCategoryBySlug(ctx context.Context, arg GetCategoryBySlugParams) (GetCategoryBySlugRow, error) {
+	row := q.db.QueryRow(ctx, getCategoryBySlug, arg.TenantID, arg.Slug)
 	var i GetCategoryBySlugRow
 	err := row.Scan(
 		&i.ID,

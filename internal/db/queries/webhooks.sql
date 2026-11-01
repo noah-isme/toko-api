@@ -1,6 +1,10 @@
+-- Endpoints are tenant-owned (webhook_endpoints.tenant_id): the admin API
+-- creates them in the request's tenant and only ever reads, changes or deletes
+-- the endpoints of that tenant.
+
 -- name: CreateWebhookEndpoint :one
-INSERT INTO webhook_endpoints (name, url, secret, active, topics)
-VALUES (sqlc.arg(name), sqlc.arg(url), sqlc.arg(secret), sqlc.arg(active), sqlc.arg(topics))
+INSERT INTO webhook_endpoints (name, url, secret, active, topics, tenant_id)
+VALUES (sqlc.arg(name), sqlc.arg(url), sqlc.arg(secret), sqlc.arg(active), sqlc.arg(topics), sqlc.arg(tenant_id))
 RETURNING *;
 
 -- name: UpdateWebhookEndpoint :one
@@ -12,6 +16,7 @@ SET name = sqlc.arg(name),
     topics = sqlc.arg(topics),
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
 
 -- name: GetWebhookEndpoint :one
@@ -22,12 +27,14 @@ WHERE id = sqlc.arg(id);
 -- name: ListWebhookEndpoints :many
 SELECT *
 FROM webhook_endpoints
+WHERE tenant_id = sqlc.arg(tenant_id)
 ORDER BY created_at DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
--- name: DeleteWebhookEndpoint :exec
+-- name: DeleteWebhookEndpoint :execrows
 DELETE FROM webhook_endpoints
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id);
 
 -- Endpoints are tenant-owned: an event is only delivered to the endpoints of
 -- the tenant that produced it.

@@ -1,8 +1,10 @@
 -- name: GetVoucherByCode :one
+-- Voucher codes are unique per tenant (uq_vouchers_tenant_code), so a code is
+-- only ever resolved within one tenant.
 SELECT *
 FROM vouchers
-WHERE code = $1
-LIMIT 1;
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND code = sqlc.arg(code);
 
 -- name: IncreaseVoucherUsedCount :exec
 UPDATE vouchers

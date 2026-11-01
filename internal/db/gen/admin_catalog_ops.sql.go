@@ -115,35 +115,6 @@ func (q *Queries) AdminBulkUpdateProductPrice(ctx context.Context, arg AdminBulk
 	return i, err
 }
 
-const adminExistingSKUsAnyTenant = `-- name: AdminExistingSKUsAnyTenant :many
-SELECT sku::text
-FROM product_variants
-WHERE sku = ANY($1::text[])
-`
-
-// product_variants.sku is globally unique. Returns only the subset of the
-// caller-supplied SKUs that exist anywhere (equivalent to one boolean per SKU),
-// never another tenant's row.
-func (q *Queries) AdminExistingSKUsAnyTenant(ctx context.Context, skus []string) ([]string, error) {
-	rows, err := q.db.Query(ctx, adminExistingSKUsAnyTenant, skus)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var sku string
-		if err := rows.Scan(&sku); err != nil {
-			return nil, err
-		}
-		items = append(items, sku)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const adminExportOrderRows = `-- name: AdminExportOrderRows :many
 SELECT o.id,
        o.order_number,
@@ -369,8 +340,10 @@ type AdminGetProductsByIDsForUpdateRow struct {
 }
 
 // Admin catalog operations: bulk updates, CSV import lookups, CSV export and
-// low-stock settings. product_variants has no tenant_id, so every variant query
-// scopes through products.tenant_id.
+// low-stock settings. Variant queries scope through products.tenant_id
+// (product_variants.tenant_id, added in 000057, is always the product's tenant).
+// SKUs and product slugs are unique per tenant, so import lookups never need to
+// look at another tenant's rows.
 // Locks the target products in id order so concurrent catalog writers cannot
 // deadlock. FOR NO KEY UPDATE (not FOR UPDATE) still serializes catalog writers
 // against each other but stays compatible with the FOR KEY SHARE locks that
@@ -645,41 +618,6 @@ func (q *Queries) AdminSetVariantStock(ctx context.Context, arg AdminSetVariantS
 	var i AdminSetVariantStockRow
 	err := row.Scan(&i.ID, &i.ProductID, &i.Stock)
 	return i, err
-}
-
-const adminSlugsTakenByOtherTenants = `-- name: AdminSlugsTakenByOtherTenants :many
-SELECT slug
-FROM products
-WHERE slug = ANY($1::text[])
-  AND NOT (tenant_id = $2::uuid)
-`
-
-type AdminSlugsTakenByOtherTenantsParams struct {
-	Slugs    []string    `json:"slugs"`
-	TenantID pgtype.UUID `json:"tenant_id"`
-}
-
-// products.slug is globally unique. Returns only the subset of the
-// caller-supplied slugs that another tenant uses (one boolean per slug), never
-// another tenant's row. Phrased with `tenant_id =` so the tenant guard accepts it.
-func (q *Queries) AdminSlugsTakenByOtherTenants(ctx context.Context, arg AdminSlugsTakenByOtherTenantsParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, adminSlugsTakenByOtherTenants, arg.Slugs, arg.TenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var slug string
-		if err := rows.Scan(&slug); err != nil {
-			return nil, err
-		}
-		items = append(items, slug)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const getTenantSetting = `-- name: GetTenantSetting :one

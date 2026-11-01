@@ -292,7 +292,7 @@ func (q *Queries) AdminDeleteProduct(ctx context.Context, arg AdminDeleteProduct
 
 const adminDeleteProductSpecs = `-- name: AdminDeleteProductSpecs :exec
 DELETE FROM product_specs WHERE product_id = $1
-  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $2)
 `
 
 type AdminDeleteProductSpecsParams struct {
@@ -308,7 +308,7 @@ func (q *Queries) AdminDeleteProductSpecs(ctx context.Context, arg AdminDeletePr
 const adminDeleteProductVariant = `-- name: AdminDeleteProductVariant :execrows
 DELETE FROM product_variants
 WHERE product_variants.id = $1 AND product_id = $2
-  AND EXISTS (SELECT 1 FROM products WHERE id = $2 AND tenant_id = $3)
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = $2 AND products.tenant_id = $3)
 `
 
 type AdminDeleteProductVariantParams struct {
@@ -495,10 +495,10 @@ func (q *Queries) AdminExportProductPage(ctx context.Context, arg AdminExportPro
 }
 
 const adminGetPrimaryVariant = `-- name: AdminGetPrimaryVariant :one
-SELECT id, product_id, sku, price, stock, attributes
+SELECT id, product_id, sku, price, stock, attributes, tenant_id
 FROM product_variants
 WHERE product_id = $1
-  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $2)
 ORDER BY sku NULLS LAST, id
 LIMIT 1
 `
@@ -518,6 +518,7 @@ func (q *Queries) AdminGetPrimaryVariant(ctx context.Context, arg AdminGetPrimar
 		&i.Price,
 		&i.Stock,
 		&i.Attributes,
+		&i.TenantID,
 	)
 	return i, err
 }
@@ -629,7 +630,7 @@ func (q *Queries) AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProdu
 const adminInsertProductImage = `-- name: AdminInsertProductImage :exec
 INSERT INTO product_images (product_id, url, sort_order)
 SELECT $1, $2, $3
-WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $4)
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $4)
 `
 
 type AdminInsertProductImageParams struct {
@@ -652,7 +653,7 @@ func (q *Queries) AdminInsertProductImage(ctx context.Context, arg AdminInsertPr
 const adminInsertProductSpec = `-- name: AdminInsertProductSpec :exec
 INSERT INTO product_specs (product_id, key, value)
 SELECT $1, $2, $3
-WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $4)
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $4)
 `
 
 type AdminInsertProductSpecParams struct {
@@ -675,7 +676,7 @@ func (q *Queries) AdminInsertProductSpec(ctx context.Context, arg AdminInsertPro
 const adminInsertProductVariant = `-- name: AdminInsertProductVariant :one
 INSERT INTO product_variants (product_id, sku, price, stock, attributes)
 SELECT $1, $2, $3, $4, $5
-WHERE EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $6)
+WHERE EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $6)
 RETURNING id
 `
 
@@ -960,7 +961,7 @@ func (q *Queries) AdminListProducts(ctx context.Context, arg AdminListProductsPa
 
 const adminReplaceProductImages = `-- name: AdminReplaceProductImages :exec
 DELETE FROM product_images WHERE product_id = $1
-  AND EXISTS (SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2)
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = $1 AND products.tenant_id = $2)
 `
 
 type AdminReplaceProductImagesParams struct {
@@ -1245,8 +1246,8 @@ SET sku        = COALESCE($1, sku),
     stock      = COALESCE($3, stock),
     attributes = COALESCE($4, attributes)
 WHERE product_variants.id = $5 AND product_id = $6
-  AND EXISTS (SELECT 1 FROM products WHERE id = $6 AND tenant_id = $7)
-RETURNING id, product_id, sku, price, stock, attributes
+  AND EXISTS (SELECT 1 FROM products WHERE products.id = $6 AND products.tenant_id = $7)
+RETURNING id, product_id, sku, price, stock, attributes, tenant_id
 `
 
 type AdminUpdateProductVariantParams struct {
@@ -1277,6 +1278,7 @@ func (q *Queries) AdminUpdateProductVariant(ctx context.Context, arg AdminUpdate
 		&i.Price,
 		&i.Stock,
 		&i.Attributes,
+		&i.TenantID,
 	)
 	return i, err
 }

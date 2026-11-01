@@ -14,7 +14,7 @@ type Store interface {
 	UpdateWebhookEndpoint(ctx context.Context, arg dbgen.UpdateWebhookEndpointParams) (dbgen.WebhookEndpoint, error)
 	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (dbgen.WebhookEndpoint, error)
 	ListWebhookEndpoints(ctx context.Context, arg dbgen.ListWebhookEndpointsParams) ([]dbgen.WebhookEndpoint, error)
-	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
+	DeleteWebhookEndpoint(ctx context.Context, arg dbgen.DeleteWebhookEndpointParams) (int64, error)
 
 	ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error)
 	EnqueueDelivery(ctx context.Context, arg dbgen.EnqueueDeliveryParams) (dbgen.WebhookDelivery, error)
@@ -65,8 +65,8 @@ func (s QueriesStore) ListWebhookEndpoints(ctx context.Context, arg dbgen.ListWe
 	return s.Queries.ListWebhookEndpoints(ctx, arg)
 }
 
-func (s QueriesStore) DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error {
-	return s.Queries.DeleteWebhookEndpoint(ctx, id)
+func (s QueriesStore) DeleteWebhookEndpoint(ctx context.Context, arg dbgen.DeleteWebhookEndpointParams) (int64, error) {
+	return s.Queries.DeleteWebhookEndpoint(ctx, arg)
 }
 
 func (s QueriesStore) ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg dbgen.ListActiveEndpointsForTopicAndTenantParams) ([]dbgen.WebhookEndpoint, error) {

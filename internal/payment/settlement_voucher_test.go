@@ -19,7 +19,12 @@ type voucherStubQueries struct {
 	usageChecked bool
 }
 
-func (q *voucherStubQueries) GetVoucherByCodeForUpdate(ctx context.Context, code string) (dbgen.Voucher, error) {
+// GetVoucherByCodeForUpdate mirrors the tenant-scoped SQL: a voucher of another
+// tenant is not found.
+func (q *voucherStubQueries) GetVoucherByCodeForUpdate(ctx context.Context, arg dbgen.GetVoucherByCodeForUpdateParams) (dbgen.Voucher, error) {
+	if q.voucher.TenantID != arg.TenantID || q.voucher.Code != arg.Code {
+		return dbgen.Voucher{}, pgx.ErrNoRows
+	}
 	return q.voucher, nil
 }
 

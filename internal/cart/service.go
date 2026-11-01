@@ -561,19 +561,15 @@ func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code str
 	if err != nil {
 		return 0, dbgen.Voucher{}, err
 	}
-	voucher, err := s.Q.GetVoucherByCode(ctx, code)
+	// Voucher codes are unique per tenant, so the code is resolved within this
+	// tenant only: another tenant's voucher with the same code reads exactly
+	// like an unknown code and never discounts this tenant's goods.
+	voucher, err := s.Q.GetVoucherByCode(ctx, dbgen.GetVoucherByCodeParams{TenantID: s.resolveTenant(ctx), Code: code})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, dbgen.Voucher{}, errVoucherNotFound
 		}
 		return 0, dbgen.Voucher{}, err
-	}
-	// Voucher codes are globally unique but each voucher belongs to one tenant.
-	// Since tenant owners can create vouchers, a code minted in another tenant
-	// must read exactly like an unknown code, or it would discount this
-	// tenant's goods.
-	if !uuidEqual(voucher.TenantID, s.resolveTenant(ctx)) {
-		return 0, dbgen.Voucher{}, errVoucherNotFound
 	}
 	now := s.now()
 	if voucher.ValidFrom.Valid && voucher.ValidFrom.Time.After(now) {

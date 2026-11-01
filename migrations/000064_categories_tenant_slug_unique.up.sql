@@ -1,0 +1,18 @@
+-- Per-tenant catalog uniqueness: unique categories (tenant_id, slug), built CONCURRENTLY so reads and
+-- writes on categories are never blocked during the build. The global constraint it
+-- replaces is dropped only by 000065, after this index is valid, so there is never a
+-- moment without a uniqueness guarantee. Existing rows cannot collide: the global
+-- constraint still holds while this index is built.
+--
+-- This file must contain exactly one statement (not even SET LOCAL): a second
+-- statement would turn the file into an implicit transaction block and
+-- CREATE INDEX CONCURRENTLY would refuse to run.
+--
+-- Recovery: if the build fails or is interrupted, golang-migrate marks version 64
+-- dirty and Postgres may leave an INVALID index behind (IF NOT EXISTS would then skip
+-- it; 000065 refuses to drop the global constraint while it is INVALID). Fix with:
+--   migrate force 63
+--   psql -c 'DROP INDEX CONCURRENTLY IF EXISTS uq_categories_tenant_slug;'
+--   migrate up
+-- Check validity with: SELECT indisvalid FROM pg_index WHERE indexrelid = 'uq_categories_tenant_slug'::regclass;
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_categories_tenant_slug ON categories (tenant_id, slug);

@@ -349,10 +349,9 @@ belong to, so their access is unchanged. `/api/v1/analytics/*` moves to
 4. `403 FORBIDDEN`, `details.required = "platform-admin"` — platform-admin routes only.
 5. `403 FORBIDDEN`, `details.required = "<permission>"` — role lacks the route's permission.
 6. The handler. Reading, changing or deleting a resource of another tenant
-   by id or code returns `404`, never `403`. Exception (known gap): creating a
-   voucher code, product/category slug, brand name/slug or variant SKU that
-   another tenant already uses returns `409 CONFLICT`, because these values are
-   still unique across all tenants (see ADR-011, Consequences).
+   by id or code returns `404`, never `403`. Voucher codes, product/category
+   slugs, brand names/slugs and variant SKUs are unique per tenant, so another
+   tenant's values never cause a `409 CONFLICT` (see ADR-011, Consequences).
 
 ```json
 { "error": { "code": "FORBIDDEN", "message": "insufficient permissions", "details": { "required": "orders:write" } } }

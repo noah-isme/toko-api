@@ -51,10 +51,6 @@ type Querier interface {
 	AdminDeleteProductSpecs(ctx context.Context, arg AdminDeleteProductSpecsParams) error
 	AdminDeleteProductVariant(ctx context.Context, arg AdminDeleteProductVariantParams) (int64, error)
 	AdminDeleteVoucher(ctx context.Context, arg AdminDeleteVoucherParams) (int64, error)
-	// product_variants.sku is globally unique. Returns only the subset of the
-	// caller-supplied SKUs that exist anywhere (equivalent to one boolean per SKU),
-	// never another tenant's row.
-	AdminExistingSKUsAnyTenant(ctx context.Context, skus []string) ([]string, error)
 	// Keyset page (created_at DESC, id DESC) over the same filters as AdminListOrders.
 	AdminExportOrderRows(ctx context.Context, arg AdminExportOrderRowsParams) ([]AdminExportOrderRowsRow, error)
 	// One page of products (keyset on created_at DESC, id DESC) with their variants
@@ -71,8 +67,10 @@ type Querier interface {
 	AdminGetProduct(ctx context.Context, arg AdminGetProductParams) (AdminGetProductRow, error)
 	AdminGetProductIDBySlug(ctx context.Context, arg AdminGetProductIDBySlugParams) (pgtype.UUID, error)
 	// Admin catalog operations: bulk updates, CSV import lookups, CSV export and
-	// low-stock settings. product_variants has no tenant_id, so every variant query
-	// scopes through products.tenant_id.
+	// low-stock settings. Variant queries scope through products.tenant_id
+	// (product_variants.tenant_id, added in 000057, is always the product's tenant).
+	// SKUs and product slugs are unique per tenant, so import lookups never need to
+	// look at another tenant's rows.
 	// Locks the target products in id order so concurrent catalog writers cannot
 	// deadlock. FOR NO KEY UPDATE (not FOR UPDATE) still serializes catalog writers
 	// against each other but stays compatible with the FOR KEY SHARE locks that
@@ -127,10 +125,6 @@ type Querier interface {
 	AdminSetProductStockFlag(ctx context.Context, arg AdminSetProductStockFlagParams) error
 	AdminSetVariantPrice(ctx context.Context, arg AdminSetVariantPriceParams) (AdminSetVariantPriceRow, error)
 	AdminSetVariantStock(ctx context.Context, arg AdminSetVariantStockParams) (AdminSetVariantStockRow, error)
-	// products.slug is globally unique. Returns only the subset of the
-	// caller-supplied slugs that another tenant uses (one boolean per slug), never
-	// another tenant's row. Phrased with `tenant_id =` so the tenant guard accepts it.
-	AdminSlugsTakenByOtherTenants(ctx context.Context, arg AdminSlugsTakenByOtherTenantsParams) ([]string, error)
 	AdminStockStatusCounts(ctx context.Context, arg AdminStockStatusCountsParams) (AdminStockStatusCountsRow, error)
 	// Item-level gross subtotal of revenue orders (fully refunded orders excluded).
 	AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error)
@@ -197,6 +191,9 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	// Tenant-scoped voucher writes for the admin API (moved from voucher_rules.sql).
 	CreateVoucher(ctx context.Context, arg CreateVoucherParams) (Voucher, error)
+	// Endpoints are tenant-owned (webhook_endpoints.tenant_id): the admin API
+	// creates them in the request's tenant and only ever reads, changes or deletes
+	// the endpoints of that tenant.
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
@@ -213,7 +210,7 @@ type Querier interface {
 	DeleteSessionByToken(ctx context.Context, refreshToken string) error
 	DeleteSessionsByUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteStaleProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
-	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
+	DeleteWebhookEndpoint(ctx context.Context, arg DeleteWebhookEndpointParams) (int64, error)
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
 	// Used by Subscribe when the target became sellable (or cheaper) between the
 	// subscription check and its commit, so the drainer re-evaluates it.
@@ -237,11 +234,11 @@ type Querier interface {
 	// everything needed to decide sellability and the current price.
 	GetAlertTarget(ctx context.Context, arg GetAlertTargetParams) (GetAlertTargetRow, error)
 	GetBrandByID(ctx context.Context, arg GetBrandByIDParams) (GetBrandByIDRow, error)
-	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
+	GetBrandBySlug(ctx context.Context, arg GetBrandBySlugParams) (GetBrandBySlugRow, error)
 	GetCartByID(ctx context.Context, arg GetCartByIDParams) (Cart, error)
 	GetCartItemByID(ctx context.Context, id pgtype.UUID) (CartItem, error)
 	GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (GetCategoryByIDRow, error)
-	GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error)
+	GetCategoryBySlug(ctx context.Context, arg GetCategoryBySlugParams) (GetCategoryBySlugRow, error)
 	GetCustomersAlsoViewed(ctx context.Context, arg GetCustomersAlsoViewedParams) ([]GetCustomersAlsoViewedRow, error)
 	GetDeliveryByEndpointEvent(ctx context.Context, arg GetDeliveryByEndpointEventParams) (WebhookDelivery, error)
 	GetDeliveryByID(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error)
@@ -319,14 +316,17 @@ type Querier interface {
 	GetUserProductViews(ctx context.Context, arg GetUserProductViewsParams) ([]GetUserProductViewsRow, error)
 	GetUserRecommendationCache(ctx context.Context, arg GetUserRecommendationCacheParams) (UserRecommendationCache, error)
 	GetVariantForCart(ctx context.Context, arg GetVariantForCartParams) (GetVariantForCartRow, error)
-	GetVoucherByCode(ctx context.Context, code string) (Voucher, error)
-	GetVoucherByCodeForUpdate(ctx context.Context, code string) (Voucher, error)
+	// Voucher codes are unique per tenant (uq_vouchers_tenant_code), so a code is
+	// only ever resolved within one tenant.
+	GetVoucherByCode(ctx context.Context, arg GetVoucherByCodeParams) (Voucher, error)
+	// Voucher codes are unique per tenant (uq_vouchers_tenant_code).
+	GetVoucherByCodeForUpdate(ctx context.Context, arg GetVoucherByCodeForUpdateParams) (Voucher, error)
 	GetVoucherByTenant(ctx context.Context, arg GetVoucherByTenantParams) (GetVoucherByTenantRow, error)
 	GetVoucherUsageByOrder(ctx context.Context, arg GetVoucherUsageByOrderParams) (VoucherUsage, error)
 	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (WebhookEndpoint, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
 	IncrementInvoiceCounter(ctx context.Context, tenantID pgtype.UUID) (int64, error)
-	IncrementVoucherUsageByCode(ctx context.Context, code string) error
+	IncrementVoucherUsageByCode(ctx context.Context, arg IncrementVoucherUsageByCodeParams) error
 	// Queues the email for one alert domain event (same transaction as the claim).
 	InsertAlertDelivery(ctx context.Context, arg InsertAlertDeliveryParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)

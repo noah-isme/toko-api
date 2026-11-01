@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -57,7 +58,7 @@ func (f *fakeQueries) GetBrandByID(context.Context, dbgen.GetBrandByIDParams) (d
 	return dbgen.GetBrandByIDRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetBrandBySlug(context.Context, string) (dbgen.GetBrandBySlugRow, error) {
+func (f *fakeQueries) GetBrandBySlug(context.Context, dbgen.GetBrandBySlugParams) (dbgen.GetBrandBySlugRow, error) {
 	return dbgen.GetBrandBySlugRow{}, errNotImplemented
 }
 
@@ -69,7 +70,7 @@ func (f *fakeQueries) GetCategoryByID(context.Context, dbgen.GetCategoryByIDPara
 	return dbgen.GetCategoryByIDRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetCategoryBySlug(context.Context, string) (dbgen.GetCategoryBySlugRow, error) {
+func (f *fakeQueries) GetCategoryBySlug(context.Context, dbgen.GetCategoryBySlugParams) (dbgen.GetCategoryBySlugRow, error) {
 	return dbgen.GetCategoryBySlugRow{}, errNotImplemented
 }
 
@@ -125,8 +126,8 @@ func (f *fakeQueries) ListAddressesByUser(context.Context, dbgen.ListAddressesBy
 	return nil, errNotImplemented
 }
 
-func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, pgtype.UUID) error {
-	return errNotImplemented
+func (f *fakeQueries) DeleteWebhookEndpoint(context.Context, dbgen.DeleteWebhookEndpointParams) (int64, error) {
+	return 0, errNotImplemented
 }
 
 func (f *fakeQueries) ListAuditLogs(context.Context, dbgen.ListAuditLogsParams) ([]dbgen.AuditLog, error) {
@@ -182,6 +183,10 @@ func (f *fakeQueries) UpdateUserProfile(ctx context.Context, arg dbgen.UpdateUse
 func (f *fakeQueries) CreateUser(ctx context.Context, arg dbgen.CreateUserParams) (dbgen.CreateUserRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if _, exists := f.usersByEmail[strings.ToLower(arg.Email)]; exists {
+		// What pgx v5 returns for users_email_key.
+		return dbgen.CreateUserRow{}, fmt.Errorf("create user: %w", &pgconn.PgError{Code: "23505", ConstraintName: "users_email_key"})
+	}
 
 	id := uuid.New()
 	pgID, _ := pgUUIDFromString(id.String())
@@ -601,7 +606,7 @@ func (f *fakeQueries) TransitionInventoryReservation(context.Context, dbgen.Tran
 	return dbgen.InventoryReservation{}, errNotImplemented
 }
 
-func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, string) error {
+func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, dbgen.IncrementVoucherUsageByCodeParams) error {
 	return errNotImplemented
 }
 
@@ -641,7 +646,7 @@ func (f *fakeQueries) GetVariantForCart(context.Context, dbgen.GetVariantForCart
 	return dbgen.GetVariantForCartRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetVoucherByCode(context.Context, string) (dbgen.Voucher, error) {
+func (f *fakeQueries) GetVoucherByCode(context.Context, dbgen.GetVoucherByCodeParams) (dbgen.Voucher, error) {
 	return dbgen.Voucher{}, errNotImplemented
 }
 
@@ -653,7 +658,7 @@ func (f *fakeQueries) UpdateVoucher(context.Context, dbgen.UpdateVoucherParams) 
 	return dbgen.Voucher{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, string) (dbgen.Voucher, error) {
+func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, dbgen.GetVoucherByCodeForUpdateParams) (dbgen.Voucher, error) {
 	return dbgen.Voucher{}, errNotImplemented
 }
 

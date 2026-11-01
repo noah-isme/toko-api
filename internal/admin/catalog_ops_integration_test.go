@@ -919,7 +919,7 @@ func TestIntegrationImport(t *testing.T) {
 	require.Equal(t, before, e.catalogChecksum(e.tenA), "dry run writes nothing")
 	require.Equal(t, []string{"update", "unchanged", "create_variant", "create", "create", "create"}, actions(dry))
 	require.Equal(t, dry.Data.Rows[3].Slug, dry.Data.Rows[4].Slug, "one new product for both rows")
-	require.Equal(t, "it-dup-"+strings.ToLower(e.tag)+"-2", dry.Data.Rows[5].Slug, "derived slug taken by tenant B gets -2")
+	require.Equal(t, "it-dup-"+strings.ToLower(e.tag), dry.Data.Rows[5].Slug, "slugs are unique per tenant: tenant B's product with this slug does not matter")
 	row0 := dry.Data.Rows[0]
 	require.Equal(t, "Sepatu Lari Pro", row0.Changes["title"]["to"])
 	require.Equal(t, "=Deskripsi baru", row0.Changes["description"]["to"])
@@ -982,10 +982,18 @@ func TestIntegrationImport(t *testing.T) {
 	require.Equal(t, 200, rec.Code, rec.Body.String())
 	require.EqualValues(t, 1, e.scalar(`SELECT stock FROM product_variants WHERE id=$1`, s1))
 
-	// 6. Identity errors.
-	rec = e.importCSV(e.tenA, "products", true, []byte("sku,title,price\n"+e.sku("B1")+",Steal,1\n"))
-	require.Equal(t, 422, rec.Code)
-	require.Equal(t, "SKU_TAKEN", importRespFrom422(t, rec).Data.Rows[0].Errors[0].Code)
+	// 6. Identity errors. SKUs are unique per tenant: tenant B's SKU is free in
+	// A, and SKU_TAKEN only fires for a SKU another variant of A already has.
+	rec = e.importCSV(e.tenA, "products", false, []byte("sku,title,price\n"+e.sku("B1")+",Same SKU as B,1\n"))
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+	require.Equal(t, []string{"create"}, actions(decode[importResp](t, rec)))
+	require.EqualValues(t, 2, e.scalar(`SELECT COUNT(*) FROM product_variants WHERE sku=$1 AND tenant_id = ANY($2::uuid[])`, e.sku("B1"), []string{e.tenA, e.tenB}))
+	rec = e.importCSV(e.tenA, "products", true, []byte("sku,variant_id\n"+e.sku("S2")+","+skuLess+"\n"))
+	require.Equal(t, 422, rec.Code, rec.Body.String())
+	taken := importRespFrom422(t, rec)
+	require.Equal(t, "SKU_TAKEN", taken.Data.Rows[0].Errors[0].Code)
+	require.NotContains(t, rec.Body.String(), e.tenB)
+	require.NotContains(t, rec.Body.String(), e.sku("B1"))
 	rec = e.importCSV(e.tenA, "products", true, []byte("sku,variant_id\n1.23E+12,"+s1+"\n"))
 	require.Equal(t, 422, rec.Code)
 	require.Equal(t, "SKU_MISMATCH", importRespFrom422(t, rec).Data.Rows[0].Errors[0].Code)

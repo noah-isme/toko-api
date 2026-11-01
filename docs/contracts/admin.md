@@ -18,13 +18,14 @@ deleting a resource of another tenant by id or code returns `404`, never `403`,
 a product cannot reference another tenant's brand or category, and a category
 cannot have another tenant's category as `parentId` (`400`).
 
-**Known gap (open, not yet resolved):** voucher codes, product slugs, category
-slugs, brand names and slugs, and variant SKUs are still unique across **all**
-tenants (database-wide unique constraints). Creating or renaming one of these
-to a value another tenant already uses returns `409 CONFLICT`, which reveals
-that the value exists somewhere on the platform and lets one tenant reserve a
-value for everyone. Per-tenant uniqueness needs schema migrations that are not
-part of this change; see ADR-011, Consequences.
+Voucher codes, product slugs, category slugs, brand names and slugs, and
+variant SKUs are unique **per tenant** (decision: per-tenant uniqueness,
+migrations 000057–000070; see ADR-011, Consequences). Two tenants may use the
+same value. A `409 CONFLICT` on create or rename therefore only ever means that
+another resource of the **same** tenant already uses the value, and its message
+never names or describes another tenant's data. Every lookup by code or slug
+(voucher preview, apply, checkout pricing, payment settlement, catalog reads,
+CSV import) resolves within the request's tenant only.
 
 Every `/api/v1/admin/*` request from an ACTIVE member of the tenant is audited
 with `resource_type = "admin"`, the route, actor and final status, including
@@ -378,7 +379,7 @@ Creates a new voucher rule.
 }
 ```
 
-Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (duplicate code; codes are currently unique across all tenants, so this can also mean another tenant uses the code), `INTERNAL`.
+Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `BAD_REQUEST`, `CONFLICT` (this tenant already has a voucher with this code; codes are unique per tenant, so another tenant's codes never conflict), `INTERNAL`.
 
 ---
 
@@ -613,7 +614,9 @@ Content-Type: application/json
 Authorization: Bearer <admin_token>
 ```
 
-Registers a new webhook endpoint.
+Registers a new webhook endpoint for the request's tenant. `tenant_id` is set
+from the resolved tenant (never from the body), so the endpoint receives exactly
+that tenant's domain events (see [Webhooks](webhooks.md)).
 
 **Request:**
 
@@ -661,7 +664,8 @@ Content-Type: application/json
 Authorization: Bearer <admin_token>
 ```
 
-Updates the webhook endpoint identified by `{id}`.
+Updates the request tenant's webhook endpoint identified by `{id}`. An endpoint
+of another tenant is `404 NOT_FOUND` and stays unchanged.
 
 **Request:** same shape as creation.
 
@@ -680,7 +684,7 @@ GET /api/v1/admin/webhooks?limit=50&offset=0
 Authorization: Bearer <admin_token>
 ```
 
-Returns configured webhook endpoints.
+Returns the request tenant's webhook endpoints (never another tenant's).
 
 **Query parameters:**
 
@@ -718,7 +722,8 @@ DELETE /api/v1/admin/webhooks/{id}
 Authorization: Bearer <admin_token>
 ```
 
-Removes the webhook endpoint identified by `{id}`.
+Removes the request tenant's webhook endpoint identified by `{id}`. An unknown
+id or an endpoint of another tenant is `404 NOT_FOUND` and nothing is deleted.
 
 **Response:** `204 No Content`
 
@@ -1115,7 +1120,7 @@ Content-Type: multipart/form-data   (field "file")
 
 1. `variant_id` present → that variant (`update`). A non-empty `sku` that differs from the stored SKU is `SKU_MISMATCH` (catches Excel-mangled SKUs such as `1.23E+12` instead of creating a duplicate); a variant without SKU gets the row's `sku` assigned (`type=products` only).
 2. else `sku` found in this store → `update`.
-3. else (unknown `sku`): with `product_id` → `create_variant` on that product; without → rows sharing the same `slug` (or slugified `title`) create **one** new product (`create`; every row of the group reports the same `slug`), unless that slug already names a product of this store (`create_variant`). A derived slug taken by another store gets `-2`…`-20`; an explicit taken slug is `SLUG_TAKEN`; a SKU used by another store is `SKU_TAKEN`.
+3. else (unknown `sku`): with `product_id` → `create_variant` on that product; without → rows sharing the same `slug` (or slugified `title`) create **one** new product (`create`; every row of the group reports the same `slug`), unless that slug already names a product of this store (`create_variant`). Slugs and SKUs are unique per store, so other stores' products and SKUs never matter. A derived slug that another group of the same file claims explicitly gets `-2`…`-20` (skipping slugs this store already uses); an explicit slug used twice in the file, or a slug change onto another product of this store, is `SLUG_TAKEN`; assigning a SKU that another variant of this store already has (to a SKU-less variant via `variant_id`) is `SKU_TAKEN`.
 4. `sku` and `variant_id` empty but `product_id` present → product-level update only (this is how products without variants export); a non-empty variant column on that row is `NO_VARIANT`.
 5. nothing → `MISSING`.
 

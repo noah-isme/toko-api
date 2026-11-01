@@ -255,7 +255,7 @@ func (q *Queries) GetLoyaltyTransactions(ctx context.Context, arg GetLoyaltyTran
 
 const updateLoyaltyProfilePoints = `-- name: UpdateLoyaltyProfilePoints :one
 UPDATE loyalty_profiles
-SET points = $1, lifetime_points = $2, updated_at = NOW()
+SET points = $1, lifetime_points = $2
 WHERE user_id = $3
 RETURNING user_id, points, tier, tier_progress, lifetime_points, joined_at, COALESCE(next_tier_threshold, 0) AS next_tier_threshold, COALESCE(next_tier_name, '') AS next_tier_name
 `

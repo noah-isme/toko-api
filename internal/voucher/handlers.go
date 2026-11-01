@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -250,8 +250,8 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
 		return
 	}
-	// Vouchers are resolved by globally unique code; confirm the code belongs to
-	// this tenant before evaluating it so a foreign voucher reads as missing.
+	// Codes are unique per tenant: a code that only exists in another tenant
+	// reads as missing (404), exactly like an unknown code.
 	exists, err := h.Q.AdminVoucherExistsForTenant(r.Context(), dbgen.AdminVoucherExistsForTenantParams{TenantID: tenantID, Code: strings.TrimSpace(req.Code)})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load voucher", nil)
@@ -261,7 +261,7 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "voucher not found", nil)
 		return
 	}
-	result, err := h.Svc.Preview(r.Context(), req.Code, req.UserID, req.CartTotal, items)
+	result, err := h.Svc.Preview(r.Context(), tenantID, req.Code, req.UserID, req.CartTotal, items)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "NOT_ELIGIBLE", err.Error(), nil)
 		return

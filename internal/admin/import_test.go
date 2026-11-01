@@ -12,22 +12,19 @@ import (
 )
 
 // fakeImportDB is an in-memory catalog for the plan phase. Products and
-// variants belong to the caller's tenant; otherSKUs/otherSlugs belong to
-// another tenant.
+// variants belong to the caller's tenant; SKUs and slugs are unique per
+// tenant, so the plan never looks at another tenant's rows (the Postgres
+// integration tests prove that against the real constraints).
 type fakeImportDB struct {
 	products   map[[16]byte]*dbgen.AdminGetProductsByIDsForUpdateRow
 	variants   map[[16]byte]*dbgen.AdminLockVariantsByIDsRow
-	otherSKUs  map[string]bool
-	otherSlugs map[string]bool
 	categories []dbgen.AdminListCategoriesRow
 }
 
 func newFakeImportDB() *fakeImportDB {
 	return &fakeImportDB{
-		products:   map[[16]byte]*dbgen.AdminGetProductsByIDsForUpdateRow{},
-		variants:   map[[16]byte]*dbgen.AdminLockVariantsByIDsRow{},
-		otherSKUs:  map[string]bool{},
-		otherSlugs: map[string]bool{},
+		products: map[[16]byte]*dbgen.AdminGetProductsByIDsForUpdateRow{},
+		variants: map[[16]byte]*dbgen.AdminLockVariantsByIDsRow{},
 	}
 }
 
@@ -64,23 +61,6 @@ func (f *fakeImportDB) AdminFindVariantsForImport(_ context.Context, arg dbgen.A
 	return out, nil
 }
 
-func (f *fakeImportDB) AdminExistingSKUsAnyTenant(_ context.Context, skus []string) ([]string, error) {
-	var out []string
-	for _, s := range skus {
-		if f.otherSKUs[s] {
-			out = append(out, s)
-			continue
-		}
-		for _, v := range f.variants {
-			if v.Sku.Valid && v.Sku.String == s {
-				out = append(out, s)
-				break
-			}
-		}
-	}
-	return out, nil
-}
-
 func (f *fakeImportDB) AdminFindProductsForImport(_ context.Context, arg dbgen.AdminFindProductsForImportParams) ([]dbgen.AdminFindProductsForImportRow, error) {
 	var out []dbgen.AdminFindProductsForImportRow
 	for _, p := range f.products {
@@ -93,16 +73,6 @@ func (f *fakeImportDB) AdminFindProductsForImport(_ context.Context, arg dbgen.A
 		}
 		if match {
 			out = append(out, dbgen.AdminFindProductsForImportRow{ID: p.ID, Slug: p.Slug})
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeImportDB) AdminSlugsTakenByOtherTenants(_ context.Context, arg dbgen.AdminSlugsTakenByOtherTenantsParams) ([]string, error) {
-	var out []string
-	for _, s := range arg.Slugs {
-		if f.otherSlugs[s] {
-			out = append(out, s)
 		}
 	}
 	return out, nil
@@ -250,27 +220,32 @@ func TestImportPlanStaleStock(t *testing.T) {
 
 func TestImportPlanSlugGrouping(t *testing.T) {
 	db := newFakeImportDB()
-	db.otherSlugs["sepatu-lari"] = true
-	db.otherSlugs["topi"] = true
-	db.otherSlugs["jaket-2"] = true
 	db.addProduct("jaket", "Jaket Lama", 1)
+	db.addProduct("sepatu-lari", "Sepatu Lari Lama", 1)
+	db.addProduct("topi", "Topi Lama", 1)
+	db.addProduct("sepatu-lari-2", "Sepatu Lari 2", 1)
 
 	res := planCSV(t, db, importTypeProducts, "sku,title,slug,price\n"+
-		"A-1,Sepatu Lari,,100\n"+ // derived slug taken by other tenant -> -2
-		"A-2,Sepatu Lari,,100\n"+ // same group
-		"B-1,Topi,topi,50\n"+ // explicit slug taken -> SLUG_TAKEN
+		"A-1,Sepatu Lari,sepatu-lari-3,100\n"+ // explicit free slug
+		"A-2,Sepatu Lari,sepatu-lari-3,100\n"+ // same group
 		"C-1,Kaos Baru,,10\n")
-	if res.Rows[0].Slug != "sepatu-lari-2" || res.Rows[1].Slug != "sepatu-lari-2" || res.Rows[0].Action != importActionCreate || res.Rows[1].Action != importActionCreate {
+	if res.Rows[0].Slug != "sepatu-lari-3" || res.Rows[1].Slug != "sepatu-lari-3" || res.Rows[0].Action != importActionCreate || res.Rows[1].Action != importActionCreate {
 		t.Fatalf("group rows %+v %+v", res.Rows[0], res.Rows[1])
 	}
 	if _, ok := res.Rows[1].Changes["title"]; ok {
 		t.Errorf("product-level changes are reported on the first row only")
 	}
-	if errCodes(res.Rows[2]) != importCodeSlugTaken {
-		t.Errorf("explicit taken slug %+v", res.Rows[2])
+	if res.Rows[2].Slug != "kaos-baru" {
+		t.Errorf("slug %s", res.Rows[2].Slug)
 	}
-	if res.Rows[3].Slug != "kaos-baru" {
-		t.Errorf("slug %s", res.Rows[3].Slug)
+
+	// Renaming an existing product to a slug another product of this store
+	// uses is SLUG_TAKEN.
+	renamed := db.addProduct("topi-lama", "Topi Lama 2", 1)
+	db.addVariant(renamed, "TL-1", 1, 1)
+	res = planCSV(t, db, importTypeProducts, "sku,slug\nTL-1,topi\n")
+	if errCodes(res.Rows[0]) != importCodeSlugTaken {
+		t.Errorf("slug change onto an own product's slug %+v", res.Rows[0])
 	}
 
 	// A derived slug equal to an existing tenant product becomes create_variant.
@@ -280,9 +255,9 @@ func TestImportPlanSlugGrouping(t *testing.T) {
 	}
 
 	// Groups colliding with each other and with the DB get distinct slugs: the
-	// explicit "topi-baru" keeps its slug, the derived one skips -2 (taken by
-	// another tenant) and gets -3.
-	db.otherSlugs["topi-baru-2"] = true
+	// explicit "topi-baru" keeps its slug, the derived one skips -2 (an
+	// existing product of this store) and gets -3.
+	db.addProduct("topi-baru-2", "Topi Baru 2", 1)
 	res = planCSV(t, db, importTypeProducts, "sku,title,slug,price\nT-1,Topi Baru,,1\nT-2,Topi X,topi-baru,1\n")
 	if res.Rows[0].Slug != "topi-baru-3" || res.Rows[1].Slug != "topi-baru" {
 		t.Fatalf("slugs %q %q", res.Rows[0].Slug, res.Rows[1].Slug)
@@ -293,7 +268,7 @@ func TestImportPlanErrors(t *testing.T) {
 	db := newFakeImportDB()
 	p := db.addProduct("tas", "Tas", 100)
 	v := db.addVariant(p, "TAS-1", 100, 1)
-	db.otherSKUs["OTHER-1"] = true
+	noSKU := db.addVariant(p, "", 100, 1)
 	unknown := pgID()
 
 	cases := []struct {
@@ -306,7 +281,7 @@ func TestImportPlanErrors(t *testing.T) {
 		{"unknown variant", importTypeProducts, "sku,variant_id\n," + idStr(unknown) + "\n", importCodeUnknownVariant},
 		{"missing identity", importTypeProducts, "sku,title\n,X\n", importCodeMissing},
 		{"unknown product", importTypeProducts, "sku,product_id\nNEW-9," + idStr(unknown) + "\n", importCodeUnknownProduct},
-		{"sku taken", importTypeProducts, "sku,title,price\nOTHER-1,X,1\n", importCodeSKUTaken},
+		{"sku taken in this store", importTypeProducts, "sku,variant_id\nTAS-1," + idStr(noSKU) + "\n", importCodeSKUTaken},
 		{"missing title", importTypeProducts, "sku,price\nNEW-2,10\n", importCodeMissingForCreate},
 		{"missing price", importTypeProducts, "sku,title\nNEW-3,Baru\n", importCodeMissingForCreate},
 		{"invalid number", importTypeProducts, "sku,price\nTAS-1,10.5\n", importCodeInvalidNumber},

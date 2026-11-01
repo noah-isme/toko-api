@@ -17,6 +17,11 @@ import (
 )
 
 // AdminHandler exposes management endpoints for webhook configuration and monitoring.
+//
+// Endpoints belong to the request's tenant: they are created with its
+// tenant_id (so Dispatcher.Schedule, which delivers an event only to the
+// endpoints of the event's tenant, selects them) and list, update and delete
+// never see another tenant's endpoints (another tenant's id reads as 404).
 type AdminHandler struct {
 	Store Store
 	Disp  *Dispatcher
@@ -34,6 +39,10 @@ type endpointRequest struct {
 func (h *AdminHandler) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Store == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "webhook store unavailable", nil)
+		return
+	}
+	tenantID, ok := requestTenant(w, r)
+	if !ok {
 		return
 	}
 	var req endpointRequest
@@ -55,11 +64,12 @@ func (h *AdminHandler) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		active = *req.Active
 	}
 	endpoint, err := h.Store.CreateWebhookEndpoint(r.Context(), dbgen.CreateWebhookEndpointParams{
-		Name:   req.Name,
-		Url:    req.URL,
-		Secret: req.Secret,
-		Active: active,
-		Topics: topics,
+		Name:     req.Name,
+		Url:      req.URL,
+		Secret:   req.Secret,
+		Active:   active,
+		Topics:   topics,
+		TenantID: tenantID,
 	})
 	if err != nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
@@ -72,6 +82,10 @@ func (h *AdminHandler) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) UpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.Store == nil {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "webhook store unavailable", nil)
+		return
+	}
+	tenantID, ok := requestTenant(w, r)
+	if !ok {
 		return
 	}
 	id, err := parseUUID(chi.URLParam(r, "id"))
@@ -97,19 +111,20 @@ func (h *AdminHandler) UpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 		active = *req.Active
 	}
 	endpoint, err := h.Store.UpdateWebhookEndpoint(r.Context(), dbgen.UpdateWebhookEndpointParams{
-		ID:     id,
-		Name:   req.Name,
-		Url:    req.URL,
-		Secret: req.Secret,
-		Active: active,
-		Topics: normaliseTopics(req.Topics),
+		ID:       id,
+		Name:     req.Name,
+		Url:      req.URL,
+		Secret:   req.Secret,
+		Active:   active,
+		Topics:   normaliseTopics(req.Topics),
+		TenantID: tenantID,
 	})
 	if err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, pgx.ErrNoRows) {
-			status = http.StatusNotFound
+			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "webhook endpoint not found", nil)
+			return
 		}
-		common.JSONError(w, status, "INTERNAL", err.Error(), nil)
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
 	common.JSON(w, http.StatusOK, endpoint)
@@ -121,8 +136,13 @@ func (h *AdminHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "webhook store unavailable", nil)
 		return
 	}
+	tenantID, ok := requestTenant(w, r)
+	if !ok {
+		return
+	}
 	limit, offset := pagination(r)
 	endpoints, err := h.Store.ListWebhookEndpoints(r.Context(), dbgen.ListWebhookEndpointsParams{
+		TenantID:   tenantID,
 		PageOffset: int32(offset),
 		PageLimit:  int32(limit),
 	})
@@ -139,17 +159,22 @@ func (h *AdminHandler) DeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "webhook store unavailable", nil)
 		return
 	}
+	tenantID, ok := requestTenant(w, r)
+	if !ok {
+		return
+	}
 	id, err := parseUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id", nil)
 		return
 	}
-	if err := h.Store.DeleteWebhookEndpoint(r.Context(), id); err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, pgx.ErrNoRows) {
-			status = http.StatusNotFound
-		}
-		common.JSONError(w, status, "INTERNAL", err.Error(), nil)
+	deleted, err := h.Store.DeleteWebhookEndpoint(r.Context(), dbgen.DeleteWebhookEndpointParams{ID: id, TenantID: tenantID})
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		return
+	}
+	if deleted == 0 {
+		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "webhook endpoint not found", nil)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -249,6 +274,18 @@ func pagination(r *http.Request) (limit, offset int) {
 		}
 	}
 	return
+}
+
+// requestTenant returns the tenant resolved for the request, or writes
+// 400 MISSING_TENANT. Webhook endpoints are tenant-owned, so the endpoint
+// handlers never run without one.
+func requestTenant(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
+	tenantID, ok := tenantFromContext(r.Context())
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return pgtype.UUID{}, false
+	}
+	return tenantID, true
 }
 
 func parseUUID(value string) (pgtype.UUID, error) {
