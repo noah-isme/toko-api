@@ -165,6 +165,38 @@ func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams
 	return i, err
 }
 
+const getDeliveryByEndpointEvent = `-- name: GetDeliveryByEndpointEvent :one
+SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
+FROM webhook_deliveries
+WHERE endpoint_id = $1 AND event_id = $2
+`
+
+type GetDeliveryByEndpointEventParams struct {
+	EndpointID pgtype.UUID `json:"endpoint_id"`
+	EventID    pgtype.UUID `json:"event_id"`
+}
+
+func (q *Queries) GetDeliveryByEndpointEvent(ctx context.Context, arg GetDeliveryByEndpointEventParams) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, getDeliveryByEndpointEvent, arg.EndpointID, arg.EventID)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.EndpointID,
+		&i.EventID,
+		&i.Status,
+		&i.Attempt,
+		&i.MaxAttempt,
+		&i.NextAttemptAt,
+		&i.LastError,
+		&i.ResponseStatus,
+		&i.ResponseBody,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TenantID,
+	)
+	return i, err
+}
+
 const getDeliveryByID = `-- name: GetDeliveryByID :one
 SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
 FROM webhook_deliveries

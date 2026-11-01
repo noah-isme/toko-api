@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,28 +66,29 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 	availableAt := time.Now().Add(t.Delay)
 	msg.AvailableAt = availableAt.UnixNano()
 
-	if msg.Key != "" {
-		dedupKey := e.dedupKey(kind, msg.Key)
-		ttl := e.DedupTTL
-		if ttl <= 0 {
-			ttl = 24 * time.Hour
-		}
-		ok, err := e.R.SetNX(ctx, dedupKey, "1", ttl).Result()
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-	}
-
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	queueKey := e.queueKey(kind)
 	score := float64(msg.AvailableAt)
-	if err := e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err(); err != nil {
+	if msg.Key != "" {
+		ttl := e.DedupTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		// The dedup check, the ZADD and the dedup SET run as one script, so the
+		// dedup key can only exist when the task was actually queued. With a
+		// separate SETNX a failed or cancelled ZADD would leave the key behind
+		// and every retry inside the TTL would be silently dropped.
+		_, err := enqueueDedupScript.Run(ctx, e.R,
+			[]string{e.dedupKey(kind, msg.Key), queueKey},
+			ttl.Milliseconds(), strconv.FormatFloat(score, 'f', -1, 64), string(raw),
+		).Int()
+		if err != nil {
+			return err
+		}
+	} else if err := e.R.ZAdd(ctx, queueKey, redis.Z{Score: score, Member: raw}).Err(); err != nil {
 		return err
 	}
 	if QueueDepth != nil {
@@ -96,6 +98,19 @@ func (e Enqueuer) Enqueue(ctx context.Context, t Task) error {
 	}
 	return nil
 }
+
+// enqueueDedupScript queues a task unless its dedup key exists. KEYS[1] is the
+// dedup key, KEYS[2] the queue ZSET; ARGV is ttl (ms), score, member. ZADD runs
+// before SET: if ZADD fails the script aborts and no dedup key is written.
+// Returns 1 when queued, 0 when deduplicated.
+var enqueueDedupScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
+redis.call('SET', KEYS[1], '1', 'PX', ARGV[1])
+return 1
+`)
 
 func (e Enqueuer) queueKey(kind string) string {
 	if e.Prefix == "" {
@@ -142,6 +157,13 @@ type Worker struct {
 	HeartbeatInterval time.Duration
 	SoftDeadline      time.Duration
 	Logger            *zerolog.Logger
+	// DoneMarkerTTL, when positive, keeps a task's dedup key for this long
+	// after a successful run instead of deleting it on ack, so re-enqueueing
+	// the same idempotency key (e.g. the outbox relay re-dispatching an event
+	// after another handler failed) is dropped rather than run again. Use at
+	// least the relay's max age for kinds whose handlers are not idempotent
+	// (email, push). Zero keeps the delete-on-ack behaviour.
+	DoneMarkerTTL time.Duration
 }
 
 // Run starts processing tasks until the context is cancelled. Active tasks are
@@ -331,7 +353,11 @@ func (w Worker) ack(ctx context.Context, processingKey, raw string, msg taskMess
 		_ = w.R.ZRem(ctx, processingKey, raw)
 	}
 	if msg.Key != "" {
-		_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
+		if w.DoneMarkerTTL > 0 {
+			_ = w.R.Set(ctx, w.dedupKey(msg.Kind, msg.Key), "done", w.DoneMarkerTTL).Err()
+		} else {
+			_ = w.R.Del(ctx, w.dedupKey(msg.Kind, msg.Key)).Err()
+		}
 	}
 	if QueueProcessedTotal != nil {
 		QueueProcessedTotal.WithLabelValues(queueLabel(msg.Kind), "success").Inc()

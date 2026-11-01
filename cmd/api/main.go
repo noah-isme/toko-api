@@ -104,7 +104,7 @@ func main() {
 		}
 	}
 
-	mailer := buildMailer(cfg, logger)
+	mailer := notify.NewMailer(cfg, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -308,6 +308,12 @@ func main() {
 
 	notifyStore := notify.NewStore(queries)
 	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL, MaxAttempts: cfg.QueueMaxAttempts}
+	// Email/push tasks are keyed by event id and re-dispatched by the outbox
+	// relay for up to OutboxRelayMaxAge, so their dedup key must outlive a
+	// queued or retrying task for that long; with IdempotencyTTL (10 min) a
+	// backlogged worker would let a re-dispatch queue a second copy.
+	notifyQueue := taskQueue
+	notifyQueue.DedupTTL = cfg.OutboxRelayMaxAge
 	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
 		Store: notifyStore,
@@ -329,11 +335,14 @@ func main() {
 		ReplayTTL:          cfg.WebhookReplayTTL,
 		Logger:             &logger,
 	}
+	// Transactional email is delivered by cmd/worker: the notifier only
+	// enqueues an opaque {eventId, topic} task (see notify.EmailWorker).
 	emailNotifier := notify.EmailNotifier{
-		Mail:         mailer,
-		Enabled:      cfg.NotifyEmailEnabled,
-		From:         cfg.NotifyEmailFrom,
-		TopicToggles: cfg.NotifyEmailTopics,
+		Queue:   &notify.EmailQueue{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
+		Enabled: cfg.NotifyEmailEnabled,
+		From:    cfg.NotifyEmailFrom,
+		TopicToggles: notify.MergeShipmentToggles(cfg.NotifyEmailTopics,
+			cfg.NotifyOnShipped, cfg.NotifyOnOutForDelivery, cfg.NotifyOnDelivered),
 	}
 	notificationsSvc := &notifications.Service{Q: queries}
 	notificationsHandler := &notifications.Handler{Svc: notificationsSvc}
@@ -346,10 +355,32 @@ func main() {
 			}
 		},
 	}
+	// Web push: real VAPID sending when both keys are configured; otherwise
+	// the push routes answer 503 PUSH_DISABLED and nothing is enqueued.
+	var pushSender push.Sender
+	if cfg.PushEnabled() {
+		pushSender = push.NewWebPushSender(cfg.PushVAPIDPublicKey, cfg.PushVAPIDPrivateKey, cfg.PushVAPIDSubject,
+			int(cfg.PushTTL.Seconds()), common.NewOutboundHTTPClient(cfg.OutboundTimeout, false))
+	} else {
+		logger.Warn().Msg("PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY not set: web push disabled")
+	}
+	pushSvc := &push.Service{
+		Q:                queries,
+		Sender:           pushSender,
+		PublicKey:        cfg.PushVAPIDPublicKey,
+		AllowedHosts:     cfg.PushEndpointAllowedHosts,
+		MaxSubscriptions: int32(cfg.PushMaxSubscriptionsPerUser),
+	}
+	pushHandler := &push.Handler{Svc: pushSvc}
+	pushNotifier := &push.Notifier{
+		Enqueue: &push.Enqueuer{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
+		Enabled: cfg.PushEnabled(),
+	}
+
 	bus := &events.Bus{
 		Store:     queries,
 		Scheduler: dispatcher,
-		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier},
+		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier, pushNotifier},
 	}
 
 	orderHandler := &order.Handler{Q: queries, Pool: pool}
@@ -373,9 +404,12 @@ func main() {
 		logger.Fatal().Str("provider", cfg.ShippingProvider).Msg("unsupported shipping provider")
 	}
 	shipSvc := &shipping.Service{
-		Q:                      queries,
-		Provider:               shipProvider,
-		Mail:                   mailer,
+		Q:        queries,
+		Provider: shipProvider,
+		// Mail stays nil: shipment emails come only from the event path
+		// (EmailNotifier -> email-delivery queue), gated by NOTIFY_ON_* via
+		// MergeShipmentToggles above. Setting it would send each one twice.
+		Mail:                   nil,
 		NotifyOnShipped:        cfg.NotifyOnShipped,
 		NotifyOnOutForDelivery: cfg.NotifyOnOutForDelivery,
 		NotifyOnDelivered:      cfg.NotifyOnDelivered,
@@ -460,9 +494,6 @@ func main() {
 
 	loyaltySvc := &loyalty.Service{Q: queries}
 	loyaltyHandler := &loyalty.Handler{Svc: loyaltySvc}
-
-	pushSvc := &push.Service{Q: queries}
-	pushHandler := &push.Handler{Svc: pushSvc}
 
 	favoritesSvc := &favorites.Service{Q: queries}
 	favoritesHandler := &favorites.Handler{Svc: favoritesSvc}
@@ -561,6 +592,26 @@ func main() {
 			},
 			Window: time.Duration(envInt("RATE_LIMIT_USER_WINDOW_SEC", 60)) * time.Second,
 			Max:    envInt("RATE_LIMIT_USER_MAX", 120),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
+	// send-test fans out one outbound POST per stored subscription, so it gets
+	// its own tight per-user budget on top of userLimiter.
+	pushTestLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key: func(r *http.Request) string {
+				if userID, ok := common.UserID(r.Context()); ok && strings.TrimSpace(userID) != "" {
+					return "push-test:user:" + userID
+				}
+				ip := common.ClientIP(r)
+				if ip == "" {
+					ip = "unknown"
+				}
+				return "push-test:anon:" + ip
+			},
+			Window: time.Duration(envInt("RATE_LIMIT_PUSH_TEST_WINDOW_SEC", 60)) * time.Second,
+			Max:    envInt("RATE_LIMIT_PUSH_TEST_MAX", 5),
 		},
 		OnError: rateLimitErr,
 	}.Middleware
@@ -694,12 +745,7 @@ func main() {
 		v.Route("/push", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
 			p.Use(tenantMembership)
-			p.Get("/vapid-key", pushHandler.GetVapidPublicKey)
-			p.Post("/subscription", pushHandler.Subscribe)
-			p.Delete("/subscription", pushHandler.Unsubscribe)
-			p.Get("/preferences", pushHandler.GetPreferences)
-			p.Patch("/preferences", pushHandler.UpdatePreferences)
-			p.Post("/send-test", pushHandler.SendTest)
+			pushHandler.Mount(p, pushTestLimiter)
 		})
 
 		// Favorites
@@ -1023,52 +1069,6 @@ func envOrDefault(key, fallback string) string {
 		}
 	}
 	return fallback
-}
-
-// buildMailer returns the transactional email sender. Without SMTP_HOST it
-// falls back to a no-op and says so loudly: password reset and email
-// verification both mint tokens that are useless if nothing delivers them, and
-// that failure is otherwise completely silent.
-func buildMailer(cfg *config.Config, logger zerolog.Logger) common.EmailSender {
-	if strings.TrimSpace(cfg.SMTPHost) == "" {
-		logger.Warn().
-			Msg("SMTP_HOST not set: transactional email is disabled, password reset and email verification links will not be delivered")
-		return common.NopEmailSender{}
-	}
-
-	sender, err := common.NewSMTPSender(common.SMTPSender{
-		Host:             cfg.SMTPHost,
-		Port:             cfg.SMTPPort,
-		Username:         cfg.SMTPUsername,
-		Password:         cfg.SMTPPassword,
-		From:             cfg.SMTPFrom,
-		ImplicitTLS:      cfg.SMTPImplicitTLS,
-		AllowInsecureTLS: cfg.SMTPAllowInsecureTLS,
-		Timeout:          cfg.SMTPTimeout,
-	})
-	if err != nil {
-		// Misconfigured SMTP is an operator error worth failing on: starting
-		// with silently broken email is worse than not starting.
-		logger.Fatal().Err(err).Msg("configure smtp sender")
-	}
-
-	if cfg.SMTPAllowInsecureTLS {
-		logger.Warn().Msg("SMTP_ALLOW_INSECURE_TLS is enabled: TLS certificates are not verified")
-	}
-	if strings.TrimSpace(cfg.PublicBaseURL) == "" {
-		// Reset and verification mails embed a storefront link built from this
-		// value. Without it the link is relative, which no mail client can follow.
-		logger.Warn().
-			Msg("PUBLIC_BASE_URL not set: password reset and verification emails will contain relative, unusable links")
-	}
-	logger.Info().
-		Str("host", cfg.SMTPHost).
-		Int("port", cfg.SMTPPort).
-		Bool("implicitTLS", cfg.SMTPImplicitTLS).
-		Str("from", cfg.SMTPFrom).
-		Msg("transactional email enabled")
-
-	return sender
 }
 
 // resolveDefaultTenantID returns the tenant every unscoped request falls back to.

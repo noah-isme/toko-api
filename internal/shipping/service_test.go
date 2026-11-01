@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -144,9 +145,17 @@ type recordingEventStore struct {
 	topics []string
 }
 
-func (r *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
+func (r *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
 	r.topics = append(r.topics, arg.Topic)
-	return dbgen.InsertDomainEventRow{ID: arg.AggregateID, Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
+	return dbgen.DomainEvent{ID: arg.AggregateID, Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
+}
+
+func (*recordingEventStore) MarkDomainEventDispatched(context.Context, pgtype.UUID) error {
+	return nil
+}
+
+func (*recordingEventStore) RecordDomainEventDispatchFailure(context.Context, dbgen.RecordDomainEventDispatchFailureParams) error {
+	return nil
 }
 
 func TestAppendEventOptsRequireForwardRejectsSameStatus(t *testing.T) {

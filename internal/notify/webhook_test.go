@@ -153,6 +153,10 @@ func (r *retryStore) GetDeliveryByID(context.Context, pgtype.UUID) (dbgen.Webhoo
 	return dbgen.WebhookDelivery{}, errors.New("not implemented")
 }
 
+func (r *retryStore) GetDeliveryByEndpointEvent(context.Context, dbgen.GetDeliveryByEndpointEventParams) (dbgen.WebhookDelivery, error) {
+	return dbgen.WebhookDelivery{}, errors.New("not implemented")
+}
+
 func (r *retryStore) ResetDeliveryForReplay(context.Context, pgtype.UUID) (dbgen.WebhookDelivery, error) {
 	return dbgen.WebhookDelivery{}, errors.New("not implemented")
 }
@@ -264,6 +268,9 @@ func (s *scheduleStore) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlq
 }
 func (s *scheduleStore) GetDeliveryByID(context.Context, pgtype.UUID) (dbgen.WebhookDelivery, error) {
 	return dbgen.WebhookDelivery{}, nil
+}
+func (s *scheduleStore) GetDeliveryByEndpointEvent(context.Context, dbgen.GetDeliveryByEndpointEventParams) (dbgen.WebhookDelivery, error) {
+	return dbgen.WebhookDelivery{ID: toUUID(uuid.New()), Status: dbgen.DeliveryStatusDELIVERED}, nil
 }
 func (s *scheduleStore) ResetDeliveryForReplay(context.Context, pgtype.UUID) (dbgen.WebhookDelivery, error) {
 	return dbgen.WebhookDelivery{}, nil

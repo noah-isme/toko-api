@@ -444,9 +444,7 @@ func (h Webhook) emitCallbackEvents(ctx context.Context, providerLabel string, r
 		if order.UserID.Valid {
 			payload["userId"] = cart.UUIDString(order.UserID)
 		}
-		if _, err := h.Events.Emit(ctx, events.TopicPaymentLate, order.ID, payload); err != nil {
-			logger.Warn().Err(err).Str("order_id", cart.UUIDString(order.ID)).Msg("emit payment.late failed")
-		}
+		h.Events.EmitLogged(ctx, events.TopicPaymentLate, order.ID, payload)
 		return
 	}
 	payload := map[string]any{
@@ -476,9 +474,9 @@ func (h Webhook) emitCallbackEvents(ctx context.Context, providerLabel string, r
 		topics = append(topics, events.TopicOrderCanceled)
 	}
 	for _, topic := range topics {
-		if _, err := h.Events.Emit(ctx, topic, order.ID, payload); err != nil {
-			logger.Warn().Err(err).Str("topic", topic).Str("order_id", cart.UUIDString(order.ID)).Msg("emit payment event failed")
-		}
+		// EmitLogged runs detached from client cancellation and leaves a failed
+		// fan-out to the outbox relay.
+		h.Events.EmitLogged(ctx, topic, order.ID, payload)
 	}
 }
 

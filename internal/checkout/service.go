@@ -230,7 +230,7 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		if user.Email != "" {
 			payload["email"] = user.Email
 		}
-		_, _ = s.Events.Emit(ctx, events.TopicOrderCreated, order.ID, payload)
+		s.Events.EmitLogged(ctx, events.TopicOrderCreated, order.ID, payload)
 	}
 	return out, nil
 }

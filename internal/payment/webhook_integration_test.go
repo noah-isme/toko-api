@@ -51,15 +51,17 @@ func (stubProvider) VerifyWebhook(_ *http.Request, body []byte) (payment.Webhook
 	return payment.WebhookVerifyResult{Valid: true, OrderID: in.OrderID, Status: in.Status, Amount: in.Amount, ProviderPayload: body}, nil
 }
 
+// recordingMailer records the email-delivery tasks the EmailNotifier queues;
+// a queued task is what becomes a customer email in cmd/worker.
 type recordingMailer struct {
 	mu   sync.Mutex
 	sent []string
 }
 
-func (m *recordingMailer) Send(to, subject, body string) error {
+func (m *recordingMailer) EnqueueEmail(_ context.Context, task notify.EmailTask, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sent = append(m.sent, to+"|"+subject)
+	m.sent = append(m.sent, task.Topic)
 	return nil
 }
 
@@ -104,7 +106,7 @@ func newWebhookEnv(t *testing.T) *webhookEnv {
 		Store: d.Q,
 		// The real EmailNotifier with the production toggle map: proves
 		// payment.late never reaches the customer.
-		Notifiers: []events.Notifier{notify.EmailNotifier{Mail: e.mailer, Enabled: true, TopicToggles: map[string]bool{}}},
+		Notifiers: []events.Notifier{notify.EmailNotifier{Queue: e.mailer, Enabled: true, TopicToggles: map[string]bool{}}},
 	}
 	e.h = payment.Webhook{
 		Q:         dbgen.New(pool),

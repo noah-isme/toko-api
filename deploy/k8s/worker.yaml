@@ -33,6 +33,9 @@ spec:
             # against EXPIRED orders. See docs/ops/RUNBOOK.md "Periodic jobs".
             - name: WORKER_JOBS_ENABLED
               value: "false"
+          # The worker sends order/payment/shipment email and web push, so it
+          # needs the same SMTP_* and PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY
+          # (secret) and PUSH_VAPID_SUBJECT (config) values as the API.
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

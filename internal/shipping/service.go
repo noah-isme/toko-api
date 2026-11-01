@@ -280,7 +280,7 @@ func (s *Service) emit(ctx context.Context, orderID, shipmentID pgtype.UUID, sta
 			data["email"] = user.Email
 		}
 	}
-	_, _ = s.Events.Emit(ctx, topic, shipmentID, data)
+	s.Events.EmitLogged(ctx, topic, shipmentID, data)
 }
 
 func shipmentTopic(status dbgen.ShipmentStatus) (string, bool) {

@@ -29,6 +29,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # Web push: put PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY in the
+          # secret (both or neither; neither boots with push disabled).
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

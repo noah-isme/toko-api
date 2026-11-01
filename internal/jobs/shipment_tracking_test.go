@@ -183,11 +183,19 @@ type recordingEventStore struct {
 	topics []string
 }
 
-func (s *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.InsertDomainEventRow, error) {
+func (s *recordingEventStore) InsertDomainEvent(_ context.Context, arg dbgen.InsertDomainEventParams) (dbgen.DomainEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.topics = append(s.topics, arg.Topic)
-	return dbgen.InsertDomainEventRow{ID: newUUID(), Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
+	return dbgen.DomainEvent{ID: newUUID(), Topic: arg.Topic, AggregateID: arg.AggregateID, Payload: arg.Payload}, nil
+}
+
+func (*recordingEventStore) MarkDomainEventDispatched(context.Context, pgtype.UUID) error {
+	return nil
+}
+
+func (*recordingEventStore) RecordDomainEventDispatchFailure(context.Context, dbgen.RecordDomainEventDispatchFailureParams) error {
+	return nil
 }
 
 type trackingEnv struct {

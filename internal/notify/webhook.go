@@ -89,11 +89,28 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 		})
 		if err != nil {
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+				joined = errors.Join(joined, fmt.Errorf("enqueue delivery for %s: %w", uuidFrom(ep.ID), err))
 				continue
 			}
-			joined = errors.Join(joined, fmt.Errorf("enqueue delivery for %s: %w", uuidFrom(ep.ID), err))
-			continue
+			// The delivery row already exists: this is a re-dispatch (outbox
+			// relay). If the earlier attempt inserted the row but failed to
+			// enqueue it, the row is still PENDING and nothing else will pick
+			// it up, so enqueue it again. Duplicates are bounded by the queue
+			// dedup on the delivery id, and DeliveryWorker skips deliveries
+			// that are already DELIVERED or in the DLQ.
+			existing, getErr := d.Store.GetDeliveryByEndpointEvent(ctx, dbgen.GetDeliveryByEndpointEventParams{
+				EndpointID: ep.ID,
+				EventID:    event.ID,
+			})
+			if getErr != nil {
+				joined = errors.Join(joined, fmt.Errorf("load existing delivery for %s: %w", uuidFrom(ep.ID), getErr))
+				continue
+			}
+			if existing.Status != dbgen.DeliveryStatusPENDING {
+				continue
+			}
+			delivery = existing
 		}
 		if err := d.EnqueueDelivery(ctx, uuidFrom(delivery.ID), 0, int(delivery.MaxAttempt)); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("queue delivery %s: %w", uuidFrom(delivery.ID), err))
