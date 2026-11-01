@@ -165,9 +165,9 @@ type Querier interface {
 	//                         stored column, so neither the filter nor ts_rank rebuilds tsvectors.
 	//   match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
 	//                         the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
-	// Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
-	// migration 000053) exists, every query in this block plus SuggestProductTitles must also
-	// filter p.status = 'published'.
+	// These are public storefront reads: every query in this block plus SuggestProductTitles
+	// filters p.status = 'published' (products.status, migration 000053), so draft and archived
+	// products never appear in results, counts, facets or suggestions.
 	CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error)
 	CountTenantOwners(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	CountTenantStaff(ctx context.Context, tenantID pgtype.UUID) (int64, error)
@@ -257,6 +257,12 @@ type Querier interface {
 	// Settlement writers (payment webhook, admin payment confirmation, checkout
 	// expiry, customer cancel, payment intent creation) lock the order row first;
 	// see the lock-order comment in internal/jobs/checkout_expiry.go.
+	// FOR NO KEY UPDATE, not FOR UPDATE: it still serializes every writer of the
+	// order row, but lets child-row inserts (voucher_usages, payment_events, ...)
+	// take their FK KEY SHARE lock. Payment settlement keeps this lock while the
+	// voucher service inserts voucher_usages on another pooled connection; with
+	// FOR UPDATE that insert waited on the settlement's own transaction until the
+	// request timed out.
 	GetOrderByIDForUpdate(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
 	GetOrderByTenant(ctx context.Context, arg GetOrderByTenantParams) (GetOrderByTenantRow, error)

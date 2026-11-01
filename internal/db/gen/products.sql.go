@@ -51,9 +51,9 @@ type CountProductsPublicParams struct {
 //	match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
 //	                      the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
 //
-// Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
-// migration 000053) exists, every query in this block plus SuggestProductTitles must also
-// filter p.status = 'published'.
+// These are public storefront reads: every query in this block plus SuggestProductTitles
+// filters p.status = 'published' (products.status, migration 000053), so draft and archived
+// products never appear in results, counts, facets or suggestions.
 func (q *Queries) CountProductsPublic(ctx context.Context, arg CountProductsPublicParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countProductsPublic,
 		arg.TenantID,
@@ -84,6 +84,7 @@ WHERE p.tenant_id = $1
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND p.status = 'published'
 GROUP BY b.id, b.name, b.slug
 ORDER BY count DESC, b.name ASC
 LIMIT 50
@@ -154,6 +155,7 @@ WHERE p.tenant_id = $1
   AND ($5::bigint IS NULL OR p.price >= $5)
   AND ($6::bigint IS NULL OR p.price <= $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND p.status = 'published'
 GROUP BY c.id, c.name, c.slug
 ORDER BY count DESC, c.name ASC
 LIMIT 50
@@ -224,6 +226,7 @@ WHERE p.tenant_id = $1
   AND ($5::text IS NULL OR b.slug = $5)
   AND ($6::bigint IS NULL OR p.price >= $6)
   AND ($7::bigint IS NULL OR p.price <= $7)
+  AND p.status = 'published'
 GROUP BY p.in_stock
 `
 
@@ -284,6 +287,7 @@ WHERE p.tenant_id = $2
   AND ($5::text IS NULL OR c.slug = $5)
   AND ($6::text IS NULL OR b.slug = $6)
   AND ($7::boolean IS NULL OR p.in_stock = $7)
+  AND p.status = 'published'
 GROUP BY 1
 ORDER BY 1
 `
@@ -807,6 +811,7 @@ FROM products p
 WHERE p.tenant_id = $2
   AND $1::text <% p.title
   AND word_similarity($1::text, p.title) >= $3::float4
+  AND p.status = 'published'
 ORDER BY score DESC, p.title ASC
 LIMIT $4
 `

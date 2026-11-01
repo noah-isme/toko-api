@@ -6,9 +6,9 @@
 --                         stored column, so neither the filter nor ts_rank rebuilds tsvectors.
 --   match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
 --                         the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
--- Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
--- migration 000053) exists, every query in this block plus SuggestProductTitles must also
--- filter p.status = 'published'.
+-- These are public storefront reads: every query in this block plus SuggestProductTitles
+-- filters p.status = 'published' (products.status, migration 000053), so draft and archived
+-- products never appear in results, counts, facets or suggestions.
 
 -- name: CountProductsPublic :one
 SELECT COUNT(*)
@@ -96,6 +96,7 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
   AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
   AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+  AND p.status = 'published'
 GROUP BY c.id, c.name, c.slug
 ORDER BY count DESC, c.name ASC
 LIMIT 50;
@@ -114,6 +115,7 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
   AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
   AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+  AND p.status = 'published'
 GROUP BY b.id, b.name, b.slug
 ORDER BY count DESC, b.name ASC
 LIMIT 50;
@@ -133,6 +135,7 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+  AND p.status = 'published'
 GROUP BY 1
 ORDER BY 1;
 
@@ -150,6 +153,7 @@ WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
   AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+  AND p.status = 'published'
 GROUP BY p.in_stock;
 
 -- Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, inside the
@@ -165,6 +169,7 @@ FROM products p
 WHERE p.tenant_id = sqlc.arg(tenant_id)
   AND sqlc.arg(q)::text <% p.title
   AND word_similarity(sqlc.arg(q)::text, p.title) >= sqlc.arg(min_score)::float4
+  AND p.status = 'published'
 ORDER BY score DESC, p.title ASC
 LIMIT sqlc.arg(limit_value);
 

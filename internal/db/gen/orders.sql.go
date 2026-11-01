@@ -189,12 +189,18 @@ SELECT id, user_id, cart_id, status, currency, pricing_subtotal, pricing_discoun
 FROM orders
 WHERE id = $1
 LIMIT 1
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 // Settlement writers (payment webhook, admin payment confirmation, checkout
 // expiry, customer cancel, payment intent creation) lock the order row first;
 // see the lock-order comment in internal/jobs/checkout_expiry.go.
+// FOR NO KEY UPDATE, not FOR UPDATE: it still serializes every writer of the
+// order row, but lets child-row inserts (voucher_usages, payment_events, ...)
+// take their FK KEY SHARE lock. Payment settlement keeps this lock while the
+// voucher service inserts voucher_usages on another pooled connection; with
+// FOR UPDATE that insert waited on the settlement's own transaction until the
+// request timed out.
 func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id pgtype.UUID) (Order, error) {
 	row := q.db.QueryRow(ctx, getOrderByIDForUpdate, id)
 	var i Order
