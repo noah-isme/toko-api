@@ -268,7 +268,7 @@ func TestIntegrationAdminTenantIsolation(t *testing.T) {
 	})
 
 	t.Run("platform-global routes need the global admin role", func(t *testing.T) {
-		paths := []string{"/api/v1/admin/webhooks", "/api/v1/admin/queue/stats", "/api/v1/admin/audit-logs", "/api/v1/analytics/overview"}
+		paths := []string{"/api/v1/admin/webhooks", "/api/v1/admin/queue/stats", "/api/v1/admin/audit-logs"}
 		for _, p := range paths {
 			rec := e.do(http.MethodGet, p, e.owner, e.tenA, "")
 			require.Equal(t, http.StatusForbidden, rec.Code, p)
@@ -281,6 +281,19 @@ func TestIntegrationAdminTenantIsolation(t *testing.T) {
 		for _, p := range paths {
 			rec := e.do(http.MethodGet, p, e.owner, e.tenA, "")
 			assert.NotEqual(t, http.StatusForbidden, rec.Code, p)
+		}
+	})
+
+	t.Run("tenant analytics need analytics:read, not the global admin role", func(t *testing.T) {
+		// /analytics/* is tenant-scoped (rec-api-analytics), so a tenant owner
+		// passes the guard without users.roles admin; a customer member does not.
+		for _, p := range []string{"/api/v1/analytics/overview", "/api/v1/analytics/sales", "/api/v1/analytics/top-products"} {
+			rec := e.do(http.MethodGet, p, e.owner, e.tenA, "")
+			assert.NotEqual(t, http.StatusForbidden, rec.Code, p)
+			rec = e.do(http.MethodGet, p, e.buyer, e.tenA, "")
+			require.Equal(t, http.StatusForbidden, rec.Code, p)
+			_, required := requiredOf(t, rec)
+			assert.Equal(t, "staff", required, p)
 		}
 	})
 

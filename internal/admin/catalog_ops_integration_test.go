@@ -735,15 +735,20 @@ func TestIntegrationProductWebhooksAreTenantScoped(t *testing.T) {
 	require.EqualValues(t, 0, deliveries(epB), "tenant B never receives tenant A's product events")
 	require.EqualValues(t, 0, e.scalar(`SELECT COUNT(*) FROM domain_events WHERE topic LIKE 'product.%' AND tenant_id IS DISTINCT FROM $1::uuid AND payload->>'productId' = $2`, e.tenA, p.ID))
 
-	// Legacy emitters (payment callbacks run under the default tenant's context
-	// while the order belongs to another tenant) keep the NULL-tenant broadcast:
-	// the order's tenant (B here) still receives order.paid.
-	callbackCtx := tenant.WithTenant(bg, e.tenA)
-	ev, err := e.bus.Emit(callbackCtx, events.TopicOrderPaid, mustUUID(uuid.NewString()), map[string]any{"orderId": "it", "itTag": e.tag})
+	// Other emitters use Emit, which stamps the ctx tenant (the payment webhook
+	// switches ctx to the order's tenant first): the event reaches only that
+	// tenant's endpoints, and an event with no tenant at all reaches none.
+	ev, err := e.bus.Emit(tenant.WithTenant(bg, e.tenB), events.TopicOrderPaid, mustUUID(uuid.NewString()), map[string]any{"orderId": "it", "itTag": e.tag})
 	require.NoError(t, err)
-	require.False(t, ev.TenantID.Valid)
+	require.True(t, ev.TenantID.Valid)
+	require.Equal(t, e.tenB, uuid.UUID(ev.TenantID.Bytes).String())
 	require.EqualValues(t, 1, e.scalar(`SELECT COUNT(*) FROM webhook_deliveries WHERE endpoint_id=$1 AND event_id=$2`, epB, ev.ID))
-	require.EqualValues(t, 1, e.scalar(`SELECT COUNT(*) FROM webhook_deliveries WHERE endpoint_id=$1 AND event_id=$2`, epA, ev.ID))
+	require.EqualValues(t, 0, e.scalar(`SELECT COUNT(*) FROM webhook_deliveries WHERE endpoint_id=$1 AND event_id=$2`, epA, ev.ID))
+
+	orphan, err := e.bus.Emit(bg, events.TopicOrderPaid, mustUUID(uuid.NewString()), map[string]any{"orderId": "it", "itTag": e.tag})
+	require.NoError(t, err)
+	require.False(t, orphan.TenantID.Valid)
+	require.EqualValues(t, 0, e.scalar(`SELECT COUNT(*) FROM webhook_deliveries WHERE event_id=$1`, orphan.ID))
 }
 
 func TestIntegrationProductsExport(t *testing.T) {
