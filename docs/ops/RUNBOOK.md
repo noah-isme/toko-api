@@ -312,14 +312,35 @@ Product slugs, category slugs, brand names and slugs, variant SKUs and voucher c
 | File | What | Locks |
 |---|---|---|
 | 000057 | `product_variants.tenant_id` (nullable), trigger `trg_product_variants_tenant_id` (derives it from the product on insert, on product/tenant change and on any update of a row still NULL), FK and `CHECK (tenant_id IS NOT NULL)` both `NOT VALID` | ACCESS EXCLUSIVE on `product_variants`, SHARE ROW EXCLUSIVE on `tenants`; metadata-only, milliseconds |
-| 000058 | backfill `tenant_id` from `products` | EXCLUSIVE on `product_variants` for the whole file: reads continue, variant writes and row locks (checkout reservations, stock/price edits, bulk/import) wait |
+| 000058 | backfill `tenant_id` from `products`; first a lock-free guard refuses to run above 50k variants (`pg_class.reltuples`) while rows are still NULL (see large catalogs below) | EXCLUSIVE on `product_variants` for the whole file: reads continue, variant writes and row locks (checkout reservations, stock/price edits, bulk/import) wait |
 | 000059 | `VALIDATE` the CHECK and the FK | SHARE UPDATE EXCLUSIVE: no impact on reads or writes |
 | 000060, 000062, 000064, 000066, 000067, 000069 | `CREATE UNIQUE INDEX CONCURRENTLY` `uq_product_variants_tenant_sku`, `uq_products_tenant_slug`, `uq_categories_tenant_slug`, `uq_brands_tenant_name`, `uq_brands_tenant_slug`, `uq_vouchers_tenant_code` (single-statement files, no `lock_timeout`) | never block reads or writes; each waits for transactions already open when it starts |
 | 000061 | verify `uq_product_variants_tenant_sku` is valid, `SET NOT NULL` (no scan, thanks to the validated CHECK), drop the CHECK and `product_variants_sku_key` | ACCESS EXCLUSIVE on `product_variants`, milliseconds |
 | 000063, 000065, 000068, 000070 | verify the replacement index(es) are valid, then drop the global constraint(s) of `products`, `categories`, `brands`, `vouchers` | ACCESS EXCLUSIVE on that one table, milliseconds |
 
 - The 000058 backfill is the only row-proportional step under a lock. It takes EXCLUSIVE before it row-locks anything: a weaker mode lets a catalog writer that already holds a variant row lock (FOR NO KEY UPDATE, ROW SHARE) wait on a backfilled row while the backfill waits on the writer's row, which deadlocks and leaves the migration dirty (`TestIntegrationVariantsBackfill000058ConcurrentCatalogWriter` reproduces that with SHARE ROW EXCLUSIVE). Measured on a loaded 8-core dev host: about 10 s for 200k variants (50k products), about 4 s of which is the row writes themselves; the cost grows linearly. **Checkout and stock edits pause for that long.**
-- Large catalogs (more than ~50k variants, or whenever pausing variant writes for more than a few seconds is not acceptable): make 000058 a no-op by doing the backfill by hand before the deploy. (1) Run `migrations/000057_product_variants_tenant_id.up.sql` by hand in one transaction (`BEGIN;` file contents `COMMIT;`; ACCESS EXCLUSIVE for milliseconds). Do not touch `schema_migrations`: every statement in 000057 is idempotent and the deploy re-runs it. From then on the trigger fills every inserted or updated variant. (2) Backfill in batches until it reports `UPDATE 0`: `UPDATE product_variants v SET tenant_id = p.tenant_id FROM products p WHERE p.id = v.product_id AND v.id IN (SELECT id FROM product_variants WHERE tenant_id IS NULL LIMIT 1000);` (a batch that hits a deadlock with checkout is simply re-run). (3) Confirm `SELECT count(*) FROM product_variants WHERE tenant_id IS NULL;` is 0. The deploy's 000058 then holds EXCLUSIVE only for one scan that finds nothing.
+- Large catalogs (more than ~50k variants, or whenever pausing variant writes for more than a few seconds is not acceptable): 000058 refuses to run when `pg_class.reltuples` for `product_variants` is above 50000 and any variant still has a NULL `tenant_id` (`product_variants has more than 50000 rows and tenant_id is not backfilled ...`). It checks before taking its lock, so nothing is held, but golang-migrate stops dirty at 58 (57 is applied): run the procedure below, then `./bin/migrate.new force 57` and re-run the deploy. Better, run it before the deploy so 000058 is a no-op. (1) Run `migrations/000057_product_variants_tenant_id.up.sql` by hand in one transaction (`BEGIN;` file contents `COMMIT;`; ACCESS EXCLUSIVE for milliseconds). Skip this step if the deploy already applied 000057. Do not touch `schema_migrations`: every statement in 000057 is idempotent and the deploy re-runs it. From then on the trigger fills every inserted or updated variant. (2) Backfill in keyset batches by `id`, each batch committed on its own so row locks last one batch only. Save the block below as `backfill.sql` and run it with `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backfill.sql` (autocommit; not inside `BEGIN`, which would make the `COMMIT` fail). Each batch walks the next 1000 ids of the primary key, so it never rescans rows already done. If a batch hits a deadlock with checkout, the block stops with an error; simply run it again (it only updates rows still NULL). (3) Confirm `SELECT count(*) FROM product_variants WHERE tenant_id IS NULL;` is 0. The deploy's 000058 then passes the guard and holds EXCLUSIVE only for one scan that finds nothing.
+
+```sql
+DO $$
+DECLARE
+  last_id uuid := '00000000-0000-0000-0000-000000000000';
+  next_id uuid;
+BEGIN
+  LOOP
+    SELECT id INTO next_id
+    FROM (SELECT id FROM product_variants WHERE id > last_id ORDER BY id LIMIT 1000) batch
+    ORDER BY id DESC LIMIT 1;
+    EXIT WHEN next_id IS NULL;
+    UPDATE product_variants v SET tenant_id = p.tenant_id
+    FROM products p
+    WHERE p.id = v.product_id AND v.id > last_id AND v.id <= next_id AND v.tenant_id IS NULL;
+    COMMIT;
+    last_id := next_id;
+  END LOOP;
+END;
+$$;
+```
 - Old binaries during the rollout: inserts and updates of variants keep working (the trigger fills `tenant_id`). Between the drop migrations and the restart, an old binary resolving a voucher code by code alone could pick another tenant's voucher once two tenants share a code; the old code then treats it as foreign (no discount, settlement skipped). The window is the seconds between migrate and restart, and shared codes can only exist after the drops. The seeder's new `ON CONFLICT (tenant_id, ...)` clauses need the new indexes, so run the new seeder only after the migration.
 - Symptom (transactional files 57, 58, 59, 61, 63, 65, 68, 70): `up: migration failed: canceling statement due to lock timeout`, later `Dirty database version N`. Nothing from the failing file is applied (one implicit transaction). Recovery: `./bin/migrate.new force <N-1>`, then re-run the deploy off-peak; same `migrate.new` vs `migrate` caveat as 000040.
 - Symptom (CONCURRENTLY files 60, 62, 64, 66, 67, 69): the build fails or is interrupted, `Dirty database version N`, and Postgres may leave an INVALID index (a later `IF NOT EXISTS` would skip it). Recovery: check with `SELECT indisvalid FROM pg_index WHERE indexrelid = '<index>'::regclass;`, then `psql "$DATABASE_URL" -c 'DROP INDEX CONCURRENTLY IF EXISTS <index>;'`, `./bin/migrate.new force <N-1>`, re-run the deploy. If an INVALID index slips through anyway, the following drop migration refuses to run (`per-tenant unique index on <table> is missing or INVALID`) and the global constraint stays in place; fix the index as above and force back to the version before the index file.

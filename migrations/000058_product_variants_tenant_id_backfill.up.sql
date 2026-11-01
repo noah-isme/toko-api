@@ -11,6 +11,21 @@ SET LOCAL lock_timeout = '5s';
 -- the backfill waits on its row, which deadlocks and leaves the migration dirty.
 -- Nothing later in this file needs a stronger lock, so there is no upgrade.
 -- Duration grows linearly with the number of variants; see docs/ops/RUNBOOK.md.
+--
+-- Safety by default: on a large catalog (planner estimate above 50k variants) that
+-- still has rows to backfill, fail fast before taking any lock instead of pausing
+-- checkout for the whole backfill. Run the batched procedure in docs/ops/RUNBOOK.md
+-- first; this file then finds nothing to backfill and passes the guard. The estimate
+-- is read from pg_class (no scan); the NULL probe takes only ACCESS SHARE.
+DO $$
+BEGIN
+  IF (SELECT c.reltuples FROM pg_class c WHERE c.oid = 'product_variants'::regclass) > 50000 THEN
+    IF EXISTS (SELECT 1 FROM product_variants WHERE tenant_id IS NULL) THEN
+      RAISE EXCEPTION 'product_variants has more than 50000 rows and tenant_id is not backfilled: run the batched backfill in docs/ops/RUNBOOK.md (Migrations 000057-000070, large catalogs) before migrating';
+    END IF;
+  END IF;
+END;
+$$;
 LOCK TABLE product_variants IN EXCLUSIVE MODE;
 UPDATE product_variants v
 SET tenant_id = p.tenant_id
