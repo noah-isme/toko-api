@@ -2,15 +2,19 @@ SET LOCAL lock_timeout = '5s';
 -- Search, part 2 of 2 (backfill + indexes), then the product_sales table.
 --
 -- Lock footprint. This file runs as ONE implicit transaction, separate from 000049, and
--- never takes ACCESS EXCLUSIVE on products: before the backfill it takes SHARE on products
--- (LOCK TABLE ... IN SHARE MODE, the lock the GIN builds need anyway), then the backfill
--- UPDATE takes ROW EXCLUSIVE and row-locks the rows it fills, the two GIN builds take SHARE,
--- and the product_sales FK takes SHARE ROW EXCLUSIVE, all held until commit. Product READS
--- (storefront list/detail, cart, checkout) continue throughout; product WRITES (stock flag
--- updates, admin catalog edits) wait from the start until the file commits. Taking SHARE
--- first matters: without it the backfill row-locks rows while concurrent writers still
--- hold ROW EXCLUSIVE, and the later CREATE INDEX (SHARE) and a writer waiting on a
--- backfilled row deadlock, which aborts the migration and leaves the database dirty. Measured ~5 s on a 20k-product tenant with ~600-character
+-- never takes ACCESS EXCLUSIVE on products: before the backfill it takes EXCLUSIVE on
+-- products (LOCK TABLE ... IN EXCLUSIVE MODE), then the backfill UPDATE takes ROW EXCLUSIVE
+-- and row-locks the rows it fills, the two GIN builds take SHARE, and the product_sales FK
+-- takes SHARE ROW EXCLUSIVE, all held until commit. Product READS (storefront list/detail,
+-- cart, checkout) continue throughout; product WRITES and row locks (stock flag updates,
+-- admin catalog edits, FOR NO KEY UPDATE in bulk/import) wait from the start until the
+-- file commits. Taking EXCLUSIVE first matters: without it the backfill row-locks rows
+-- while concurrent writers still hold ROW EXCLUSIVE, and the later CREATE INDEX (SHARE)
+-- and a writer waiting on a backfilled row deadlock. SHARE is not enough either: it
+-- admits ROW SHARE, so a writer that already holds a product row lock
+-- (AdminGetProductsByIDsForUpdate, then UPDATE products) makes the backfill wait on its
+-- row while its UPDATE waits on the SHARE lock. Either deadlock aborts the migration and
+-- leaves the database dirty. Measured ~5 s on a 20k-product tenant with ~600-character
 -- descriptions; the cost grows linearly with the catalog. Above ~20k products run the
 -- batched, concurrent procedure in docs/ops/RUNBOOK.md before the deploy: this file then
 -- finds both indexes, skips the backfill and builds nothing.
@@ -38,9 +42,10 @@ BEGIN
   END IF;
 
   IF simple_valid IS NULL THEN
-    -- Writers wait from here instead of deadlocking against the index build below. Kept
-    -- inside this branch so re-runs and the manual large-catalog path take no lock.
-    LOCK TABLE products IN SHARE MODE;
+    -- Writers and row lockers wait from here instead of deadlocking against the backfill
+    -- and the index build below. Kept inside this branch so re-runs and the manual
+    -- large-catalog path take no lock.
+    LOCK TABLE products IN EXCLUSIVE MODE;
     -- Rows written before the 000049 trigger existed.
     UPDATE products
     SET search_vector_simple =

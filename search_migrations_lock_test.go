@@ -52,6 +52,11 @@ func TestSearchMigration000050NeverAltersProducts(t *testing.T) {
 	if regexp.MustCompile(`(?i)\bDROP\s+INDEX\b`).MatchString(body) {
 		t.Errorf("%s must not DROP INDEX on products (ACCESS EXCLUSIVE)", searchUp50)
 	}
+	// EXCLUSIVE, not SHARE: SHARE admits FOR NO KEY UPDATE holders, which deadlock with
+	// the backfill (TestIntegrationSearchMigration000050ConcurrentCatalogWriter).
+	if !strings.Contains(body, "LOCK TABLE products IN EXCLUSIVE MODE;") {
+		t.Errorf("%s must take LOCK TABLE products IN EXCLUSIVE MODE before the backfill", searchUp50)
+	}
 	down := readMigration(t, searchDown50)
 	for _, want := range []string{"idx_products_search_simple", "idx_products_title_trgm", "product_sales"} {
 		if !strings.Contains(down, want) {
@@ -200,6 +205,7 @@ func TestIntegrationSearchMigrationsLockFootprint(t *testing.T) {
 	// 000050, first run: backfill + GIN builds without ACCESS EXCLUSIVE; reads continue.
 	r = p.run(searchUp50)
 	require.False(t, r.modes["AccessExclusiveLock"], "000050 must not take ACCESS EXCLUSIVE: %v", r.modes)
+	require.True(t, r.modes["ExclusiveLock"], "000050 must lock products IN EXCLUSIVE MODE before the backfill: %v", r.modes)
 	require.NoError(t, r.readerErr, "product reads must continue while 000050 runs")
 	require.Zero(t, countNull())
 	for _, idx := range []string{"idx_products_search_simple", "idx_products_title_trgm"} {
@@ -250,7 +256,7 @@ func TestIntegrationSearchMigrationsLockFootprint(t *testing.T) {
 // product writer on a fresh probe schema. The writer holds ROW EXCLUSIVE and a row
 // lock on the last heap row when 000050 starts, and once 000050 is waiting it
 // updates the first heap row, which a backfill UPDATE would already have row-locked.
-// Without the LOCK TABLE ... IN SHARE MODE that precedes the backfill, the two
+// Without the LOCK TABLE ... IN EXCLUSIVE MODE that precedes the backfill, the two
 // sessions wait on each other's row locks (and the later CREATE INDEX on the
 // writer's ROW EXCLUSIVE): Postgres aborts one with "deadlock detected". With it,
 // 000050 waits for the writer before touching any row, the writer finishes, and
@@ -330,4 +336,64 @@ func searchMigration000050WithConcurrentWriter(t *testing.T, ctx context.Context
 			WHERE i.indrelid = 'products'::regclass AND c.relname = $1`, idx).Scan(&valid))
 		require.True(t, valid, idx)
 	}
+}
+
+// TestIntegrationSearchMigration000050ConcurrentCatalogWriter runs 000050
+// against a catalog writer that holds a product row lock (FOR NO KEY UPDATE,
+// as AdminGetProductsByIDsForUpdate does before bulk/import UPDATE products; it
+// takes only ROW SHARE) when the migration starts and then updates a second
+// product the backfill would already have row-locked. SHARE admits the writer's
+// ROW SHARE, so the backfill would wait on the writer's row and the writer's
+// UPDATE (ROW EXCLUSIVE) on the backfill's SHARE: a deadlock that leaves
+// golang-migrate dirty at 50. EXCLUSIVE makes the backfill wait for the writer
+// before it touches any row.
+func TestIntegrationSearchMigration000050ConcurrentCatalogWriter(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping Postgres integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	migConn, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = migConn.Close(context.Background()) })
+	writer, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Close(context.Background()) })
+
+	var hasTrgm bool
+	require.NoError(t, migConn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')`).Scan(&hasTrgm))
+	if !hasTrgm {
+		t.Skip("pg_trgm not installed in the test database (apply all migrations first)")
+	}
+
+	schema := newSearchProbeSchema(t, ctx, migConn)
+	_, err = migConn.Exec(ctx, readMigration(t, searchUp49))
+	require.NoError(t, err, searchUp49)
+	_, err = writer.Exec(ctx, `SET search_path = `+pgx.Identifier{schema}.Sanitize()+`, public`)
+	require.NoError(t, err)
+	_, err = writer.Exec(ctx, `SET statement_timeout = '15s'`)
+	require.NoError(t, err)
+
+	var firstID, lastID string
+	require.NoError(t, writer.QueryRow(ctx, `SELECT id::text FROM products ORDER BY ctid LIMIT 1`).Scan(&firstID))
+	require.NoError(t, writer.QueryRow(ctx, `SELECT id::text FROM products ORDER BY ctid DESC LIMIT 1`).Scan(&lastID))
+
+	wtx, err := writer.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = wtx.Rollback(context.Background()) }()
+	_, err = wtx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1 FOR NO KEY UPDATE`, lastID)
+	require.NoError(t, err)
+
+	done := runMigrationAsync(ctx, migConn, readMigration(t, searchUp50))
+	waitForLock(t, ctx, writer, migConn.PgConn().PID(), done, "000050")
+
+	_, err = wtx.Exec(ctx, `UPDATE products SET title = title || ' (edit)' WHERE id = ANY($1::uuid[])`, []string{firstID, lastID})
+	require.NoError(t, err, "the concurrent catalog write must not be aborted")
+	require.NoError(t, wtx.Commit(ctx))
+	require.NoError(t, <-done, "000050 must commit while a catalog write runs concurrently")
+
+	var nulls int
+	require.NoError(t, writer.QueryRow(ctx, `SELECT count(*) FROM products WHERE search_vector_simple IS NULL`).Scan(&nulls))
+	require.Zero(t, nulls)
 }
