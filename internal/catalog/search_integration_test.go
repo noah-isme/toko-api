@@ -34,7 +34,7 @@ type searchFixture struct {
 	slugs map[string]string
 	// tenantOf maps a product key to its tenant id.
 	tenantOf map[string]string
-	// brand/category slugs by short key (slugs and names are globally unique in the schema).
+	// brand/category slugs by short key (random per run, so runs never collide).
 	terms map[string]string
 	users []string
 }

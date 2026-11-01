@@ -17,7 +17,7 @@ import (
 
 // Querier captures the database methods required by the voucher service.
 type Querier interface {
-	GetVoucherByCodeForUpdate(ctx context.Context, code string) (dbgen.Voucher, error)
+	GetVoucherByCodeForUpdate(ctx context.Context, arg dbgen.GetVoucherByCodeForUpdateParams) (dbgen.Voucher, error)
 	CountVoucherUsageByUser(ctx context.Context, arg dbgen.CountVoucherUsageByUserParams) (int64, error)
 	GetVoucherUsageByOrder(ctx context.Context, arg dbgen.GetVoucherUsageByOrderParams) (dbgen.VoucherUsage, error)
 	InsertVoucherUsage(ctx context.Context, arg dbgen.InsertVoucherUsageParams) error
@@ -38,8 +38,9 @@ type Service struct {
 	DefaultPerUserLimit int
 }
 
-// Preview performs a dry-run evaluation for the given cart context.
-func (s *Service) Preview(ctx context.Context, code string, userID *string, cartTotal int64, items []Item) (PreviewResult, error) {
+// Preview performs a dry-run evaluation for the given cart context. Voucher
+// codes are unique per tenant, so the code is resolved within tenantID only.
+func (s *Service) Preview(ctx context.Context, tenantID pgtype.UUID, code string, userID *string, cartTotal int64, items []Item) (PreviewResult, error) {
 	if s == nil || s.Q == nil {
 		return PreviewResult{}, errors.New("voucher service not configured")
 	}
@@ -47,7 +48,10 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 	if trimmed == "" {
 		return PreviewResult{}, fmt.Errorf("code is required: %w", ErrNotEligible)
 	}
-	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, trimmed)
+	if !tenantID.Valid {
+		return PreviewResult{}, ErrNotEligible
+	}
+	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, dbgen.GetVoucherByCodeForUpdateParams{TenantID: tenantID, Code: trimmed})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PreviewResult{}, ErrNotEligible
@@ -89,8 +93,9 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 }
 
 // Settle records voucher usage at order payment time ensuring idempotency.
-// tenantID is the order's tenant: a voucher owned by another tenant is treated
-// like an unknown code and never settled against the order.
+// tenantID is the order's tenant and the code is resolved within it only
+// (codes are unique per tenant), so another tenant's voucher with the same code
+// is never settled against the order.
 func (s *Service) Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
 	if s == nil || s.Q == nil {
 		return errors.New("voucher service not configured")
@@ -98,23 +103,20 @@ func (s *Service) Settle(ctx context.Context, tenantID pgtype.UUID, code string,
 	if strings.TrimSpace(code) == "" || !orderID.Valid || amount < 0 {
 		return nil
 	}
-	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, code)
+	if !tenantID.Valid {
+		zerolog.Ctx(ctx).Warn().
+			Str("order_id", uuidText(orderID)).
+			Msg("voucher settlement skipped: order has no tenant")
+		return nil
+	}
+	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, dbgen.GetVoucherByCodeForUpdateParams{TenantID: tenantID, Code: code})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Unknown in the order's tenant (deleted, or a code that only
+			// exists in another tenant): checkout gave no discount for it.
 			return nil
 		}
 		return err
-	}
-	if !tenantID.Valid || voucher.TenantID != tenantID {
-		// Checkout already drops a foreign code (discount 0), so reaching this
-		// means the order carries another tenant's voucher code. Skip
-		// settlement, but leave a trace so such orders can be found.
-		zerolog.Ctx(ctx).Warn().
-			Str("order_id", uuidText(orderID)).
-			Str("order_tenant_id", uuidText(tenantID)).
-			Str("voucher_tenant_id", uuidText(voucher.TenantID)).
-			Msg("voucher settlement skipped: voucher belongs to another tenant")
-		return nil
 	}
 	if amount < 0 {
 		amount = 0

@@ -1,7 +1,9 @@
 -- name: GetVoucherByCodeForUpdate :one
+-- Voucher codes are unique per tenant (uq_vouchers_tenant_code).
 SELECT *
 FROM vouchers
-WHERE code = $1
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND code = sqlc.arg(code)
 FOR UPDATE;
 
 -- name: CountVoucherUsageByUser :one

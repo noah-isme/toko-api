@@ -215,5 +215,6 @@ RETURNING *;
 -- name: IncrementVoucherUsageByCode :exec
 UPDATE vouchers
 SET used_count = used_count + 1
-WHERE code = $1
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND code = sqlc.arg(code)
   AND (usage_limit IS NULL OR used_count < usage_limit);

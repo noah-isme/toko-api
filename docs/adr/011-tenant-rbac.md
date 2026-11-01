@@ -50,19 +50,16 @@ authorization boundary at the tenant membership.
 - **Negative:** `users.roles` still matters for platform-admin routes and some
   legacy customer counts; tenant-scoping webhooks, audit logs and analytics is
   follow-up work for their owners.
-- **Negative (open, needs a decision before merge):** `vouchers.code`,
+- **Resolved (decision: per-tenant uniqueness):** `vouchers.code`,
   `products.slug`, `categories.slug`, `brands.name`, `brands.slug` and
-  `product_variants.sku` are still unique database-wide. Before this change only
-  global admins could create them; now any self-service owner can. A `409` on
-  create reveals that a value exists in some other tenant, but not which one
-  (for a voucher code, an attacker who wants to redeem it would still have to
-  find the owning tenant by joining tenants as a customer and trying the code
-  in each), and a tenant can squat common names and slugs for everyone. Redemption itself is
-  tenant-scoped, so a foreign code never discounts another tenant's cart. The
-  fix is per-tenant uniqueness: one `CREATE UNIQUE INDEX CONCURRENTLY` migration
-  per `(tenant_id, ...)` index, then dropping the global constraints
-  (`product_variants` has no `tenant_id` and needs one first), plus updating
-  every `ON CONFLICT (slug|code|sku)` in the seeder and backfill tool and the
-  lookups by code or slug. That needs more migration numbers than this stream
-  was assigned and touches catalog, search and tooling code, so it is either
-  done as a follow-up before merge or explicitly deferred by the product owner.
+  `product_variants.sku` used to be unique database-wide, so once self-service
+  owners could create them a `409` revealed that a value existed in some other
+  tenant and let one tenant squat common names and slugs for everyone.
+  Migrations 000057–000070 make each of them unique per `(tenant_id, ...)`:
+  `product_variants` gains a `tenant_id` that a trigger always derives from the
+  product, each per-tenant index is built `CONCURRENTLY`, and each global
+  constraint is dropped only after its replacement is valid, so uniqueness is
+  enforced throughout. Every lookup by code or slug (voucher preview, apply,
+  checkout, settlement, CSV import, seeder) is tenant-scoped. Rolling the drop
+  migrations back fails once two tenants share a value (see
+  docs/ops/RUNBOOK.md).

@@ -216,9 +216,7 @@ type importGroup struct {
 // importQuerier is what the plan phase reads (all tenant-scoped).
 type importQuerier interface {
 	AdminFindVariantsForImport(ctx context.Context, arg dbgen.AdminFindVariantsForImportParams) ([]dbgen.AdminFindVariantsForImportRow, error)
-	AdminExistingSKUsAnyTenant(ctx context.Context, skus []string) ([]string, error)
 	AdminFindProductsForImport(ctx context.Context, arg dbgen.AdminFindProductsForImportParams) ([]dbgen.AdminFindProductsForImportRow, error)
-	AdminSlugsTakenByOtherTenants(ctx context.Context, arg dbgen.AdminSlugsTakenByOtherTenantsParams) ([]string, error)
 	AdminGetProductsByIDsForUpdate(ctx context.Context, arg dbgen.AdminGetProductsByIDsForUpdateParams) ([]dbgen.AdminGetProductsByIDsForUpdateRow, error)
 	AdminLockVariantsByIDs(ctx context.Context, arg dbgen.AdminLockVariantsByIDsParams) ([]dbgen.AdminLockVariantsByIDsRow, error)
 	AdminListCategories(ctx context.Context, tenantID pgtype.UUID) ([]dbgen.AdminListCategoriesRow, error)
@@ -591,7 +589,6 @@ func (p *importPlan) resolveIdentity(ctx context.Context, q importQuerier) error
 		}
 	}
 
-	var globalSKUs []string
 	resolvedVariant := map[[16]byte]*importRow{}
 	for _, row := range p.rows {
 		if row.rejected() {
@@ -615,8 +612,13 @@ func (p *importPlan) resolveIdentity(ctx context.Context, q importQuerier) error
 					row.fail("sku", importCodeSKUMismatch, "the variant has no sku; leave sku empty or assign one with type=products")
 					continue
 				case !v.Sku.Valid:
+					// SKUs are unique per tenant: assigning one that another
+					// variant of this store already has can never succeed.
+					if _, taken := bySKU[row.sku]; taken {
+						row.fail("sku", importCodeSKUTaken, "sku is already used by another product")
+						continue
+					}
 					row.assignSKU = true
-					globalSKUs = append(globalSKUs, row.sku)
 				}
 			}
 		case row.sku != "":
@@ -628,7 +630,8 @@ func (p *importPlan) resolveIdentity(ctx context.Context, q importQuerier) error
 				row.fail("sku", importCodeUnknownSKU, "sku does not exist in this store")
 				continue
 			}
-			globalSKUs = append(globalSKUs, row.sku)
+			// Not used by any variant of this store, so it is free: SKUs are
+			// unique per tenant and other stores' SKUs never conflict.
 			if row.productID.Valid {
 				row.kind = importActionCreateVariant
 			} else {
@@ -663,25 +666,6 @@ func (p *importPlan) resolveIdentity(ctx context.Context, q importQuerier) error
 		row.kind = importActionUpdate
 		row.variantID = hit.ID
 		row.productID = hit.ProductID
-	}
-
-	if len(globalSKUs) > 0 {
-		taken, err := q.AdminExistingSKUsAnyTenant(ctx, globalSKUs)
-		if err != nil {
-			return fmt.Errorf("check skus: %w", err)
-		}
-		takenSet := make(map[string]bool, len(taken))
-		for _, s := range taken {
-			takenSet[s] = true
-		}
-		for _, row := range p.rows {
-			if row.rejected() || row.sku == "" || !takenSet[row.sku] {
-				continue
-			}
-			if row.assignSKU || row.kind == importActionCreate || row.kind == importActionCreateVariant {
-				row.fail("sku", importCodeSKUTaken, "sku is already used by another product")
-			}
-		}
 	}
 	return nil
 }
@@ -851,8 +835,9 @@ func (p *importPlan) loadTaxonomy(ctx context.Context, q importQuerier) error {
 	return nil
 }
 
-// allocateSlugs groups new-product rows by slug and picks a globally free slug
-// for each group; it also validates slug changes on existing products.
+// allocateSlugs groups new-product rows by slug and picks a slug that is free in
+// this tenant for each group (slugs are unique per tenant, so other tenants'
+// products never matter); it also validates slug changes on existing products.
 func (p *importPlan) allocateSlugs(ctx context.Context, q importQuerier) error {
 	byKey := map[string]*importGroup{}
 	for _, row := range p.rows {
@@ -908,14 +893,6 @@ func (p *importPlan) allocateSlugs(ctx context.Context, q importQuerier) error {
 		candidates = append(candidates, s)
 	}
 	sort.Strings(candidates)
-	taken := map[string]bool{}
-	other, err := q.AdminSlugsTakenByOtherTenants(ctx, dbgen.AdminSlugsTakenByOtherTenantsParams{Slugs: candidates, TenantID: p.tenantID})
-	if err != nil {
-		return fmt.Errorf("check slugs: %w", err)
-	}
-	for _, s := range other {
-		taken[s] = true
-	}
 	own, err := q.AdminFindProductsForImport(ctx, dbgen.AdminFindProductsForImportParams{Ids: []pgtype.UUID{}, Slugs: candidates, TenantID: p.tenantID})
 	if err != nil {
 		return fmt.Errorf("check slugs: %w", err)
@@ -934,7 +911,7 @@ func (p *importPlan) allocateSlugs(ctx context.Context, q importQuerier) error {
 			}
 			ownerID, ownedHere := ownSlug[row.slug]
 			switch {
-			case taken[row.slug], ownedHere && ownerID != prod.locked.ID:
+			case ownedHere && ownerID != prod.locked.ID:
 				row.fail("slug", importCodeSlugTaken, fmt.Sprintf("slug %q is already used by another product", row.slug))
 			case reserved[row.slug] && prod.newSlug != row.slug:
 				row.fail("slug", importCodeSlugTaken, fmt.Sprintf("slug %q is used twice in this file", row.slug))
@@ -963,7 +940,7 @@ func (p *importPlan) allocateSlugs(ctx context.Context, q importQuerier) error {
 			}
 		}
 		for _, s := range tries {
-			if _, ownedHere := ownSlug[s]; ownedHere || taken[s] || reserved[s] {
+			if _, ownedHere := ownSlug[s]; ownedHere || reserved[s] {
 				continue
 			}
 			chosen = s

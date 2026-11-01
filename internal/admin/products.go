@@ -421,6 +421,12 @@ func (h *CatalogHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.writeChildRows(ctx, id, payload, true); err != nil {
+		if isUniqueViolation(err) {
+			// SKUs are unique per tenant (uq_product_variants_tenant_sku), so
+			// this is always a variant of this store. The product row stays.
+			common.JSONError(w, http.StatusConflict, "CONFLICT", "product created but a variant sku already exists in this store", map[string]any{"id": uuidString(id), "slug": slug})
+			return
+		}
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "product created but child rows failed: "+err.Error(), nil)
 		return
 	}
@@ -553,6 +559,10 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.writeChildRows(ctx, id, payload, false); err != nil {
+		if isUniqueViolation(err) {
+			common.JSONError(w, http.StatusConflict, "CONFLICT", "product updated but a variant sku already exists in this store", nil)
+			return
+		}
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "product updated but child rows failed: "+err.Error(), nil)
 		return
 	}

@@ -750,6 +750,7 @@ type ProductVariant struct {
 	Price      int64       `json:"price"`
 	Stock      int32       `json:"stock"`
 	Attributes []byte      `json:"attributes"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
 }
 
 type PushPreference struct {

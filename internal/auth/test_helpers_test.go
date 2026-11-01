@@ -57,7 +57,7 @@ func (f *fakeQueries) GetBrandByID(context.Context, dbgen.GetBrandByIDParams) (d
 	return dbgen.GetBrandByIDRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetBrandBySlug(context.Context, string) (dbgen.GetBrandBySlugRow, error) {
+func (f *fakeQueries) GetBrandBySlug(context.Context, dbgen.GetBrandBySlugParams) (dbgen.GetBrandBySlugRow, error) {
 	return dbgen.GetBrandBySlugRow{}, errNotImplemented
 }
 
@@ -69,7 +69,7 @@ func (f *fakeQueries) GetCategoryByID(context.Context, dbgen.GetCategoryByIDPara
 	return dbgen.GetCategoryByIDRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetCategoryBySlug(context.Context, string) (dbgen.GetCategoryBySlugRow, error) {
+func (f *fakeQueries) GetCategoryBySlug(context.Context, dbgen.GetCategoryBySlugParams) (dbgen.GetCategoryBySlugRow, error) {
 	return dbgen.GetCategoryBySlugRow{}, errNotImplemented
 }
 
@@ -601,7 +601,7 @@ func (f *fakeQueries) TransitionInventoryReservation(context.Context, dbgen.Tran
 	return dbgen.InventoryReservation{}, errNotImplemented
 }
 
-func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, string) error {
+func (f *fakeQueries) IncrementVoucherUsageByCode(context.Context, dbgen.IncrementVoucherUsageByCodeParams) error {
 	return errNotImplemented
 }
 
@@ -641,7 +641,7 @@ func (f *fakeQueries) GetVariantForCart(context.Context, dbgen.GetVariantForCart
 	return dbgen.GetVariantForCartRow{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetVoucherByCode(context.Context, string) (dbgen.Voucher, error) {
+func (f *fakeQueries) GetVoucherByCode(context.Context, dbgen.GetVoucherByCodeParams) (dbgen.Voucher, error) {
 	return dbgen.Voucher{}, errNotImplemented
 }
 
@@ -653,7 +653,7 @@ func (f *fakeQueries) UpdateVoucher(context.Context, dbgen.UpdateVoucherParams) 
 	return dbgen.Voucher{}, errNotImplemented
 }
 
-func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, string) (dbgen.Voucher, error) {
+func (f *fakeQueries) GetVoucherByCodeForUpdate(context.Context, dbgen.GetVoucherByCodeForUpdateParams) (dbgen.Voucher, error) {
 	return dbgen.Voucher{}, errNotImplemented
 }
 

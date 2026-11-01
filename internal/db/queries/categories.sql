@@ -14,5 +14,5 @@ LIMIT 1;
 -- name: GetCategoryBySlug :one
 SELECT id, name, slug, parent_id
 FROM categories
-WHERE slug = $1
-LIMIT 1;
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND slug = sqlc.arg(slug);

@@ -194,7 +194,7 @@ SELECT id,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
 WHERE slug = sqlc.arg(slug)
-  AND tenant_id = sqlc.arg(tenant_id)
+  AND products.tenant_id = sqlc.arg(tenant_id)
   AND status = 'published'
 LIMIT 1;
 
@@ -204,7 +204,8 @@ SELECT id,
        sku,
        price,
        stock,
-       attributes
+       attributes,
+       tenant_id
 FROM product_variants
 WHERE product_id = $1
 ORDER BY sku NULLS LAST, id;

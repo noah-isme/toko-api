@@ -352,7 +352,7 @@ SELECT id,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = products.id), 0)::int AS total_stock
 FROM products
 WHERE slug = $1
-  AND tenant_id = $2
+  AND products.tenant_id = $2
   AND status = 'published'
 LIMIT 1
 `
@@ -761,7 +761,8 @@ SELECT id,
        sku,
        price,
        stock,
-       attributes
+       attributes,
+       tenant_id
 FROM product_variants
 WHERE product_id = $1
 ORDER BY sku NULLS LAST, id
@@ -783,6 +784,7 @@ func (q *Queries) ListVariantsByProduct(ctx context.Context, productID pgtype.UU
 			&i.Price,
 			&i.Stock,
 			&i.Attributes,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}

@@ -1,0 +1,2 @@
+-- no-op: a validated constraint cannot be un-validated; 000057's down drops both
+-- constraints with the column.

@@ -1,6 +1,8 @@
 -- Admin catalog operations: bulk updates, CSV import lookups, CSV export and
--- low-stock settings. product_variants has no tenant_id, so every variant query
--- scopes through products.tenant_id.
+-- low-stock settings. Variant queries scope through products.tenant_id
+-- (product_variants.tenant_id, added in 000057, is always the product's tenant).
+-- SKUs and product slugs are unique per tenant, so import lookups never need to
+-- look at another tenant's rows.
 
 -- name: AdminGetProductsByIDsForUpdate :many
 -- Locks the target products in id order so concurrent catalog writers cannot
@@ -119,29 +121,12 @@ JOIN products p ON p.id = v.product_id
 WHERE (v.id = ANY(sqlc.arg(ids)::uuid[]) OR v.sku = ANY(sqlc.arg(skus)::text[]))
   AND p.tenant_id = sqlc.arg(tenant_id);
 
--- name: AdminExistingSKUsAnyTenant :many
--- product_variants.sku is globally unique. Returns only the subset of the
--- caller-supplied SKUs that exist anywhere (equivalent to one boolean per SKU),
--- never another tenant's row.
-SELECT sku::text
-FROM product_variants
-WHERE sku = ANY(sqlc.arg(skus)::text[]);
-
 -- name: AdminFindProductsForImport :many
 -- Resolves import product ids and slugs within the tenant.
 SELECT id, slug
 FROM products
 WHERE (id = ANY(sqlc.arg(ids)::uuid[]) OR slug = ANY(sqlc.arg(slugs)::text[]))
   AND tenant_id = sqlc.arg(tenant_id);
-
--- name: AdminSlugsTakenByOtherTenants :many
--- products.slug is globally unique. Returns only the subset of the
--- caller-supplied slugs that another tenant uses (one boolean per slug), never
--- another tenant's row. Phrased with `tenant_id =` so the tenant guard accepts it.
-SELECT slug
-FROM products
-WHERE slug = ANY(sqlc.arg(slugs)::text[])
-  AND NOT (tenant_id = sqlc.arg(tenant_id)::uuid);
 
 -- name: GetTenantSetting :one
 SELECT value

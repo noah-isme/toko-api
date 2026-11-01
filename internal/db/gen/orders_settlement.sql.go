@@ -102,12 +102,18 @@ func (q *Queries) DecrementVariantStock(ctx context.Context, arg DecrementVarian
 const incrementVoucherUsageByCode = `-- name: IncrementVoucherUsageByCode :exec
 UPDATE vouchers
 SET used_count = used_count + 1
-WHERE code = $1
+WHERE tenant_id = $1
+  AND code = $2
   AND (usage_limit IS NULL OR used_count < usage_limit)
 `
 
-func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, code string) error {
-	_, err := q.db.Exec(ctx, incrementVoucherUsageByCode, code)
+type IncrementVoucherUsageByCodeParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Code     string      `json:"code"`
+}
+
+func (q *Queries) IncrementVoucherUsageByCode(ctx context.Context, arg IncrementVoucherUsageByCodeParams) error {
+	_, err := q.db.Exec(ctx, incrementVoucherUsageByCode, arg.TenantID, arg.Code)
 	return err
 }
 
