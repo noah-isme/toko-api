@@ -218,6 +218,7 @@ type orderStatsDTO struct {
 	ShippedOrders     int64 `json:"shippedOrders"`
 	DeliveredOrders   int64 `json:"deliveredOrders"`
 	CancelledOrders   int64 `json:"cancelledOrders"`
+	ExpiredOrders     int64 `json:"expiredOrders"`
 	AverageOrderValue int64 `json:"averageOrderValue"`
 }
 
@@ -251,6 +252,7 @@ func (h *OrdersHandler) OrderStats(w http.ResponseWriter, r *http.Request) {
 		ShippedOrders:     stats.ShippedOrders,
 		DeliveredOrders:   stats.DeliveredOrders,
 		CancelledOrders:   stats.CancelledOrders,
+		ExpiredOrders:     stats.ExpiredOrders,
 		AverageOrderValue: stats.AverageOrderValue,
 	}})
 }

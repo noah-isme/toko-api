@@ -20,6 +20,7 @@ type mockQueries struct {
 	shipmentsByID map[string]*dbgen.Shipment
 	users         map[string]dbgen.GetUserByIDRow
 	events        []dbgen.ShipmentEvent
+	statusUpdates []dbgen.OrderStatus
 }
 
 func newMockQueries() *mockQueries {
@@ -112,6 +113,7 @@ func (m *mockQueries) UpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := uuidFromPG(arg.ID).String()
+	m.statusUpdates = append(m.statusUpdates, arg.Status)
 	order, ok := m.orders[key]
 	if !ok {
 		return pgtype.UUID{}, pgx.ErrNoRows

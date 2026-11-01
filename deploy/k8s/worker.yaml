@@ -27,6 +27,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          env:
+            # Periodic jobs (checkout expiry, shipment tracking) stay off until
+            # every API pod runs the release whose payment webhook guards PAID
+            # against EXPIRED orders. See docs/ops/RUNBOOK.md "Periodic jobs".
+            - name: WORKER_JOBS_ENABLED
+              value: "false"
           envFrom:
             - secretRef:
                 name: backend-toko-secrets

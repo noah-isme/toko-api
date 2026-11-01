@@ -26,6 +26,11 @@ func (n EmailNotifier) Notify(_ context.Context, event dbgen.DomainEvent) error 
 	if !n.Enabled || n.Mail == nil {
 		return nil
 	}
+	// Ops-only topics (payment.late) never email the customer, even when a
+	// payload happens to carry a recipient.
+	if events.IsCustomerSilent(event.Topic) {
+		return nil
+	}
 	if n.TopicToggles != nil {
 		if enabled, ok := n.TopicToggles[event.Topic]; ok && !enabled {
 			return nil

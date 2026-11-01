@@ -438,6 +438,7 @@ SELECT COUNT(*)::bigint                                                         
        COUNT(*) FILTER (WHERE o.status IN ('SHIPPED', 'OUT_FOR_DELIVERY'))::bigint         AS shipped_orders,
        COUNT(*) FILTER (WHERE o.status = 'DELIVERED')::bigint                              AS delivered_orders,
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
+       COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::bigint                                AS expired_orders,
        COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))
                 / NULLIF(COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0), 0)::bigint AS average_order_value
 FROM orders o
@@ -462,6 +463,7 @@ type AdminOrderStatsRow struct {
 	ShippedOrders     int64 `json:"shipped_orders"`
 	DeliveredOrders   int64 `json:"delivered_orders"`
 	CancelledOrders   int64 `json:"cancelled_orders"`
+	ExpiredOrders     int64 `json:"expired_orders"`
 	AverageOrderValue int64 `json:"average_order_value"`
 }
 
@@ -480,6 +482,7 @@ func (q *Queries) AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams
 		&i.ShippedOrders,
 		&i.DeliveredOrders,
 		&i.CancelledOrders,
+		&i.ExpiredOrders,
 		&i.AverageOrderValue,
 	)
 	return i, err

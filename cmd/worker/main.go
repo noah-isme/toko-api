@@ -16,6 +16,7 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/jobs"
 	"github.com/noah-isme/backend-toko/internal/lock"
 	"github.com/noah-isme/backend-toko/internal/notify"
 	"github.com/noah-isme/backend-toko/internal/obs"
@@ -67,6 +68,7 @@ func main() {
 		Enabled:            cfg.WebhookDeliveryEnabled,
 		Replay:             notify.RedisReplayProtector{Client: redisClient},
 		ReplayTTL:          cfg.WebhookReplayTTL,
+		Logger:             &logger,
 	}
 
 	deliveryWorker := notify.DeliveryWorker{
@@ -90,6 +92,25 @@ func main() {
 		Handler: func(jobCtx context.Context, task queue.Task) error {
 			return deliveryWorker.Handle(jobCtx, task.Payload)
 		},
+	}
+
+	if cfg.WorkerJobsEnabled {
+		mailer, err := jobs.MailerFromConfig(cfg, logger)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("build worker mailer")
+		}
+		bus := jobs.NewBus(cfg, queries, dispatcher, mailer, &logger)
+		runner, err := jobs.New(jobs.Deps{Cfg: cfg, Pool: pool, Queries: queries, Redis: redisClient, Logger: &logger, Events: bus, Mailer: mailer})
+		if err != nil {
+			logger.Fatal().Err(err).Msg("build periodic jobs")
+		}
+		go func() {
+			if err := runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error().Err(err).Msg("periodic jobs stopped")
+			}
+		}()
+	} else {
+		logger.Info().Msg("periodic jobs disabled (WORKER_JOBS_ENABLED=false)")
 	}
 
 	logger.Info().Msg("worker starting")

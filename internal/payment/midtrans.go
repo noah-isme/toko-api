@@ -49,6 +49,18 @@ func (m Midtrans) CreateIntent(ctx context.Context, req IntentRequest) (IntentRe
 			"gross_amount": req.Amount,
 		},
 	}
+	// Without an explicit expiry Midtrans applies its own per-method default
+	// (about 24h for VA and bank transfer), so the customer could pay long
+	// after the local deadline and the order would already be EXPIRED. Send
+	// the same window and use it as the local deadline.
+	start, minutes := snapExpiryWindow(time.Now(), req.ExpiresAtSec)
+	if minutes > 0 {
+		payload["expiry"] = map[string]any{
+			"start_time": start.In(midtransZone()).Format("2006-01-02 15:04:05 -0700"),
+			"unit":       "minute",
+			"duration":   minutes,
+		}
+	}
 	customer := map[string]string{}
 	if req.CustomerName != "" {
 		customer["first_name"] = req.CustomerName
@@ -100,7 +112,31 @@ func (m Midtrans) CreateIntent(ctx context.Context, req IntentRequest) (IntentRe
 		return IntentResponse{}, errors.New("midtrans response missing token or redirect_url")
 	}
 	expiresAt := time.Now().Add(time.Duration(req.ExpiresAtSec) * time.Second)
-	return IntentResponse{Provider: "midtrans", Token: result.Token, RedirectURL: result.RedirectURL, ExpiresAt: expiresAt.Unix()}, nil
+	if minutes > 0 {
+		expiresAt = start.Add(time.Duration(minutes) * time.Minute)
+	}
+	return IntentResponse{Provider: "midtrans", Token: result.Token, RedirectURL: result.RedirectURL, ExpiresAt: expiresAt.Unix(), ExpirySynced: minutes > 0}, nil
+}
+
+// snapExpiryWindow returns the Snap expiry start (whole seconds, as Midtrans
+// reads it) and the duration in whole minutes, rounded up so the provider
+// never closes the transaction before the local deadline. A non-positive TTL
+// yields 0 minutes (no expiry sent).
+func snapExpiryWindow(now time.Time, ttlSec int) (time.Time, int) {
+	if ttlSec <= 0 {
+		return now, 0
+	}
+	minutes := (ttlSec + 59) / 60
+	return now.Truncate(time.Second), minutes
+}
+
+// midtransZone is Asia/Jakarta, the zone Midtrans documents for start_time,
+// with a fixed +07:00 fallback when tzdata is unavailable.
+func midtransZone() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Jakarta"); err == nil {
+		return loc
+	}
+	return time.FixedZone("WIB", 7*3600)
 }
 
 func (m Midtrans) stubIntent(req IntentRequest) IntentResponse {
@@ -111,6 +147,8 @@ func (m Midtrans) stubIntent(req IntentRequest) IntentResponse {
 		Token:       token,
 		RedirectURL: fmt.Sprintf("%s/snap/v2/vtweb/%s", strings.TrimRight(m.snapHost(), "/"), token),
 		ExpiresAt:   expiresAt.Unix(),
+		// No provider behind the stub, so nothing stays payable past ExpiresAt.
+		ExpirySynced: true,
 	}
 }
 

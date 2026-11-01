@@ -1,0 +1,2 @@
+{"rajaongkir":{"status":{"code":200,"description":"OK"},"result":{"delivered":false,"summary":{"status":"RETURNED"},"delivery_status":{"status":"ON PROCESS","pod_receiver":"","pod_date":"","pod_time":""},"manifest":[
+{"manifest_code":"1","manifest_description":"Manifested","city_name":"JAKARTA","manifest_date":"2025-01-02","manifest_time":"10:00:00"}]}}}

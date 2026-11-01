@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -29,6 +30,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/resilience"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Dispatcher coordinates webhook scheduling and delivery.
@@ -41,9 +43,15 @@ type Dispatcher struct {
 	Enabled            bool
 	Replay             ReplayProtector
 	ReplayTTL          time.Duration
+	// Logger is optional; it reports events that could not be routed to a
+	// tenant.
+	Logger *zerolog.Logger
 }
 
-// Schedule enqueues deliveries for active endpoints subscribed to the topic.
+// Schedule enqueues deliveries for the active endpoints of the event's tenant
+// that subscribe to the topic. The tenant comes from ctx (tenant.WithTenant);
+// without one nothing is scheduled, so an event can never reach another
+// tenant's endpoints.
 func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) error {
 	if d == nil || !d.Enabled || d.Store == nil {
 		return nil
@@ -51,7 +59,20 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 	if strings.TrimSpace(event.Topic) == "" {
 		return nil
 	}
-	endpoints, err := d.Store.ListActiveEndpointsForTopic(ctx, event.Topic)
+	tenantUUID, ok := tenantFromContext(ctx)
+	if !ok {
+		if d.Logger != nil {
+			d.Logger.Warn().
+				Str("topic", event.Topic).
+				Str("event_id", uuidFrom(event.ID)).
+				Msg("webhook dispatch skipped: no tenant in context")
+		}
+		return nil
+	}
+	endpoints, err := d.Store.ListActiveEndpointsForTopicAndTenant(ctx, dbgen.ListActiveEndpointsForTopicAndTenantParams{
+		TenantID: tenantUUID,
+		Topic:    event.Topic,
+	})
 	if err != nil {
 		return err
 	}
@@ -79,6 +100,18 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 		}
 	}
 	return joined
+}
+
+func tenantFromContext(ctx context.Context) (pgtype.UUID, bool) {
+	raw, ok := tenant.FromContext(ctx)
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return pgtype.UUID{Bytes: parsed, Valid: true}, true
 }
 
 // WorkOnce dequeues eligible deliveries and attempts delivery.

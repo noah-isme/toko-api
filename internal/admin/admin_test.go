@@ -61,6 +61,8 @@ func TestOrderStatusFilter(t *testing.T) {
 		"pending_payment":  dbgen.OrderStatusPENDINGPAYMENT,
 		"out_for_delivery": dbgen.OrderStatusOUTFORDELIVERY,
 		"CANCELLED":        dbgen.OrderStatusCANCELLED,
+		"EXPIRED":          dbgen.OrderStatusEXPIRED,
+		"expired":          dbgen.OrderStatusEXPIRED,
 	}
 	for input, want := range valid {
 		got, err := orderStatusFilter(input)

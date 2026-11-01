@@ -21,3 +21,31 @@ func (q *Queries) GetTenantTimezone(ctx context.Context, id pgtype.UUID) (string
 	err := row.Scan(&timezone)
 	return timezone, err
 }
+
+const listActiveTenantIDs = `-- name: ListActiveTenantIDs :many
+SELECT id
+FROM tenants
+WHERE status = 'active'
+ORDER BY created_at, id
+`
+
+// Tenants the periodic worker jobs iterate over.
+func (q *Queries) ListActiveTenantIDs(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listActiveTenantIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

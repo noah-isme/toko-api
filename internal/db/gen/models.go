@@ -195,6 +195,7 @@ const (
 	OrderStatusOUTFORDELIVERY OrderStatus = "OUT_FOR_DELIVERY"
 	OrderStatusDELIVERED      OrderStatus = "DELIVERED"
 	OrderStatusCANCELLED      OrderStatus = "CANCELLED"
+	OrderStatusEXPIRED        OrderStatus = "EXPIRED"
 )
 
 func (e *OrderStatus) Scan(src interface{}) error {
@@ -788,15 +789,19 @@ type Session struct {
 }
 
 type Shipment struct {
-	ID             pgtype.UUID        `json:"id"`
-	OrderID        pgtype.UUID        `json:"order_id"`
-	Status         ShipmentStatus     `json:"status"`
-	Courier        pgtype.Text        `json:"courier"`
-	TrackingNumber pgtype.Text        `json:"tracking_number"`
-	History        []byte             `json:"history"`
-	LastStatus     NullShipmentStatus `json:"last_status"`
-	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
-	TenantID       pgtype.UUID        `json:"tenant_id"`
+	ID                pgtype.UUID        `json:"id"`
+	OrderID           pgtype.UUID        `json:"order_id"`
+	Status            ShipmentStatus     `json:"status"`
+	Courier           pgtype.Text        `json:"courier"`
+	TrackingNumber    pgtype.Text        `json:"tracking_number"`
+	History           []byte             `json:"history"`
+	LastStatus        NullShipmentStatus `json:"last_status"`
+	LastEventAt       pgtype.Timestamptz `json:"last_event_at"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	TrackNextPollAt   pgtype.Timestamptz `json:"track_next_poll_at"`
+	TrackAttempts     int32              `json:"track_attempts"`
+	TrackLastPolledAt pgtype.Timestamptz `json:"track_last_polled_at"`
+	TrackLastError    pgtype.Text        `json:"track_last_error"`
 }
 
 type ShipmentEvent struct {

@@ -18,6 +18,7 @@ func TestIsAllowedTransition(t *testing.T) {
 		dbgen.OrderStatusOUTFORDELIVERY,
 		dbgen.OrderStatusDELIVERED,
 		dbgen.OrderStatusCANCELLED,
+		dbgen.OrderStatusEXPIRED,
 	}
 
 	allowed := map[dbgen.OrderStatus]map[dbgen.OrderStatus]bool{
@@ -34,6 +35,7 @@ func TestIsAllowedTransition(t *testing.T) {
 		dbgen.OrderStatusOUTFORDELIVERY: {dbgen.OrderStatusDELIVERED: true},
 		dbgen.OrderStatusDELIVERED:      {},
 		dbgen.OrderStatusCANCELLED:      {},
+		dbgen.OrderStatusEXPIRED:        {},
 	}
 
 	for _, current := range all {
@@ -90,5 +92,18 @@ func TestAdminTargetsAreReachable(t *testing.T) {
 		if !reachable {
 			t.Errorf("admin target %s is unreachable from every state", target)
 		}
+	}
+}
+
+// EXPIRED is set only by the system and is terminal.
+func TestAdminCannotTargetOrLeaveExpired(t *testing.T) {
+	if isAllowedAdminTarget(dbgen.OrderStatusEXPIRED) {
+		t.Fatal("EXPIRED must not be an admin PATCH target")
+	}
+	if isAllowedAdminTarget(dbgen.OrderStatusPAID) {
+		t.Fatal("PAID must go through confirm-payment, not PATCH status")
+	}
+	if got := statusLabel("expired"); got != "Kedaluwarsa" {
+		t.Fatalf("statusLabel(expired) = %q", got)
 	}
 }

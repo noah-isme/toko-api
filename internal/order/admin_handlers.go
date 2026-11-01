@@ -73,6 +73,11 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// isAllowedAdminTarget lists the statuses an admin may set with PATCH status.
+// EXPIRED is system-only (checkout-expiry job or a provider-reported expiry)
+// and terminal, so it is neither a target here nor a source in
+// allowedOrderTransitions. PAID is reached through the payment webhook or
+// POST /admin/orders/{id}/confirm-payment, which also settle stock.
 func isAllowedAdminTarget(status dbgen.OrderStatus) bool {
 	switch status {
 	case dbgen.OrderStatusPACKED, dbgen.OrderStatusSHIPPED, dbgen.OrderStatusOUTFORDELIVERY, dbgen.OrderStatusDELIVERED, dbgen.OrderStatusCANCELLED:

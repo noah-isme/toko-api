@@ -12,6 +12,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/events"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 var (
@@ -92,8 +93,25 @@ func (s *Service) Create(ctx context.Context, orderID pgtype.UUID, courier, trac
 	return shipment, nil
 }
 
+// AppendOptions tunes AppendEventOpts.
+type AppendOptions struct {
+	// Silent records the event, the shipment status and the order status but
+	// sends no customer email and emits no domain event. The tracking job uses
+	// it for carrier events that are already old (historical backlog).
+	Silent bool
+	// RequireForward rejects a status equal to the shipment's current one
+	// with ErrInvalidShipmentTransition, so a repeated poll of the same
+	// carrier event does not insert a duplicate event or notify twice.
+	RequireForward bool
+}
+
 // AppendEvent records a tracking event, updates the shipment state machine and synchronises the order status.
 func (s *Service) AppendEvent(ctx context.Context, orderID pgtype.UUID, status dbgen.ShipmentStatus, description, location *string, occurredAt *time.Time, payload []byte) (dbgen.ShipmentEvent, dbgen.Shipment, error) {
+	return s.AppendEventOpts(ctx, orderID, status, description, location, occurredAt, payload, AppendOptions{})
+}
+
+// AppendEventOpts is AppendEvent with options.
+func (s *Service) AppendEventOpts(ctx context.Context, orderID pgtype.UUID, status dbgen.ShipmentStatus, description, location *string, occurredAt *time.Time, payload []byte, opts AppendOptions) (dbgen.ShipmentEvent, dbgen.Shipment, error) {
 	if s.Q == nil {
 		return dbgen.ShipmentEvent{}, dbgen.Shipment{}, errors.New("shipment queries not configured")
 	}
@@ -115,7 +133,7 @@ func (s *Service) AppendEvent(ctx context.Context, orderID pgtype.UUID, status d
 	if shipment.LastStatus.Valid {
 		current = shipment.LastStatus.ShipmentStatus
 	}
-	if !allowedShipmentTransition(current, status) {
+	if !allowedShipmentTransition(current, status) || (opts.RequireForward && current == status) {
 		return dbgen.ShipmentEvent{}, dbgen.Shipment{}, ErrInvalidShipmentTransition
 	}
 	event, err := s.Q.InsertShipmentEvent(ctx, dbgen.InsertShipmentEventParams{
@@ -142,8 +160,10 @@ func (s *Service) AppendEvent(ctx context.Context, orderID pgtype.UUID, status d
 	if err := s.syncOrderStatus(ctx, orderID, status); err != nil {
 		return event, shipment, err
 	}
-	s.notify(ctx, orderID, status)
-	s.emit(ctx, orderID, shipment.ID, status, payload)
+	if !opts.Silent {
+		s.notify(ctx, orderID, status)
+		s.emit(ctx, orderID, shipment.ID, status, payload)
+	}
 	return event, shipment, nil
 }
 
@@ -159,17 +179,43 @@ func (s *Service) syncOrderStatus(ctx context.Context, orderID pgtype.UUID, stat
 	// A cancelled order must never be advanced by a late carrier webhook. The
 	// rank of CANCELLED sits outside the fulfilment sequence, so compare it
 	// explicitly rather than through the monotonic rank.
-	if current == dbgen.OrderStatusCANCELLED {
+	if current == dbgen.OrderStatusCANCELLED || current == dbgen.OrderStatusEXPIRED {
 		return nil
 	}
 	if orderStatusRank(current) >= orderStatusRank(target) {
 		return nil
 	}
-	_, err = s.Q.UpdateOrderStatusIfAllowed(ctx, dbgen.UpdateOrderStatusIfAllowedParams{ID: orderID, Status: target})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+	// The status guard only allows single forward steps, while carriers can
+	// jump (e.g. SHIPPED straight to DELIVERED). Walk the fulfilment sequence
+	// one guarded step at a time; stop at the first rejected step.
+	for orderStatusRank(current) < orderStatusRank(target) {
+		next, ok := nextFulfilmentStatus(current)
+		if !ok {
+			return nil
+		}
+		if _, err := s.Q.UpdateOrderStatusIfAllowed(ctx, dbgen.UpdateOrderStatusIfAllowedParams{ID: orderID, Status: next}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		current = next
 	}
 	return nil
+}
+
+// nextFulfilmentStatus is the single forward step the status guard allows
+// from a shipped-or-later order status.
+func nextFulfilmentStatus(status dbgen.OrderStatus) (dbgen.OrderStatus, bool) {
+	switch status {
+	case dbgen.OrderStatusPACKED:
+		return dbgen.OrderStatusSHIPPED, true
+	case dbgen.OrderStatusSHIPPED:
+		return dbgen.OrderStatusOUTFORDELIVERY, true
+	case dbgen.OrderStatusOUTFORDELIVERY:
+		return dbgen.OrderStatusDELIVERED, true
+	}
+	return "", false
 }
 
 func (s *Service) notify(ctx context.Context, orderID pgtype.UUID, status dbgen.ShipmentStatus) {
@@ -224,6 +270,12 @@ func (s *Service) emit(ctx context.Context, orderID, shipmentID pgtype.UUID, sta
 		}
 	}
 	if order, err := s.Q.GetOrderByID(ctx, orderID); err == nil {
+		// Outbound webhooks are routed by the tenant in ctx. Carrier callbacks
+		// and the tracking job do not run under the order's tenant, so set it
+		// from the order itself.
+		if order.TenantID.Valid {
+			ctx = tenant.WithTenant(ctx, uuidString(order.TenantID))
+		}
 		if user, err := s.Q.GetUserByID(ctx, order.UserID); err == nil && user.Email != "" {
 			data["email"] = user.Email
 		}
@@ -286,8 +338,8 @@ func orderStatusRank(status dbgen.OrderStatus) int {
 		return 4
 	case dbgen.OrderStatusDELIVERED:
 		return 5
-	case dbgen.OrderStatusCANCELLED:
-		// Cancellation is terminal and off the fulfilment sequence. Callers must
+	case dbgen.OrderStatusCANCELLED, dbgen.OrderStatusEXPIRED:
+		// Cancellation (and expiry) is terminal and off the fulfilment sequence. Callers must
 		// special-case it instead of relying on this rank.
 		return -1
 	default:

@@ -1,10 +1,12 @@
 package checkout
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,9 +16,11 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/cart"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/db/txretry"
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/pricing"
+	"github.com/noah-isme/backend-toko/internal/reservation"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
@@ -169,136 +173,19 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		"cost":    in.ShippingCost,
 	})
 
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return Output{}, err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-	qtx := s.Q.WithTx(tx)
-	if expired, expiryErr := qtx.ListExpiredInventoryReservationsForTenant(ctx, tID); expiryErr == nil {
-		for _, reservation := range expired {
-			if _, transitionErr := qtx.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
-				ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusEXPIRED,
-			}); transitionErr == nil {
-				if releaseErr := qtx.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty}); releaseErr != nil {
-					return Output{}, releaseErr
-				}
-				if releaseErr := qtx.ReleaseFlashSaleReservations(ctx, reservation.OrderID); releaseErr != nil {
-					return Output{}, releaseErr
-				}
-			}
-		}
-	} else {
-		return Output{}, expiryErr
-	}
-
-	cartRow, err := qtx.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cID, TenantID: tID})
-	if err != nil {
-		return Output{}, err
-	}
-	if cartRow.UserID.Valid && !cart.UUIDEqual(cartRow.UserID, uID) {
-		return Output{}, errors.New("cart does not belong to user")
-	}
-	items, err := qtx.ListCartItems(ctx, cID)
-	if err != nil {
-		return Output{}, err
-	}
-	if len(items) == 0 {
-		return Output{}, errors.New("cart is empty")
-	}
-	pricingItems := make([]pricing.Item, 0, len(items))
-	for _, it := range items {
-		pricingItems = append(pricingItems, pricing.Item{Qty: int(it.Qty), UnitPrice: pricing.Money(it.UnitPrice)})
-	}
-	var discount int64
-	if cartRow.AppliedVoucherCode.Valid && cartRow.AppliedVoucherCode.String != "" && s.CartSvc != nil {
-		discount, _, err = s.CartSvc.EvaluateVoucher(ctx, cID, cartRow.AppliedVoucherCode.String)
-		if err != nil {
-			discount = 0
-		}
-	}
-	summary := pricing.Compute(pricingItems, pricing.Money(discount), s.TaxBps, pricing.Money(in.ShippingCost))
-
-	orderNumber, err := nextOrderNumber(ctx, qtx, time.Now().UTC())
-	if err != nil {
-		return Output{}, err
-	}
-
-	order, err := qtx.CreateOrder(ctx, dbgen.CreateOrderParams{
-		UserID:             uID,
-		CartID:             cID,
-		Status:             "PENDING_PAYMENT",
-		Currency:           s.Currency,
-		PricingSubtotal:    summary.Subtotal,
-		PricingDiscount:    summary.Discount,
-		PricingTax:         summary.Tax,
-		PricingShipping:    summary.Shipping,
-		PricingTotal:       summary.Total,
-		ShippingAddress:    shippingAddress,
-		ShippingOption:     shippingOption,
-		Notes:              toNullableText(in.Notes),
-		AppliedVoucherCode: cartRow.AppliedVoucherCode,
-		TenantID:           tID,
-		OrderNumber:        pgtype.Text{String: orderNumber, Valid: true},
+	var (
+		order       dbgen.Order
+		orderNumber string
+		summary     pricing.Summary
+	)
+	// The transaction is retried when PostgreSQL picks it as a deadlock victim
+	// so a concurrent expiry or settlement never fails the customer's checkout.
+	err = txretry.Run(ctx, txretry.DefaultAttempts, func(ctx context.Context) error {
+		var txErr error
+		order, orderNumber, summary, txErr = s.createOrderTx(ctx, tID, cID, uID, in, shippingAddress, shippingOption)
+		return txErr
 	})
 	if err != nil {
-		return Output{}, err
-	}
-	reservationTTL := s.InventoryReservationTTL
-	if reservationTTL <= 0 {
-		reservationTTL = 15 * time.Minute
-	}
-	reservationExpiry := time.Now().Add(reservationTTL)
-	for _, it := range items {
-		if err := qtx.CreateOrderItem(ctx, dbgen.CreateOrderItemParams{
-			OrderID:   order.ID,
-			ProductID: it.ProductID,
-			VariantID: it.VariantID,
-			Title:     it.Title,
-			Slug:      it.Slug,
-			Qty:       it.Qty,
-			UnitPrice: it.UnitPrice,
-			Subtotal:  it.Subtotal,
-		}); err != nil {
-			return Output{}, err
-		}
-		if !it.VariantID.Valid {
-			return Output{}, fmt.Errorf("product %s has no inventory variant", cart.UUIDString(it.ProductID))
-		}
-		if _, err := qtx.ReserveVariantStock(ctx, dbgen.ReserveVariantStockParams{ID: it.VariantID, Qty: it.Qty}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return Output{}, fmt.Errorf("insufficient stock for %s", it.Title)
-			}
-			return Output{}, err
-		}
-		if _, err := qtx.CreateInventoryReservation(ctx, dbgen.CreateInventoryReservationParams{
-			TenantID:  tID,
-			OrderID:   order.ID,
-			ProductID: it.ProductID,
-			VariantID: it.VariantID,
-			Qty:       it.Qty,
-			ExpiresAt: pgtype.Timestamptz{Time: reservationExpiry, Valid: true},
-		}); err != nil {
-			return Output{}, err
-		}
-		if it.CampaignID.Valid {
-			if _, err := qtx.ReserveFlashSaleItem(ctx, dbgen.ReserveFlashSaleItemParams{
-				OrderID:    order.ID,
-				CampaignID: it.CampaignID,
-				ProductID:  it.ProductID,
-				TenantID:   tID,
-				Qty:        it.Qty,
-			}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return Output{}, fmt.Errorf("flash sale stock unavailable for %s", it.Title)
-				}
-				return Output{}, err
-			}
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return Output{}, err
 	}
 
@@ -315,20 +202,12 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 	if s.PaymentSvc != nil {
 		pay, perr := s.PaymentSvc.CreateIntent(ctx, out.OrderID, int64(summary.Total), in.PaymentMethod, "")
 		if perr != nil {
-			// A provider outage must not strand the reserved stock. Release the
-			// reservation only when it is still RESERVED, making this cleanup
-			// safe to retry.
-			if reservations, listErr := s.Q.ListInventoryReservationsByOrder(ctx, order.ID); listErr == nil {
-				for _, reservation := range reservations {
-					if _, transitionErr := s.Q.TransitionInventoryReservation(ctx, dbgen.TransitionInventoryReservationParams{
-						ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusRELEASED,
-					}); transitionErr == nil {
-						_ = s.Q.ReleaseVariantStock(ctx, dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty})
-					}
-				}
+			// A provider outage must not strand the reserved stock. The cleanup
+			// takes the order lock and the status guard, so it cannot cancel an
+			// order that a concurrent webhook or expiry already settled.
+			if cleanupErr := s.cancelUnpayableOrder(ctx, order.ID); cleanupErr != nil {
+				return Output{}, errors.Join(fmt.Errorf("create payment intent: %w", perr), cleanupErr)
 			}
-			_ = s.Q.ReleaseFlashSaleReservations(ctx, order.ID)
-			_ = s.Q.UpdateOrderStatus(ctx, dbgen.UpdateOrderStatusParams{ID: order.ID, Status: dbgen.OrderStatusCANCELLED})
 			return Output{}, fmt.Errorf("create payment intent: %w", perr)
 		}
 		if pay.RedirectUrl.Valid {
@@ -354,6 +233,197 @@ func (s *Service) Create(ctx context.Context, userID *string, in Input) (Output,
 		_, _ = s.Events.Emit(ctx, events.TopicOrderCreated, order.ID, payload)
 	}
 	return out, nil
+}
+
+// createOrderTx creates the order, its items and its stock/flash-sale
+// reservations in one transaction. Locks follow the global order documented in
+// internal/reservation: every product_variants row in ascending variant_id
+// first, then every flash_sale_items row in ascending id.
+func (s *Service) createOrderTx(ctx context.Context, tID, cID, uID pgtype.UUID, in Input, shippingAddress, shippingOption []byte) (dbgen.Order, string, pricing.Summary, error) {
+	var (
+		zeroOrder   dbgen.Order
+		zeroSummary pricing.Summary
+	)
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.Q.WithTx(tx)
+
+	cartRow, err := qtx.GetCartByID(ctx, dbgen.GetCartByIDParams{ID: cID, TenantID: tID})
+	if err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+	if cartRow.UserID.Valid && !cart.UUIDEqual(cartRow.UserID, uID) {
+		return zeroOrder, "", zeroSummary, errors.New("cart does not belong to user")
+	}
+	items, err := qtx.ListCartItems(ctx, cID)
+	if err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+	if len(items) == 0 {
+		return zeroOrder, "", zeroSummary, errors.New("cart is empty")
+	}
+	for _, it := range items {
+		if !it.VariantID.Valid {
+			return zeroOrder, "", zeroSummary, fmt.Errorf("product %s has no inventory variant", cart.UUIDString(it.ProductID))
+		}
+	}
+	pricingItems := make([]pricing.Item, 0, len(items))
+	for _, it := range items {
+		pricingItems = append(pricingItems, pricing.Item{Qty: int(it.Qty), UnitPrice: pricing.Money(it.UnitPrice)})
+	}
+	var discount int64
+	if cartRow.AppliedVoucherCode.Valid && cartRow.AppliedVoucherCode.String != "" && s.CartSvc != nil {
+		discount, _, err = s.CartSvc.EvaluateVoucher(ctx, cID, cartRow.AppliedVoucherCode.String)
+		if err != nil {
+			discount = 0
+		}
+	}
+	summary := pricing.Compute(pricingItems, pricing.Money(discount), s.TaxBps, pricing.Money(in.ShippingCost))
+
+	orderNumber, err := nextOrderNumber(ctx, qtx, time.Now().UTC())
+	if err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+
+	order, err := qtx.CreateOrder(ctx, dbgen.CreateOrderParams{
+		UserID:             uID,
+		CartID:             cID,
+		Status:             "PENDING_PAYMENT",
+		Currency:           s.Currency,
+		PricingSubtotal:    summary.Subtotal,
+		PricingDiscount:    summary.Discount,
+		PricingTax:         summary.Tax,
+		PricingShipping:    summary.Shipping,
+		PricingTotal:       summary.Total,
+		ShippingAddress:    shippingAddress,
+		ShippingOption:     shippingOption,
+		Notes:              toNullableText(in.Notes),
+		AppliedVoucherCode: cartRow.AppliedVoucherCode,
+		TenantID:           tID,
+		OrderNumber:        pgtype.Text{String: orderNumber, Valid: true},
+	})
+	if err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+	for _, it := range items {
+		if err := qtx.CreateOrderItem(ctx, dbgen.CreateOrderItemParams{
+			OrderID:   order.ID,
+			ProductID: it.ProductID,
+			VariantID: it.VariantID,
+			Title:     it.Title,
+			Slug:      it.Slug,
+			Qty:       it.Qty,
+			UnitPrice: it.UnitPrice,
+			Subtotal:  it.Subtotal,
+		}); err != nil {
+			return zeroOrder, "", zeroSummary, err
+		}
+	}
+
+	reservationTTL := s.InventoryReservationTTL
+	if reservationTTL <= 0 {
+		reservationTTL = 15 * time.Minute
+	}
+	reservationExpiry := time.Now().Add(reservationTTL)
+	byVariant := sortedByVariant(items)
+	for _, it := range byVariant {
+		if _, err := qtx.ReserveVariantStock(ctx, dbgen.ReserveVariantStockParams{ID: it.VariantID, Qty: it.Qty}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return zeroOrder, "", zeroSummary, fmt.Errorf("insufficient stock for %s", it.Title)
+			}
+			return zeroOrder, "", zeroSummary, err
+		}
+		if _, err := qtx.CreateInventoryReservation(ctx, dbgen.CreateInventoryReservationParams{
+			TenantID:  tID,
+			OrderID:   order.ID,
+			ProductID: it.ProductID,
+			VariantID: it.VariantID,
+			Qty:       it.Qty,
+			ExpiresAt: pgtype.Timestamptz{Time: reservationExpiry, Valid: true},
+		}); err != nil {
+			return zeroOrder, "", zeroSummary, err
+		}
+	}
+
+	var campaignIDs, productIDs []pgtype.UUID
+	for _, it := range byVariant {
+		if it.CampaignID.Valid {
+			campaignIDs = append(campaignIDs, it.CampaignID)
+			productIDs = append(productIDs, it.ProductID)
+		}
+	}
+	if len(campaignIDs) > 0 {
+		if _, err := qtx.LockFlashSaleItemsForCampaignProducts(ctx, dbgen.LockFlashSaleItemsForCampaignProductsParams{
+			CampaignIds: campaignIDs,
+			ProductIds:  productIDs,
+		}); err != nil {
+			return zeroOrder, "", zeroSummary, err
+		}
+	}
+	for _, it := range byVariant {
+		if !it.CampaignID.Valid {
+			continue
+		}
+		if _, err := qtx.ReserveFlashSaleItem(ctx, dbgen.ReserveFlashSaleItemParams{
+			OrderID:    order.ID,
+			CampaignID: it.CampaignID,
+			ProductID:  it.ProductID,
+			TenantID:   tID,
+			Qty:        it.Qty,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return zeroOrder, "", zeroSummary, fmt.Errorf("flash sale stock unavailable for %s", it.Title)
+			}
+			return zeroOrder, "", zeroSummary, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return zeroOrder, "", zeroSummary, err
+	}
+	return order, orderNumber, summary, nil
+}
+
+// cancelUnpayableOrder cancels an order whose payment intent could not be
+// created and returns its stock. It locks the order and goes through the
+// status guard, so an order that is no longer PENDING_PAYMENT is left alone.
+func (s *Service) cancelUnpayableOrder(ctx context.Context, orderID pgtype.UUID) error {
+	return txretry.Run(ctx, txretry.DefaultAttempts, func(ctx context.Context) error {
+		tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		qtx := s.Q.WithTx(tx)
+		if _, err := qtx.GetOrderByIDForUpdate(ctx, orderID); err != nil {
+			return fmt.Errorf("lock order: %w", err)
+		}
+		if _, err := qtx.UpdateOrderStatusIfAllowed(ctx, dbgen.UpdateOrderStatusIfAllowedParams{ID: orderID, Status: dbgen.OrderStatusCANCELLED}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("cancel order: %w", err)
+		}
+		if _, err := reservation.ReleaseOrder(ctx, qtx, orderID, dbgen.InventoryReservationStatusRELEASED); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+// sortedByVariant returns the cart items ordered by variant id (bytewise, the
+// same order PostgreSQL uses for uuid), so stock rows are locked in ascending
+// variant_id like every release path.
+func sortedByVariant(items []dbgen.ListCartItemsRow) []dbgen.ListCartItemsRow {
+	out := append([]dbgen.ListCartItemsRow(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return bytes.Compare(out[i].VariantID.Bytes[:], out[j].VariantID.Bytes[:]) < 0
+	})
+	return out
 }
 
 // CreateDraft computes a checkout preview for the review step. It deliberately

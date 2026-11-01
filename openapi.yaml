@@ -1440,6 +1440,7 @@ paths:
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
+      description: Runs under the order row lock with the status guard; only pending_payment orders can be cancelled (expired, paid or cancelled orders return 400 INVALID_STATE).
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1453,6 +1454,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
         '404':
           description: '`NOT_FOUND`: no order with this id for the current user.'
           content:
@@ -1465,6 +1467,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/orders/{orderId}/shipment:
     get:
       summary: Get shipment detail for order
@@ -1547,6 +1550,58 @@ paths:
           description: Invalid state transition
         '500':
           description: Server error
+  /api/v1/admin/orders/{id}/confirm-payment:
+    post:
+      summary: Confirm a manual payment (admin)
+      description: |
+        Settles a PENDING_PAYMENT order after an admin verified a manual bank transfer, exactly like a
+        provider PAID callback under the order row lock: latest payment PAID (a "manual" payment is
+        created when none exists) with a payment_events row {source: admin, reason: manual_confirmation,
+        actorId, note}, order PAID via the status guard, reservations and flash-sale quota committed,
+        voucher settled, order.paid emitted. Admin role required; audit-logged. Tenant-scoped.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Order ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminConfirmPaymentRequest'
+      responses:
+        '200':
+          description: Payment confirmed and order settled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminConfirmPaymentResponse'
+        '400':
+          description: BAD_REQUEST (invalid id or payload), VALIDATION_ERROR (note too long) or TENANT_REQUIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404':
+          description: Order not found in the caller's tenant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: INVALID_STATE - the order is not PENDING_PAYMENT (paid, cancelled or expired) or its latest payment was refunded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/admin/vouchers:
     post:
       summary: Create voucher
@@ -2296,6 +2351,11 @@ paths:
           description: Unauthorized
         '404':
           description: Order not found
+        '409':
+          description: INVALID_STATE - the order is no longer pending_payment (expired, cancelled or paid), including when that happened during the provider call
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '500':
           description: Payment provider error
   /api/v1/payments/{orderId}/instructions:
@@ -2320,7 +2380,20 @@ paths:
               required: [proof]
               properties:
                 proof: { type: string, format: binary }
-      responses: { '201': { description: Payment proof stored } }
+      description: |
+        Stores a transfer proof for a pending_payment order. A proof keeps the order from expiring for
+        JOB_CHECKOUT_PROOF_HOLD_HOURS (default 72h) counted from the first proof, so an admin can confirm it.
+      responses:
+        '201': { description: Payment proof stored }
+        '400': { description: Missing file or file larger than 5 MB }
+        '401': { description: Unauthorized }
+        '404': { description: Order not found }
+        '409':
+          description: INVALID_STATE - payment proof can only be uploaded for pending orders
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/webhooks/shipping/{courier}:
     post:
       summary: Shipping webhook receiver (idempotent)
@@ -2386,6 +2459,10 @@ paths:
       summary: Payment webhook receiver
       description: |
         Payment provider callback that verifies the provider signature and updates the order payment status. Request body and signature header are provider-specific.
+        Locks the order first; payment rows and events change only on real state transitions (idempotent retries).
+        A PAID callback for an EXPIRED/CANCELLED order records the payment as PAID, leaves the order unchanged,
+        emits the ops-only payment.late event and returns 204. Provider EXPIRED moves a pending order to EXPIRED.
+        The replay key is kept only for successful (2xx) requests.
       parameters:
         - name: provider
           in: path
@@ -2406,16 +2483,16 @@ paths:
             schema:
               $ref: '#/components/schemas/PaymentWebhookPayload'
       responses:
-        '200':
-          description: Webhook processed
+        '204':
+          description: Webhook processed (including no-op duplicates and late payments)
         '400':
-          description: Invalid body or order identifier
+          description: Invalid body, order identifier or amount mismatch
         '401':
           description: Signature verification failed
         '404':
-          description: Provider not supported or payment not found
+          description: Provider not supported, order not found or payment not found
         '409':
-          description: Duplicate webhook or amount mismatch
+          description: Duplicate webhook (REPLAY)
         '500':
           description: Server error
   /api/v1/notifications:
@@ -2909,7 +2986,7 @@ paths:
           description: Order status filter. Omit or pass "all" for no filter.
           schema:
             type: string
-            enum: [all, PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED]
+            enum: [all, PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, EXPIRED]
         - name: search
           in: query
           description: Match on order number, customer name, or customer email
@@ -3914,7 +3991,8 @@ components:
         customerEmail: { type: [string, "null"] }
         status:
           type: string
-          enum: [PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED]
+          enum: [PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, EXPIRED]
+          description: EXPIRED is a system-only terminal status (payment deadline passed); an EXPIRED order with paymentStatus PAID received a late payment that needs a manual refund.
         paymentStatus: { type: string, description: "Latest payment status; empty string when no payment row exists" }
         currency: { type: string }
         total: { type: integer }
@@ -3953,7 +4031,7 @@ components:
                   subtotal: { type: integer }
     AdminOrderStats:
       type: object
-      required: [totalOrders, totalRevenue, revenueOrders, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, averageOrderValue]
+      required: [totalOrders, totalRevenue, revenueOrders, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, expiredOrders, averageOrderValue]
       properties:
         totalOrders: { type: integer, description: "All orders in range, any status" }
         totalRevenue: { type: integer, description: Net revenue (IDR) of orders matching the revenue rule }
@@ -3963,6 +4041,7 @@ components:
         shippedOrders: { type: integer }
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
+        expiredOrders: { type: integer, description: Orders in EXPIRED (payment deadline passed) }
         averageOrderValue: { type: integer, description: "totalRevenue / revenueOrders (rounded), 0 when none" }
     AdminVoucher:
       type: object
@@ -4010,6 +4089,7 @@ components:
         shippedOrders: { type: integer }
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
+        expiredOrders: { type: integer, description: Orders in EXPIRED (payment deadline passed) }
         topProducts:
           type: array
           items:
@@ -5044,6 +5124,7 @@ components:
             - out_for_delivery
             - delivered
             - cancelled
+            - expired
         statusLabel:
           type: string
           description: Indonesian human-readable status label
@@ -5399,6 +5480,21 @@ components:
           type: integer
         code:
           type: string
+    AdminConfirmPaymentRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: Optional verification note stored on the payment event
+    AdminConfirmPaymentResponse:
+      type: object
+      required: [orderId, orderStatus, paymentId, paymentStatus]
+      properties:
+        orderId: { type: string, format: uuid }
+        orderStatus: { type: string, enum: [PAID] }
+        paymentId: { type: string, format: uuid }
+        paymentStatus: { type: string, enum: [PAID] }
     AdminOrderStatusPatchRequest:
       type: object
       required:

@@ -158,6 +158,92 @@ func (q *Queries) ListShipmentEvents(ctx context.Context, shipmentID pgtype.UUID
 	return items, nil
 }
 
+const listShipmentsDueForTracking = `-- name: ListShipmentsDueForTracking :many
+SELECT id, order_id, tenant_id, courier, tracking_number, status, last_status, last_event_at, track_attempts
+FROM shipments
+WHERE tenant_id = $1
+  AND COALESCE(last_status, status) IN ('SHIPPED', 'OUT_FOR_DELIVERY')
+  AND COALESCE(tracking_number, '') <> ''
+  AND track_next_poll_at IS NOT NULL
+  AND track_next_poll_at <= now()
+  AND COALESCE(last_event_at, now()) >= now() - make_interval(days => $2::int)
+ORDER BY track_next_poll_at, id
+LIMIT $3
+`
+
+type ListShipmentsDueForTrackingParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	MaxAgeDays int32       `json:"max_age_days"`
+	BatchSize  int32       `json:"batch_size"`
+}
+
+type ListShipmentsDueForTrackingRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	Courier        pgtype.Text        `json:"courier"`
+	TrackingNumber pgtype.Text        `json:"tracking_number"`
+	Status         ShipmentStatus     `json:"status"`
+	LastStatus     NullShipmentStatus `json:"last_status"`
+	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
+	TrackAttempts  int32              `json:"track_attempts"`
+}
+
+// Shipments the tracking job should poll now, oldest schedule first.
+func (q *Queries) ListShipmentsDueForTracking(ctx context.Context, arg ListShipmentsDueForTrackingParams) ([]ListShipmentsDueForTrackingRow, error) {
+	rows, err := q.db.Query(ctx, listShipmentsDueForTracking, arg.TenantID, arg.MaxAgeDays, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListShipmentsDueForTrackingRow
+	for rows.Next() {
+		var i ListShipmentsDueForTrackingRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.TenantID,
+			&i.Courier,
+			&i.TrackingNumber,
+			&i.Status,
+			&i.LastStatus,
+			&i.LastEventAt,
+			&i.TrackAttempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const stopTrackingStaleShipments = `-- name: StopTrackingStaleShipments :execrows
+UPDATE shipments
+SET track_next_poll_at = NULL,
+    track_last_error = 'stopped: max_age'
+WHERE tenant_id = $1
+  AND track_next_poll_at IS NOT NULL
+  AND COALESCE(last_status, status) IN ('SHIPPED', 'OUT_FOR_DELIVERY')
+  AND COALESCE(last_event_at, now()) < now() - make_interval(days => $2::int)
+`
+
+type StopTrackingStaleShipmentsParams struct {
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	MaxAgeDays int32       `json:"max_age_days"`
+}
+
+// Stops polling shipments whose last carrier event is older than the max age.
+func (q *Queries) StopTrackingStaleShipments(ctx context.Context, arg StopTrackingStaleShipmentsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, stopTrackingStaleShipments, arg.TenantID, arg.MaxAgeDays)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateShipmentStatus = `-- name: UpdateShipmentStatus :one
 UPDATE shipments
 SET status = $2,
@@ -177,4 +263,33 @@ func (q *Queries) UpdateShipmentStatus(ctx context.Context, arg UpdateShipmentSt
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const updateShipmentTrackingPoll = `-- name: UpdateShipmentTrackingPoll :exec
+UPDATE shipments
+SET track_attempts = $1,
+    track_next_poll_at = $2,
+    track_last_polled_at = now(),
+    track_last_error = $3
+WHERE id = $4
+  AND tenant_id = $5
+`
+
+type UpdateShipmentTrackingPollParams struct {
+	TrackAttempts   int32              `json:"track_attempts"`
+	TrackNextPollAt pgtype.Timestamptz `json:"track_next_poll_at"`
+	TrackLastError  pgtype.Text        `json:"track_last_error"`
+	ID              pgtype.UUID        `json:"id"`
+	TenantID        pgtype.UUID        `json:"tenant_id"`
+}
+
+func (q *Queries) UpdateShipmentTrackingPoll(ctx context.Context, arg UpdateShipmentTrackingPollParams) error {
+	_, err := q.db.Exec(ctx, updateShipmentTrackingPoll,
+		arg.TrackAttempts,
+		arg.TrackNextPollAt,
+		arg.TrackLastError,
+		arg.ID,
+		arg.TenantID,
+	)
+	return err
 }

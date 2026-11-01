@@ -29,10 +29,13 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 DELETE FROM webhook_endpoints
 WHERE id = sqlc.arg(id);
 
--- name: ListActiveEndpointsForTopic :many
+-- Endpoints are tenant-owned: an event is only delivered to the endpoints of
+-- the tenant that produced it.
+-- name: ListActiveEndpointsForTopicAndTenant :many
 SELECT *
 FROM webhook_endpoints
-WHERE active = true
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND active = true
   AND (coalesce(array_length(topics, 1), 0) = 0 OR sqlc.arg(topic)::text = ANY(topics))
 ORDER BY created_at ASC;
 

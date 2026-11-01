@@ -1,6 +1,6 @@
 # Order Management Endpoints
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
 ## 4.2 List User Orders
 
@@ -162,7 +162,28 @@ Authorization: Bearer <token>
 
 **Notes:**
 - Hanya bisa cancel order dengan status `pending_payment`
-- Order yang sudah `packed`, `shipped`, `out_for_delivery`, atau `delivered` tidak bisa dicancel
+- Order yang sudah `packed`, `shipped`, `out_for_delivery`, `delivered`, `expired`, atau `cancelled` tidak bisa dicancel: `400 INVALID_STATE` (`"only pending orders can be canceled"`). Order milik user lain: `404 NOT_FOUND`.
+- Cancel runs under the order row lock with the status guard, so it cannot overwrite an order that a payment callback or the expiry job has just moved to `paid`/`expired`; stock is released only by the request that actually cancelled.
+
+---
+
+## Order status values
+
+Customer endpoints serialise statuses in lowercase with an Indonesian `statusLabel`:
+
+| status | statusLabel | notes |
+| --- | --- | --- |
+| `pending_payment` | Menunggu Pembayaran | payable until the payment deadline + grace (payment.md 6.4) |
+| `paid` | Dibayar | |
+| `packed` | Dikemas | |
+| `shipped` | Sedang Dikirim | |
+| `out_for_delivery` | Dalam Pengiriman | |
+| `delivered` | Selesai | |
+| `cancelled` | Dibatalkan | |
+| `expired` | Kedaluwarsa | **new.** Terminal, set only by the system when the payment deadline passed (worker) or the provider reported the payment expired. Not cancellable; no new payment intent or proof upload (`409 INVALID_STATE`). |
+
+For an expired order `statusHistory` ends with `{"status": "expired", "timestamp": <updatedAt>}`, e.g.
+`[{"status":"pending_payment","timestamp":"..."},{"status":"expired","timestamp":"..."}]`.
 
 ---
 
@@ -208,3 +229,8 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+**Tracking sources:** events come from courier webhooks and from the worker's tracking poller
+(webhooks.md "Shipment tracking poller"). Poller events use the carrier's own time (WIB, returned
+in UTC) as `timestamp`; the response shape is unchanged.
+

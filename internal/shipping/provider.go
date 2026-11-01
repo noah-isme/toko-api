@@ -20,3 +20,16 @@ type TrackEvent struct {
 type Provider interface {
 	Track(ctx context.Context, req TrackReq) ([]TrackEvent, error)
 }
+
+// TrackResult is a provider's tracking answer with an optional terminal
+// state ("RETURNED" or "LOST") that ends polling without applying events.
+type TrackResult struct {
+	Events   []TrackEvent
+	Terminal string
+}
+
+// TrackerWithSummary is implemented by providers that can report a terminal
+// carrier state in addition to events.
+type TrackerWithSummary interface {
+	TrackWithSummary(ctx context.Context, req TrackReq) (TrackResult, error)
+}

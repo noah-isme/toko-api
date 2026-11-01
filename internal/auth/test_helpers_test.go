@@ -585,10 +585,6 @@ func (f *fakeQueries) ReserveFlashSaleItem(context.Context, dbgen.ReserveFlashSa
 	return dbgen.FlashSaleOrderItem{}, errNotImplemented
 }
 
-func (f *fakeQueries) ListExpiredInventoryReservationsForTenant(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
-	return nil, errNotImplemented
-}
-
 func (f *fakeQueries) ListInventoryReservationsByOrder(context.Context, pgtype.UUID) ([]dbgen.InventoryReservation, error) {
 	return nil, errNotImplemented
 }
@@ -739,10 +735,6 @@ func (f *fakeQueries) InsertDomainEvent(context.Context, dbgen.InsertDomainEvent
 
 func (f *fakeQueries) InsertWebhookDlq(context.Context, dbgen.InsertWebhookDlqParams) (dbgen.WebhookDlq, error) {
 	return dbgen.WebhookDlq{}, errNotImplemented
-}
-
-func (f *fakeQueries) ListActiveEndpointsForTopic(context.Context, string) ([]dbgen.WebhookEndpoint, error) {
-	return nil, errNotImplemented
 }
 
 func (f *fakeQueries) ListDomainEventsByTopic(context.Context, dbgen.ListDomainEventsByTopicParams) ([]dbgen.ListDomainEventsByTopicRow, error) {

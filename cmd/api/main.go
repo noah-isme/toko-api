@@ -327,6 +327,7 @@ func main() {
 		Enabled:            cfg.WebhookDeliveryEnabled,
 		Replay:             notify.RedisReplayProtector{Client: redisClient},
 		ReplayTTL:          cfg.WebhookReplayTTL,
+		Logger:             &logger,
 	}
 	emailNotifier := notify.EmailNotifier{
 		Mail:         mailer,
@@ -351,7 +352,7 @@ func main() {
 		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier},
 	}
 
-	orderHandler := &order.Handler{Q: queries}
+	orderHandler := &order.Handler{Q: queries, Pool: pool}
 	orderAdmin := &order.AdminHandler{Q: queries}
 	notifyAdmin := &notify.AdminHandler{Store: notifyStore, Disp: dispatcher}
 	queueAdmin := &queue.AdminHandler{
@@ -408,6 +409,7 @@ func main() {
 	}
 	paymentSvc := &payment.Service{
 		Q:               queries,
+		Pool:            pool,
 		Provider:        activeProvider,
 		IntentTTL:       cfg.PaymentIntentTTL,
 		CallbackBaseURL: cfg.PaymentCallbackBaseURL,
@@ -436,6 +438,7 @@ func main() {
 		Events:       bus,
 		CatalogCache: catalogCache,
 		Analytics:    nil,
+		Logger:       &logger,
 	}
 	platformHandler := &platform.Handler{Pool: pool, Providers: providers}
 
@@ -804,6 +807,7 @@ func main() {
 			admin.Patch("/flash-sales/{id}", campaignHandler.AdminUpdate)
 			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
 			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
+			admin.Post("/orders/{id}/confirm-payment", webhookHandler.AdminConfirmPayment)
 			admin.Post("/webhooks", notifyAdmin.CreateEndpoint)
 			admin.Put("/webhooks/{id}", notifyAdmin.UpdateEndpoint)
 			admin.Get("/webhooks", notifyAdmin.ListEndpoints)
