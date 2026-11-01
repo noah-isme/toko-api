@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -182,6 +183,10 @@ func (f *fakeQueries) UpdateUserProfile(ctx context.Context, arg dbgen.UpdateUse
 func (f *fakeQueries) CreateUser(ctx context.Context, arg dbgen.CreateUserParams) (dbgen.CreateUserRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if _, exists := f.usersByEmail[strings.ToLower(arg.Email)]; exists {
+		// What pgx v5 returns for users_email_key.
+		return dbgen.CreateUserRow{}, fmt.Errorf("create user: %w", &pgconn.PgError{Code: "23505", ConstraintName: "users_email_key"})
+	}
 
 	id := uuid.New()
 	pgID, _ := pgUUIDFromString(id.String())

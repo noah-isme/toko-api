@@ -14,7 +14,7 @@ import (
 
 	"github.com/alexedwards/argon2id"
 	"github.com/google/uuid"
-	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jws"
