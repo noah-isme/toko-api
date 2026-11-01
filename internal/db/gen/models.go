@@ -235,11 +235,12 @@ func (ns NullOrderStatus) Value() (driver.Value, error) {
 type PaymentStatus string
 
 const (
-	PaymentStatusPENDING  PaymentStatus = "PENDING"
-	PaymentStatusPAID     PaymentStatus = "PAID"
-	PaymentStatusFAILED   PaymentStatus = "FAILED"
-	PaymentStatusEXPIRED  PaymentStatus = "EXPIRED"
-	PaymentStatusREFUNDED PaymentStatus = "REFUNDED"
+	PaymentStatusPENDING           PaymentStatus = "PENDING"
+	PaymentStatusPAID              PaymentStatus = "PAID"
+	PaymentStatusFAILED            PaymentStatus = "FAILED"
+	PaymentStatusEXPIRED           PaymentStatus = "EXPIRED"
+	PaymentStatusREFUNDED          PaymentStatus = "REFUNDED"
+	PaymentStatusPARTIALLYREFUNDED PaymentStatus = "PARTIALLY_REFUNDED"
 )
 
 func (e *PaymentStatus) Scan(src interface{}) error {
@@ -596,6 +597,7 @@ type Payment struct {
 	Amount          pgtype.Int8        `json:"amount"`
 	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
 	TenantID        pgtype.UUID        `json:"tenant_id"`
+	RefundedAmount  int64              `json:"refunded_amount"`
 }
 
 type PaymentEvent struct {
@@ -734,16 +736,22 @@ type QuotaCounter struct {
 }
 
 type Refund struct {
-	ID          pgtype.UUID        `json:"id"`
-	TenantID    pgtype.UUID        `json:"tenant_id"`
-	ReturnID    pgtype.UUID        `json:"return_id"`
-	OrderID     pgtype.UUID        `json:"order_id"`
-	Provider    string             `json:"provider"`
-	ProviderRef string             `json:"provider_ref"`
-	Amount      int64              `json:"amount"`
-	Status      string             `json:"status"`
-	Reason      pgtype.Text        `json:"reason"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID             pgtype.UUID        `json:"id"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	ReturnID       pgtype.UUID        `json:"return_id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	Provider       string             `json:"provider"`
+	ProviderRef    string             `json:"provider_ref"`
+	Amount         int64              `json:"amount"`
+	Status         string             `json:"status"`
+	Reason         pgtype.Text        `json:"reason"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ProviderStatus pgtype.Text        `json:"provider_status"`
+	FailureReason  pgtype.Text        `json:"failure_reason"`
+	SettledAt      pgtype.Timestamptz `json:"settled_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Attempt        int32              `json:"attempt"`
+	PaymentID      pgtype.UUID        `json:"payment_id"`
 }
 
 type Return struct {

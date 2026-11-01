@@ -136,6 +136,10 @@ Authorization: Bearer <token>
 }
 ```
 
+**`payment.status` mapping** (from the stored payment status): `PAID` and
+`PARTIALLY_REFUNDED` → `paid` (a partial refund leaves the order paid); `PENDING` →
+`pending`; `FAILED`, `EXPIRED` and `REFUNDED` → `failed`.
+
 ---
 
 ## 4.4 Cancel Order

@@ -15,7 +15,7 @@ INSERT INTO payments (
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), $9, $10)
 RETURNING id, order_id, provider, status, provider_payload, created_at, updated_at, channel, intent_token, redirect_url, amount,
-          expires_at, tenant_id;
+          expires_at, tenant_id, refunded_amount;
 
 -- name: UpdatePaymentStatus :exec
 UPDATE payments
@@ -26,7 +26,7 @@ WHERE id = $1;
 
 -- name: GetLatestPaymentByOrder :one
 SELECT id, order_id, provider, status, provider_payload, created_at, updated_at, channel, intent_token, redirect_url, amount,
-       expires_at, tenant_id
+       expires_at, tenant_id, refunded_amount
 FROM payments
 WHERE order_id = $1
 ORDER BY created_at DESC

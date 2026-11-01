@@ -76,7 +76,15 @@ Authorization: Bearer <token>
 - `PAID` — payment settled
 - `FAILED` — payment failed or order was cancelled
 - `EXPIRED` — payment intent expired
-- `REFUNDED` — payment refunded
+- `PARTIALLY_REFUNDED` — part of the paid amount was refunded
+- `REFUNDED` — the whole paid amount was refunded
+
+Refund webhook notifications (Midtrans `refund` / `partial_refund`) are recorded as payment events
+and do not change `status`; the admin refund flow (`POST /api/v1/admin/returns/{returnId}/refund`,
+see [customer-operations.md](customer-operations.md#refunds)) owns `status` and the refunded amount.
+Once a payment is `PARTIALLY_REFUNDED` or `REFUNDED`, every later webhook for it (for example a
+re-delivered `settlement`) is likewise recorded as an event only: it never moves the payment back
+to `PAID` or re-settles the order.
 
 **Error Response:**
 

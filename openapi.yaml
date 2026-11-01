@@ -1189,6 +1189,8 @@ paths:
                     $ref: '#/components/schemas/Cart'
     post:
       summary: Create a cart
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '201':
           description: Created cart
@@ -1235,6 +1237,8 @@ paths:
           format: uuid
     post:
       summary: Add an item to the cart
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -1325,6 +1329,8 @@ paths:
   /api/v1/checkout:
     post:
       summary: Create order (pending payment)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       description: |
         Creates an order from the user's cart, resolves the shipping address by ID,
         generates a human-readable order number, and opens a payment intent with the
@@ -1356,6 +1362,8 @@ paths:
   /api/v1/checkout/draft:
     post:
       summary: Preview checkout totals before creating an order
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       security:
         - bearerAuth: []
       requestBody:
@@ -1432,6 +1440,31 @@ paths:
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { description: Order cancelled }
+        '400':
+          description: >
+            `INVALID_STATE` when the order is not `pending_payment` (only pending orders
+            can be cancelled), or `BAD_REQUEST` for an invalid order or user id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: '`NOT_FOUND`: no order with this id for the current user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: >
+            `IDEMPOTENT_REPLAY`: the same `Idempotency-Key` was used within the TTL and
+            the first response was not a 5xx.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/orders/{orderId}/shipment:
     get:
       summary: Get shipment detail for order
@@ -2235,6 +2268,8 @@ paths:
   /api/v1/payments/intent:
     post:
       summary: Create or reuse a payment intent
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       security:
         - bearerAuth: []
       requestBody:
@@ -3210,6 +3245,7 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -3217,7 +3253,13 @@ paths:
             schema: { $ref: '#/components/schemas/ReturnRequest' }
       responses:
         '201': { description: Return request created }
-        '409': { description: Order is not eligible or has an active return }
+        '409':
+          description: >
+            `RETURN_NOT_ALLOWED` (order is not eligible), `RETURN_EXISTS` (an active return
+            already exists) or `IDEMPOTENT_REPLAY` (same `Idempotency-Key` within the TTL).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/returns:
     get:
       summary: List the current customer's returns
@@ -3229,7 +3271,15 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
-      responses: { '200': { description: Return request detail } }
+      responses:
+        '200':
+          description: Return request detail, including its refund (null when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ReturnDetail' }
   /api/v1/support/tickets:
     get:
       summary: List customer support tickets
@@ -3302,7 +3352,17 @@ paths:
     get:
       summary: List tenant return requests
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Return requests } }
+      responses:
+        '200':
+          description: Return requests, each with its refund (null when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminReturn' }
   /api/v1/admin/returns/{returnId}:
     patch:
       summary: Update return workflow status
@@ -3314,14 +3374,100 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/StatusRequest' }
-      responses: { '200': { description: Return status updated } }
+      description: >
+        `status` must be one of `APPROVED`, `REJECTED`, `RECEIVED`, `CANCELLED`. Refused while
+        the return has a refund that is in flight, has an unknown gateway outcome, or was accepted
+        by the gateway but not yet recorded, and once the return is `REFUNDED`.
+      responses:
+        '200': { description: Return status updated }
+        '400': { description: Invalid return id, payload or status }
+        '404': { description: Return not found in this tenant }
+        '409':
+          description: >
+            `RETURN_REFUND_PENDING`: the return has an unsettled refund; retry the refund first
+            (details `{refundId, refundStatus}`). `REFUND_ALREADY_ISSUED`: the return is
+            `REFUNDED`; its status can no longer change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/returns/{returnId}/refund:
     post:
-      summary: Issue a provider-backed refund for a return
+      summary: Issue (or complete) a provider-backed refund for a return
+      description: >
+        Refunds `amount` (default: the whole remaining refundable amount of the order's payment)
+        through the payment's gateway (Midtrans or Xendit). One refund per return; an order with
+        several returns over time can be refunded in parts (partial refunds), and the payment
+        becomes `PARTIALLY_REFUNDED` until the paid amount is fully refunded (`REFUNDED`).
+        Safe to retry: every attempt uses a stable gateway key, an unknown gateway outcome is
+        checked with the gateway before the same key is sent again, and a refund the gateway
+        accepted but that could not be recorded (500 `REFUND_RECORD_FAILED`) is completed by
+        retrying the same request without calling the gateway again.
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
-      responses: { '200': { description: Refund issued } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundRequest' }
+      responses:
+        '200':
+          description: Refund accepted by the gateway and recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/RefundResponse' }
+        '400':
+          description: '`BAD_REQUEST`: invalid return id, malformed body, `amount <= 0`, or `reason` longer than 500 characters.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: '`NOT_FOUND`: return not found in this tenant.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: >
+            `REFUND_NOT_ALLOWED` (return is not `APPROVED`/`RECEIVED`);
+            `REFUND_ALREADY_ISSUED` (this return already has a recorded refund);
+            `PAYMENT_NOT_REFUNDABLE` (no `PAID`/`PARTIALLY_REFUNDED` payment for the order);
+            `REFUND_EXCEEDS_REFUNDABLE` (`amount` larger than what is left, or nothing left; details `{requested, refundable}`);
+            `REFUND_IN_PROGRESS` (another request for this return is calling the gateway, retry in about 60 s;
+            or the previous attempt has an unknown outcome and the body `amount` differs from it: details
+            `{refundId, pendingAmount}`, retry with that amount or without a body; or, with message
+            "refund state requires reconciliation by an operator" and details `{refundId}`, the refunds
+            row is in a state the API cannot resolve on its own (e.g. the payment provider changed
+            since the unknown-outcome attempt, or no payment exists for an accepted refund): retrying
+            does not help, an operator must reconcile it with the gateway);
+            `REFUND_UNSUPPORTED` (the payment provider has no refund support);
+            `IDEMPOTENT_REPLAY` (same `Idempotency-Key` within the TTL after a 2xx/4xx response).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500':
+          description: >
+            `REFUND_RECORD_FAILED`: the gateway accepted the refund but local records could not be
+            finalised. Details `{refundId, providerRef}`. Retry the same request (same or new
+            `Idempotency-Key`; a 5xx releases the key) to complete it; the gateway is not called again.
+            `INTERNAL`: nothing was sent to the gateway.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '502':
+          description: >
+            `REFUND_FAILED`: the gateway rejected the refund or did not answer; `message` carries the
+            gateway error. Details `{refundId, retryable}`. `retryable: false` means the gateway
+            definitively rejected it (e.g. Midtrans `412`, Xendit `INSUFFICIENT_BALANCE`): fix the cause,
+            then retry (a new gateway key is used). `retryable: true` means the outcome is unknown
+            (timeout, 5xx, duplicate/in-progress answer): retry as is; the same gateway key is checked and
+            re-sent, so money cannot move twice. No money moved unless a later retry reports success.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/support/tickets:
     get:
       summary: List tenant support tickets
@@ -3418,6 +3564,19 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: >
+        Optional client-generated key (e.g. a UUID) that makes a write safe to resend. Without
+        the header the request is processed normally. Within `IDEMPOTENCY_TTL_SEC` (default 600 s)
+        a request repeating a key gets `409 IDEMPOTENT_REPLAY` without being processed, **except**
+        that a 5xx response releases the key immediately, so the same key may be reused to retry a
+        failed request (a handler panic, which ends as a 500, also releases it). Keys are global (not scoped per user or route): generate a fresh one per
+        logical operation.
   schemas:
     ReturnRequest:
       type: object
@@ -3493,6 +3652,92 @@ components:
       required: [status]
       properties:
         status: { type: string }
+    RefundRequest:
+      type: object
+      description: Optional body; omit it (or send `{}`) to refund the whole remaining amount.
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: >
+            Amount to refund in IDR (same unit as order totals). Defaults to the remaining
+            refundable amount; must be `<= refundableAmount`. When retrying an attempt whose
+            outcome is unknown, it must equal the pending amount (or be omitted).
+        reason:
+          type: string
+          maxLength: 500
+          description: >
+            Free-text note, default `customer return`. Sent to the gateway (Midtrans `reason`,
+            Xendit `metadata.note`). Ignored when retrying an attempt whose outcome is unknown
+            (the original request is re-sent unchanged).
+    RefundResponse:
+      type: object
+      required: [id, returnId, orderId, provider, providerRef, amount, status, refundedAmount, refundableAmount, paymentStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        returnId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        provider: { type: string, example: xendit }
+        providerRef: { type: string, description: Gateway refund reference (Xendit refund id, Midtrans refund key). }
+        amount: { type: integer, description: Amount of this refund. }
+        status:
+          type: string
+          enum: [SUCCEEDED, PENDING]
+          description: '`PENDING` = accepted by the gateway, settles asynchronously (money is committed; local records are final).'
+        refundedAmount: { type: integer, description: Cumulative refunded amount of the order's payment. }
+        refundableAmount: { type: integer, description: What can still be refunded after this refund. }
+        paymentStatus: { type: string, enum: [PARTIALLY_REFUNDED, REFUNDED] }
+        createdAt: { type: string, format: date-time }
+    ReturnRefundSummary:
+      type: object
+      description: >
+        The return's refund. Only `settled: true` means local records were finalised (money moved);
+        `amount` may be less than the order total (partial refund).
+      required: [id, status, amount, providerRef, settled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, SUCCEEDED, FAILED]
+          description: >
+            `PENDING` with `settled: false`: gateway call in flight or outcome unknown (retry the refund).
+            `FAILED`: the gateway rejected the last attempt (a retry uses a new gateway key).
+        amount: { type: integer }
+        providerRef: { type: string, description: Empty until the gateway accepted the refund. }
+        settled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        providerStatus:
+          type: [string, 'null']
+          description: Admin endpoints only. `UNKNOWN` when the last gateway call had no definite outcome; otherwise the gateway status or rejection code.
+        attempt:
+          type: integer
+          description: Admin endpoints only. Number of gateway keys used before the current one (starts at 0).
+    ReturnDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        status: { type: string, enum: [REQUESTED, APPROVED, REJECTED, RECEIVED, REFUNDED, CANCELLED] }
+        reason: { type: string }
+        notes: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        refund:
+          description: Null when the return has no refund. Customer view (no `providerStatus`/`attempt`).
+          oneOf:
+            - $ref: '#/components/schemas/ReturnRefundSummary'
+            - type: 'null'
+    AdminReturn:
+      allOf:
+        - $ref: '#/components/schemas/ReturnDetail'
+        - type: object
+          properties:
+            userId: { type: string, format: uuid }
+            refund:
+              description: Null when the return has no refund. Includes `providerStatus` and `attempt`.
+              oneOf:
+                - $ref: '#/components/schemas/ReturnRefundSummary'
+                - type: 'null'
     SupportTicketRequest:
       type: object
       required: [subject, message]
@@ -3978,8 +4223,12 @@ components:
             - PAID
             - FAILED
             - EXPIRED
+            - PARTIALLY_REFUNDED
             - REFUNDED
-          description: Consolidated payment status (uppercase)
+          description: >
+            Consolidated payment status (uppercase). `PARTIALLY_REFUNDED`: part of the paid amount
+            was refunded; `REFUNDED`: all of it. Only the admin refund flow sets these; refund
+            webhooks are recorded as payment events and do not change the status.
     AnalyticsSalesDay:
       type: object
       required:

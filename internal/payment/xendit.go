@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -112,6 +114,217 @@ func (x Xendit) client() *http.Client {
 	}
 	return &http.Client{Timeout: 15 * time.Second}
 }
+
+var (
+	_ RefundProvider       = Xendit{}
+	_ RefundLookupProvider = Xendit{}
+)
+
+// xenditRefundBody is a struct (not a map) so the same RefundRequest always
+// encodes to byte-identical JSON: Xendit rejects an idempotency-key reused with a
+// different payload.
+type xenditRefundBody struct {
+	PaymentRequestID string            `json:"payment_request_id,omitempty"`
+	InvoiceID        string            `json:"invoice_id,omitempty"`
+	ReferenceID      string            `json:"reference_id"`
+	Amount           int64             `json:"amount"`
+	Currency         string            `json:"currency"`
+	Reason           string            `json:"reason"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+}
+
+type xenditRefund struct {
+	ID          string `json:"id"`
+	ReferenceID string `json:"reference_id"`
+	Status      string `json:"status"`
+	FailureCode string `json:"failure_code"`
+}
+
+// Refund creates a refund through Xendit's refunds API. req.RefundKey is sent as
+// both the idempotency-key header and reference_id. The payment is addressed by
+// payment_request_id when req.PaymentRef is a payment request ("pr-..."), otherwise
+// by invoice_id (this integration stores the invoice id as the payment token).
+func (x Xendit) Refund(ctx context.Context, req RefundRequest) (RefundResult, error) {
+	if err := validateRefundRequest(req); err != nil {
+		return RefundResult{}, err
+	}
+	if x.Stub {
+		return RefundResult{ProviderRef: "stub-refund-" + req.RefundKey, Status: RefundStatusSucceeded}, nil
+	}
+	if strings.TrimSpace(x.SecretKey) == "" {
+		return RefundResult{}, &RefundError{Definite: true, Code: "INVALID_REQUEST", Message: "xendit secret key is required"}
+	}
+	if strings.TrimSpace(req.PaymentRef) == "" {
+		return RefundResult{}, &RefundError{Definite: true, Code: "INVALID_REQUEST", Message: "xendit payment reference is required"}
+	}
+	payload := xenditRefundBody{
+		ReferenceID: req.RefundKey,
+		Amount:      req.Amount,
+		Currency:    xenditCurrency(req.Currency),
+		Reason:      "REQUESTED_BY_CUSTOMER",
+	}
+	if strings.HasPrefix(req.PaymentRef, "pr-") {
+		payload.PaymentRequestID = req.PaymentRef
+	} else {
+		payload.InvoiceID = req.PaymentRef
+	}
+	if note := truncateRunes(strings.TrimSpace(req.Reason), 500); note != "" {
+		payload.Metadata = map[string]string{"note": note}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return RefundResult{}, &RefundError{Definite: true, Code: "INVALID_REQUEST", Message: err.Error()}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, x.apiHost()+"/refunds", bytes.NewReader(body))
+	if err != nil {
+		return RefundResult{}, &RefundError{Definite: true, Code: "INVALID_REQUEST", Message: err.Error()}
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("idempotency-key", req.RefundKey)
+	x.setAuth(request)
+	status, responseBody, err := doLimited(x.client(), request)
+	if err != nil {
+		return RefundResult{}, fmt.Errorf("xendit refund: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return RefundResult{}, xenditRefundHTTPError(status, responseBody)
+	}
+	var result xenditRefund
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(string(responseBody))}
+	}
+	if result.ID == "" {
+		return RefundResult{}, &RefundError{Code: "UNPARSABLE", Message: "xendit refund response missing id"}
+	}
+	return xenditRefundOutcome(result)
+}
+
+// LookupRefund lists the refunds of the payment and reports the one whose
+// reference_id is req.RefundKey.
+func (x Xendit) LookupRefund(ctx context.Context, req RefundRequest) (RefundResult, bool, error) {
+	if x.Stub {
+		return RefundResult{}, false, nil
+	}
+	if strings.TrimSpace(x.SecretKey) == "" || strings.TrimSpace(req.PaymentRef) == "" {
+		return RefundResult{}, false, &RefundError{Definite: true, Code: "INVALID_REQUEST", Message: "xendit secret key and payment reference are required"}
+	}
+	query := url.Values{"limit": {"100"}}
+	if strings.HasPrefix(req.PaymentRef, "pr-") {
+		query.Set("payment_request_id", req.PaymentRef)
+	} else {
+		query.Set("invoice_id", req.PaymentRef)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, x.apiHost()+"/refunds?"+query.Encode(), nil)
+	if err != nil {
+		return RefundResult{}, false, err
+	}
+	x.setAuth(request)
+	status, responseBody, err := doLimited(x.client(), request)
+	if err != nil {
+		return RefundResult{}, false, fmt.Errorf("xendit refund lookup: %w", err)
+	}
+	if status == http.StatusNotFound {
+		return RefundResult{}, false, nil
+	}
+	if status < 200 || status >= 300 {
+		// A failed lookup never proves absence: keep the outcome unknown.
+		return RefundResult{}, false, &RefundError{Code: "HTTP_" + strconv.Itoa(status), Message: truncateProviderMessage(string(responseBody))}
+	}
+	var result struct {
+		Data    []xenditRefund `json:"data"`
+		HasMore bool           `json:"has_more"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return RefundResult{}, false, &RefundError{Code: "UNPARSABLE", Message: truncateProviderMessage(string(responseBody))}
+	}
+	for _, refund := range result.Data {
+		if refund.ReferenceID == req.RefundKey && refund.ID != "" {
+			res, err := xenditRefundOutcome(refund)
+			if err != nil {
+				return RefundResult{}, true, err
+			}
+			return res, true, nil
+		}
+	}
+	if result.HasMore {
+		return RefundResult{}, false, &RefundError{Code: "LOOKUP_INCOMPLETE", Message: "xendit refund list has more pages"}
+	}
+	return RefundResult{}, false, nil
+}
+
+func xenditRefundOutcome(refund xenditRefund) (RefundResult, error) {
+	switch strings.ToUpper(refund.Status) {
+	case "SUCCEEDED":
+		return RefundResult{ProviderRef: refund.ID, Status: RefundStatusSucceeded}, nil
+	case "FAILED", "CANCELLED":
+		code := refund.FailureCode
+		if code == "" {
+			code = strings.ToUpper(refund.Status)
+		}
+		return RefundResult{}, &RefundError{Definite: true, Code: code, Message: "xendit refund " + strings.ToLower(refund.Status)}
+	default:
+		return RefundResult{ProviderRef: refund.ID, Status: RefundStatusPending}, nil
+	}
+}
+
+// xenditRefundHTTPError classifies a non-2xx answer. 5xx, 409 (duplicate or
+// in-progress request under the same key), 429 and duplicate/idempotency error
+// codes are indeterminate: the key may already be held by Xendit and must not be
+// rotated. Other 4xx answers are definite rejections.
+func xenditRefundHTTPError(status int, body []byte) error {
+	var parsed struct {
+		ErrorCode string `json:"error_code"`
+		Message   string `json:"message"`
+	}
+	text := strings.TrimSpace(string(body))
+	code := "HTTP_" + strconv.Itoa(status)
+	message := truncateProviderMessage(text)
+	if json.Unmarshal(body, &parsed) == nil && parsed.ErrorCode != "" {
+		code = parsed.ErrorCode
+		message = truncateProviderMessage(parsed.Message)
+	}
+	upper := strings.ToUpper(code)
+	switch {
+	case status >= 500, status == http.StatusConflict, status == http.StatusTooManyRequests,
+		strings.Contains(upper, "DUPLICATE"), strings.Contains(upper, "IDEMPOTENCY"), strings.Contains(upper, "IN_PROGRESS"):
+		return &RefundError{Code: code, Message: message}
+	default:
+		return &RefundError{Definite: true, Code: code, Message: message}
+	}
+}
+
+func xenditCurrency(currency string) string {
+	if c := strings.ToUpper(strings.TrimSpace(currency)); c != "" {
+		return c
+	}
+	return "IDR"
+}
+
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+// maxProviderMessageRunes caps provider text copied into errors: a gateway 5xx can
+// carry up to 1 MiB of HTML, which must not reach API messages or failure_reason.
+const maxProviderMessageRunes = 300
+
+func truncateProviderMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if len([]rune(s)) <= maxProviderMessageRunes {
+		return s
+	}
+	return truncateRunes(s, maxProviderMessageRunes) + "..."
+}
+
+func (x Xendit) setAuth(request *http.Request) {
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(x.SecretKey)+":")))
+}
+
 func (x Xendit) apiHost() string {
 	host := strings.TrimRight(strings.TrimSpace(x.BaseURL), "/")
 	if host == "" {
