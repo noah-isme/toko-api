@@ -218,6 +218,7 @@ func main() {
 	catalogCache := catalog.NewCache(redisClient, cfg.CatalogCacheTTL, cfg.RedisCachePrefix)
 	catalogService, err := catalog.NewService(catalog.ServiceConfig{
 		Queries:      queries,
+		FuzzyRunner:  catalog.PoolFuzzyRunner{Pool: pool},
 		Cache:        catalogCache,
 		DefaultPage:  cfg.CatalogDefaultPage,
 		DefaultLimit: cfg.CatalogDefaultLimit,

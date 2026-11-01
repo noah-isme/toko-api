@@ -639,21 +639,22 @@ type Plan struct {
 }
 
 type Product struct {
-	ID           pgtype.UUID        `json:"id"`
-	Title        string             `json:"title"`
-	Slug         string             `json:"slug"`
-	BrandID      pgtype.UUID        `json:"brand_id"`
-	CategoryID   pgtype.UUID        `json:"category_id"`
-	Price        int64              `json:"price"`
-	CompareAt    pgtype.Int8        `json:"compare_at"`
-	InStock      bool               `json:"in_stock"`
-	Thumbnail    pgtype.Text        `json:"thumbnail"`
-	Badges       []string           `json:"badges"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	TenantID     pgtype.UUID        `json:"tenant_id"`
-	Description  pgtype.Text        `json:"description"`
-	SearchVector interface{}        `json:"search_vector"`
+	ID                 pgtype.UUID        `json:"id"`
+	Title              string             `json:"title"`
+	Slug               string             `json:"slug"`
+	BrandID            pgtype.UUID        `json:"brand_id"`
+	CategoryID         pgtype.UUID        `json:"category_id"`
+	Price              int64              `json:"price"`
+	CompareAt          pgtype.Int8        `json:"compare_at"`
+	InStock            bool               `json:"in_stock"`
+	Thumbnail          pgtype.Text        `json:"thumbnail"`
+	Badges             []string           `json:"badges"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	TenantID           pgtype.UUID        `json:"tenant_id"`
+	Description        pgtype.Text        `json:"description"`
+	SearchVector       interface{}        `json:"search_vector"`
+	SearchVectorSimple interface{}        `json:"search_vector_simple"`
 }
 
 type ProductImage struct {
@@ -675,6 +676,13 @@ type ProductQuestion struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	TenantID     pgtype.UUID        `json:"tenant_id"`
+}
+
+type ProductSale struct {
+	ProductID pgtype.UUID        `json:"product_id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	UnitsSold int64              `json:"units_sold"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ProductSpec struct {

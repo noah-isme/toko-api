@@ -1,10 +1,25 @@
+-- Search predicate shared by every public list/facet query below:
+--   match_mode 'fts'   -> websearch_to_tsquery('simple', q) against the stored
+--                         products.search_vector_simple column (title weight A, description B),
+--                         kept current by trg_products_search_vector_simple and served by
+--                         idx_products_search_simple (migration 000049). Ranking reads the same
+--                         stored column, so neither the filter nor ts_rank rebuilds tsvectors.
+--   match_mode 'fuzzy' -> pg_trgm word similarity (q <% title), served by idx_products_title_trgm;
+--                         the caller sets pg_trgm.word_similarity_threshold with SET LOCAL.
+-- Cross-stream note: these are public storefront reads. When products.status (catalog-ops,
+-- migration 000053) exists, every query in this block plus SuggestProductTitles must also
+-- filter p.status = 'published'.
+
 -- name: CountProductsPublic :one
 SELECT COUNT(*)
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE p.tenant_id = sqlc.arg(tenant_id)
-  AND (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -25,14 +40,23 @@ SELECT p.id,
        c.name AS category_name,
        b.id   AS brand_id,
        b.name AS brand_name,
-       COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::float8 AS rating,
-       COALESCE((SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND tenant_id = p.tenant_id), 0)::int AS review_count,
+       COALESCE(rv.avg_rating, 0)::float8 AS rating,
+       COALESCE(rv.review_count, 0)::int AS review_count,
        COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = p.id), 0)::int AS total_stock
 FROM products p
 LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+LEFT JOIN LATERAL (
+    SELECT AVG(r.rating)::float8 AS avg_rating, COUNT(*)::int AS review_count
+    FROM reviews r
+    WHERE r.product_id = p.id AND r.tenant_id = p.tenant_id
+) rv ON true
+LEFT JOIN product_sales ps ON ps.product_id = p.id AND ps.tenant_id = p.tenant_id
 WHERE p.tenant_id = sqlc.arg(tenant_id)
-  AND (sqlc.narg(q)::text IS NULL OR p.search_vector @@ websearch_to_tsquery('english', sqlc.arg(q)))
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
   AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
   AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
   AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
@@ -42,9 +66,110 @@ ORDER BY CASE WHEN sqlc.arg(sort)::text = 'price:asc' THEN p.price END ASC,
          CASE WHEN sqlc.arg(sort)::text = 'price:desc' THEN p.price END DESC,
          CASE WHEN sqlc.arg(sort)::text = 'title:asc' THEN p.title END ASC,
          CASE WHEN sqlc.arg(sort)::text = 'title:desc' THEN p.title END DESC,
-         CASE WHEN sqlc.narg(q)::text IS NOT NULL THEN ts_rank(p.search_vector, websearch_to_tsquery('english', sqlc.arg(q))) END DESC,
-         p.created_at DESC
+         CASE WHEN sqlc.arg(sort)::text = 'popularity:desc' THEN COALESCE(ps.units_sold, 0) END DESC,
+         CASE WHEN sqlc.arg(sort)::text = 'rating:desc' THEN COALESCE(rv.avg_rating, 0) END DESC,
+         CASE WHEN sqlc.arg(sort)::text = 'rating:desc' THEN COALESCE(rv.review_count, 0) END DESC,
+         CASE
+           WHEN sqlc.narg(q)::text IS NULL THEN NULL
+           WHEN sqlc.arg(match_mode)::text = 'fuzzy' THEN word_similarity(sqlc.arg(q)::text, p.title)::float8
+           ELSE ts_rank(p.search_vector_simple, websearch_to_tsquery('simple', sqlc.arg(q)))::float8
+         END DESC,
+         p.created_at DESC,
+         p.id
 LIMIT sqlc.arg(limit_value) OFFSET sqlc.arg(offset_value);
+
+-- Facets: each query applies the search predicate and every filter except its own dimension.
+
+-- name: FacetCategoriesPublic :many
+SELECT c.id, c.name, c.slug, COUNT(*)::bigint AS count
+FROM products p
+JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
+  AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
+  AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
+  AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+GROUP BY c.id, c.name, c.slug
+ORDER BY count DESC, c.name ASC
+LIMIT 50;
+
+-- name: FacetBrandsPublic :many
+SELECT b.id, b.name, b.slug, COUNT(*)::bigint AS count
+FROM products p
+JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
+  AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
+  AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
+  AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+GROUP BY b.id, b.name, b.slug
+ORDER BY count DESC, b.name ASC
+LIMIT 50;
+
+-- bucket = number of edges <= price, i.e. 0 for price < edges[1], len(edges) for price >= last edge.
+-- name: FacetPriceBucketsPublic :many
+SELECT (SELECT COUNT(*) FROM unnest(sqlc.arg(edges)::bigint[]) AS e(edge) WHERE e.edge <= p.price)::int AS bucket,
+       COUNT(*)::bigint AS count
+FROM products p
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
+  AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
+  AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
+  AND (sqlc.narg(in_stock)::boolean IS NULL OR p.in_stock = sqlc.arg(in_stock))
+GROUP BY 1
+ORDER BY 1;
+
+-- name: FacetInStockPublic :many
+SELECT p.in_stock, COUNT(*)::bigint AS count
+FROM products p
+LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(q)::text IS NULL
+       OR (sqlc.arg(match_mode)::text = 'fuzzy' AND sqlc.arg(q)::text <% p.title)
+       OR (sqlc.arg(match_mode)::text <> 'fuzzy'
+           AND p.search_vector_simple @@ websearch_to_tsquery('simple', sqlc.arg(q))))
+  AND (sqlc.narg(category_slug)::text IS NULL OR c.slug = sqlc.arg(category_slug))
+  AND (sqlc.narg(brand_slug)::text IS NULL OR b.slug = sqlc.arg(brand_slug))
+  AND (sqlc.narg(min_price)::bigint IS NULL OR p.price >= sqlc.arg(min_price))
+  AND (sqlc.narg(max_price)::bigint IS NULL OR p.price <= sqlc.arg(max_price))
+GROUP BY p.in_stock;
+
+-- Cold path ("did you mean"): only runs after both FTS and fuzzy found nothing, inside the
+-- fuzzy pass's read-only transaction (statement_timeout applies). The caller first lowers
+-- pg_trgm.word_similarity_threshold to min_score with SetLocalWordSimilarityThreshold so the
+-- <% operator can use idx_products_title_trgm (junk queries then cost well under 1 ms); the
+-- explicit word_similarity floor keeps the result independent of the session threshold.
+-- When many titles share trigrams with q the planner still picks a scan of the tenant's
+-- titles (~100 ms at 20k products; see RUNBOOK scaling limits).
+-- name: SuggestProductTitles :many
+SELECT p.title, p.slug, word_similarity(sqlc.arg(q)::text, p.title)::float8 AS score
+FROM products p
+WHERE p.tenant_id = sqlc.arg(tenant_id)
+  AND sqlc.arg(q)::text <% p.title
+  AND word_similarity(sqlc.arg(q)::text, p.title) >= sqlc.arg(min_score)::float4
+ORDER BY score DESC, p.title ASC
+LIMIT sqlc.arg(limit_value);
+
+-- Transaction-local (is_local => true, i.e. SET LOCAL) pg_trgm threshold; only call it inside
+-- a transaction so pooled connections never keep the setting.
+-- name: SetLocalWordSimilarityThreshold :exec
+SELECT set_config('pg_trgm.word_similarity_threshold', sqlc.arg(threshold)::text, true);
 
 -- name: GetProductBySlug :one
 SELECT id,

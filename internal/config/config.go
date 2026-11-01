@@ -129,6 +129,7 @@ type Config struct {
 	APIMaxShutdownGrace        time.Duration
 	EnableAPIEmbeddedWorkers   bool
 	AdminDLQPageSize           int
+	ProductSalesRefresh        time.Duration // worker recompute interval for product_sales (popularity sort); 0 disables
 
 	// JobsConfig holds the worker's periodic job settings (internal/jobs).
 	JobsConfig
@@ -300,6 +301,7 @@ func Load() (*Config, error) {
 		APIMaxShutdownGrace:        time.Duration(parsePositiveIntAllowZero(k.String("API_MAX_SHUTDOWN_GRACE_SEC"), 15)) * time.Second,
 		EnableAPIEmbeddedWorkers:   parseBoolWithDefault(k.String("ENABLE_API_EMBEDDED_WORKERS"), false),
 		AdminDLQPageSize:           parsePositiveIntAllowZero(k.String("ADMIN_DLQ_PAGE_SIZE"), 50),
+		ProductSalesRefresh:        time.Duration(parsePositiveIntAllowZero(k.String("PRODUCT_SALES_REFRESH_SEC"), 300)) * time.Second,
 
 		PushVAPIDPublicKey:          strings.TrimSpace(k.String("PUSH_VAPID_PUBLIC_KEY")),
 		PushVAPIDPrivateKey:         strings.TrimSpace(k.String("PUSH_VAPID_PRIVATE_KEY")),

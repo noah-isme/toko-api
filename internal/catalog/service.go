@@ -9,17 +9,20 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
-type queryProvider interface {
+// QueryProvider is the subset of dbgen.Querier the catalog service needs; *dbgen.Queries satisfies it.
+type QueryProvider interface {
 	ListBrands(ctx context.Context, tenantID pgtype.UUID) ([]dbgen.ListBrandsRow, error)
 	GetBrandByID(ctx context.Context, arg dbgen.GetBrandByIDParams) (dbgen.GetBrandByIDRow, error)
 	ListCategories(ctx context.Context, tenantID pgtype.UUID) ([]dbgen.ListCategoriesRow, error)
@@ -31,24 +34,61 @@ type queryProvider interface {
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]dbgen.ProductImage, error)
 	ListSpecsByProduct(ctx context.Context, productID pgtype.UUID) ([]dbgen.ProductSpec, error)
 	ListRelatedByCategory(ctx context.Context, arg dbgen.ListRelatedByCategoryParams) ([]dbgen.ListRelatedByCategoryRow, error)
+	FacetCategoriesPublic(ctx context.Context, arg dbgen.FacetCategoriesPublicParams) ([]dbgen.FacetCategoriesPublicRow, error)
+	FacetBrandsPublic(ctx context.Context, arg dbgen.FacetBrandsPublicParams) ([]dbgen.FacetBrandsPublicRow, error)
+	FacetPriceBucketsPublic(ctx context.Context, arg dbgen.FacetPriceBucketsPublicParams) ([]dbgen.FacetPriceBucketsPublicRow, error)
+	FacetInStockPublic(ctx context.Context, arg dbgen.FacetInStockPublicParams) ([]dbgen.FacetInStockPublicRow, error)
+	SuggestProductTitles(ctx context.Context, arg dbgen.SuggestProductTitlesParams) ([]dbgen.SuggestProductTitlesRow, error)
+	SetLocalWordSimilarityThreshold(ctx context.Context, threshold string) error
 }
+
+// Search modes reported in ProductListResult.SearchMode (and the API's meta.searchMode).
+const (
+	SearchModeFTS   = "fts"
+	SearchModeFuzzy = "fuzzy"
+)
+
+const (
+	// minFuzzyQueryRunes is the shortest query that triggers the fuzzy fallback and suggestions.
+	minFuzzyQueryRunes = 3
+	// maxFuzzyQueryRunes is the longest query that triggers them: trigram matching cost grows
+	// with len(q) (a 200-rune q makes the suggestion scan ~4x slower than a 3-word q, a
+	// 2,000-rune q makes the fuzzy count abandon the trigram index), so longer queries get
+	// full-text search only.
+	maxFuzzyQueryRunes = 64
+	// MaxQueryRunes is the longest accepted q; longer values are rejected with 400 (field q).
+	MaxQueryRunes = 200
+	// suggestionMinScore is the word_similarity floor for "did you mean" suggestions.
+	suggestionMinScore = 0.2
+	// suggestionLimit caps meta.suggestions.
+	suggestionLimit = 5
+)
+
+// DefaultPriceBucketEdges are the IDR edges of the price facet (len+1 buckets).
+var DefaultPriceBucketEdges = []int64{50000, 100000, 250000, 500000, 1000000, 2500000, 5000000, 10000000}
 
 // Service orchestrates catalog queries, DTO assembly, and caching.
 type Service struct {
-	queries      queryProvider
+	queries      QueryProvider
+	fuzzy        FuzzyRunner
 	cache        *Cache
 	defaultPage  int
 	defaultLimit int
 	maxLimit     int
+	priceEdges   []int64
 }
 
 // ServiceConfig groups Service dependencies.
 type ServiceConfig struct {
-	Queries      queryProvider
-	Cache        *Cache
-	DefaultPage  int
-	DefaultLimit int
-	MaxLimit     int
+	Queries QueryProvider
+	// FuzzyRunner enables the pg_trgm fallback when full-text search finds nothing (optional).
+	FuzzyRunner FuzzyRunner
+	// PriceBucketEdges overrides DefaultPriceBucketEdges (ascending, IDR).
+	PriceBucketEdges []int64
+	Cache            *Cache
+	DefaultPage      int
+	DefaultLimit     int
+	MaxLimit         int
 }
 
 // ListParams captures filters for product listing.
@@ -62,6 +102,8 @@ type ListParams struct {
 	Sort     string
 	Page     int
 	Limit    int
+	// IncludeFacets requests facet counts (include=facets).
+	IncludeFacets bool
 }
 
 // ProductListItem represents an entry in list/related responses.
@@ -145,6 +187,53 @@ type ProductListResult struct {
 	Total int64
 	Page  int
 	Limit int
+	// SearchMode is "" without a query, otherwise SearchModeFTS or SearchModeFuzzy.
+	SearchMode string
+	// Facets is set only when ListParams.IncludeFacets is true.
+	Facets *Facets
+	// Suggestions holds "did you mean" titles when a query matched nothing.
+	Suggestions []Suggestion
+}
+
+// Facets holds counts per filter dimension. Each dimension honours every other
+// active filter but ignores its own, so a client can show alternatives.
+type Facets struct {
+	Categories []FacetTerm  `json:"categories"`
+	Brands     []FacetTerm  `json:"brands"`
+	Price      PriceFacet   `json:"price"`
+	InStock    InStockFacet `json:"inStock"`
+}
+
+// FacetTerm is one category or brand with its matching product count.
+type FacetTerm struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug"`
+	Count int64  `json:"count"`
+}
+
+// PriceFacet lists every price bucket, including empty ones.
+type PriceFacet struct {
+	Buckets []PriceBucket `json:"buckets"`
+}
+
+// PriceBucket covers min <= price < max; Max is nil for the open-ended last bucket.
+type PriceBucket struct {
+	Min   int64  `json:"min"`
+	Max   *int64 `json:"max"`
+	Count int64  `json:"count"`
+}
+
+// InStockFacet counts in-stock and out-of-stock products.
+type InStockFacet struct {
+	True  int64 `json:"true"`
+	False int64 `json:"false"`
+}
+
+// Suggestion is a closest-title match offered when a search returns nothing.
+type Suggestion struct {
+	Title string `json:"title"`
+	Slug  string `json:"slug"`
 }
 
 // NewService constructs a Service instance.
@@ -167,12 +256,23 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if defaultLimit > maxLimit {
 		defaultLimit = maxLimit
 	}
+	edges := cfg.PriceBucketEdges
+	if len(edges) == 0 {
+		edges = DefaultPriceBucketEdges
+	}
+	for i := 1; i < len(edges); i++ {
+		if edges[i] <= edges[i-1] {
+			return nil, errors.New("catalog: price bucket edges must be strictly ascending")
+		}
+	}
 	return &Service{
 		queries:      cfg.Queries,
+		fuzzy:        cfg.FuzzyRunner,
 		cache:        cfg.Cache,
 		defaultPage:  defaultPage,
 		defaultLimit: defaultLimit,
 		maxLimit:     maxLimit,
+		priceEdges:   append([]int64(nil), edges...),
 	}, nil
 }
 
@@ -183,6 +283,9 @@ func (s *Service) ParseListParams(values url.Values) (ListParams, error) {
 		Limit: s.defaultLimit,
 	}
 	params.Query = strings.TrimSpace(values.Get("q"))
+	if n := utf8.RuneCountInString(params.Query); n > MaxQueryRunes {
+		return params, badRequest("q", fmt.Sprintf("q must be at most %d characters", MaxQueryRunes), fmt.Errorf("q has %d characters", n))
+	}
 	params.Category = strings.TrimSpace(values.Get("category"))
 	params.Brand = strings.TrimSpace(values.Get("brand"))
 
@@ -234,6 +337,18 @@ func (s *Service) ParseListParams(values url.Values) (ListParams, error) {
 	}
 
 	params.Sort = normalizeSort(values.Get("sort"))
+
+	for _, raw := range values["include"] {
+		for _, token := range strings.Split(raw, ",") {
+			switch strings.ToLower(strings.TrimSpace(token)) {
+			case "":
+			case "facets":
+				params.IncludeFacets = true
+			default:
+				return params, badRequest("include", "include accepts: facets", fmt.Errorf("unknown include %q", token))
+			}
+		}
+	}
 	return params, nil
 }
 
@@ -279,6 +394,14 @@ func (s *Service) ListCategories(ctx context.Context) ([]Category, error) {
 }
 
 // ListProducts returns filtered product list with pagination metadata.
+//
+// With a query it first runs full-text search ('simple' config). When that finds
+// nothing and the query has minFuzzyQueryRunes..maxFuzzyQueryRunes runes, it retries the
+// same count/list/facets with pg_trgm word similarity on the title (via FuzzyRunner, in
+// one read-only transaction with a statement timeout). When both find nothing, the same
+// transaction returns up to suggestionLimit closest titles. Without a FuzzyRunner there
+// is neither fuzzy fallback nor suggestions. If the fuzzy transaction times out (per
+// statement or for the whole pass), the FTS result is returned unchanged.
 func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductListResult, error) {
 	key, shouldUseCache := s.listCacheKey(ctx, params)
 	if shouldUseCache && s.cache != nil {
@@ -289,84 +412,299 @@ func (s *Service) ListProducts(ctx context.Context, params ListParams) (ProductL
 		}
 	}
 
-	countParams := dbgen.CountProductsPublicParams{
-		TenantID:     tenantIDFromContext(ctx),
-		Q:            optionalStringValue(params.Query),
-		CategorySlug: optionalStringValue(params.Category),
-		BrandSlug:    optionalStringValue(params.Brand),
-		MinPrice:     optionalInt64(params.MinPrice),
-		MaxPrice:     optionalInt64(params.MaxPrice),
-		InStock:      optionalBool(params.InStock),
+	result, err := s.searchPage(ctx, s.queries, params, SearchModeFTS)
+	if err != nil {
+		return ProductListResult{}, err
 	}
-	total, err := s.queries.CountProductsPublic(ctx, countParams)
+	facetsDone := false
+	if result.Total == 0 && fuzzyEligible(params.Query) && s.fuzzy != nil {
+		ftsResult := result
+		err := s.fuzzy.RunFuzzy(ctx, func(fctx context.Context, q QueryProvider) error {
+			fuzzyResult, err := s.searchPage(fctx, q, params, SearchModeFuzzy)
+			if err != nil {
+				return err
+			}
+			if fuzzyResult.Total == 0 {
+				suggestions, err := s.suggest(fctx, q, params.Query)
+				if err != nil {
+					return err
+				}
+				result.Suggestions = suggestions
+				return nil
+			}
+			if params.IncludeFacets {
+				facets, err := s.computeFacets(fctx, q, params, SearchModeFuzzy)
+				if err != nil {
+					return err
+				}
+				fuzzyResult.Facets = facets
+				facetsDone = true
+			}
+			result = fuzzyResult
+			return nil
+		})
+		if err != nil {
+			if !(errors.Is(err, ErrFuzzyTimeout) || isStatementTimeout(err)) || ctx.Err() != nil {
+				return ProductListResult{}, fmt.Errorf("fuzzy search: %w", err)
+			}
+			// The fuzzy pass hit its statement timeout or pass deadline: answer with the
+			// (empty) FTS result instead of failing the request. The response is still
+			// valid, just without typo tolerance or suggestions.
+			zerolog.Ctx(ctx).Warn().Err(err).Int("q_runes", utf8.RuneCountInString(params.Query)).Msg("catalog fuzzy search timed out; returning full-text result")
+			result = ftsResult
+			facetsDone = false
+		}
+	}
+	if params.IncludeFacets && !facetsDone {
+		facets, err := s.computeFacets(ctx, s.queries, params, SearchModeFTS)
+		if err != nil {
+			return ProductListResult{}, err
+		}
+		result.Facets = facets
+	}
+	if params.Query == "" {
+		result.SearchMode = ""
+	}
+	if shouldUseCache && s.cache != nil && key != "" {
+		_ = s.cache.SetJSON(ctx, key, cachedList{Items: result.Items, Total: result.Total})
+	}
+	return result, nil
+}
+
+// searchFilter carries the filter set shared by the count, list and facet queries.
+type searchFilter struct {
+	tenantID     pgtype.UUID
+	q            pgtype.Text
+	mode         string
+	categorySlug pgtype.Text
+	brandSlug    pgtype.Text
+	minPrice     pgtype.Int8
+	maxPrice     pgtype.Int8
+	inStock      pgtype.Bool
+}
+
+func newSearchFilter(ctx context.Context, params ListParams, mode string) searchFilter {
+	return searchFilter{
+		tenantID:     tenantIDFromContext(ctx),
+		q:            optionalStringValue(params.Query),
+		mode:         mode,
+		categorySlug: optionalStringValue(params.Category),
+		brandSlug:    optionalStringValue(params.Brand),
+		minPrice:     optionalInt64(params.MinPrice),
+		maxPrice:     optionalInt64(params.MaxPrice),
+		inStock:      optionalBool(params.InStock),
+	}
+}
+
+// searchPage runs count then (when anything matched) the page query in one match mode.
+func (s *Service) searchPage(ctx context.Context, q QueryProvider, params ListParams, mode string) (ProductListResult, error) {
+	f := newSearchFilter(ctx, params, mode)
+	total, err := q.CountProductsPublic(ctx, dbgen.CountProductsPublicParams{
+		TenantID:     f.tenantID,
+		Q:            f.q,
+		MatchMode:    f.mode,
+		CategorySlug: f.categorySlug,
+		BrandSlug:    f.brandSlug,
+		MinPrice:     f.minPrice,
+		MaxPrice:     f.maxPrice,
+		InStock:      f.inStock,
+	})
 	if err != nil {
 		return ProductListResult{}, fmt.Errorf("count products: %w", err)
+	}
+	result := ProductListResult{Items: []ProductListItem{}, Total: total, Page: params.Page, Limit: params.Limit, SearchMode: mode}
+	if total == 0 {
+		return result, nil
 	}
 	offset := int32((params.Page - 1) * params.Limit)
 	if offset < 0 {
 		offset = 0
 	}
-	listParams := dbgen.ListProductsPublicParams{
-		TenantID:     countParams.TenantID,
-		Q:            countParams.Q,
-		CategorySlug: countParams.CategorySlug,
-		BrandSlug:    countParams.BrandSlug,
-		MinPrice:     countParams.MinPrice,
-		MaxPrice:     countParams.MaxPrice,
-		InStock:      countParams.InStock,
+	rows, err := q.ListProductsPublic(ctx, dbgen.ListProductsPublicParams{
+		TenantID:     f.tenantID,
+		Q:            f.q,
+		MatchMode:    f.mode,
+		CategorySlug: f.categorySlug,
+		BrandSlug:    f.brandSlug,
+		MinPrice:     f.minPrice,
+		MaxPrice:     f.maxPrice,
+		InStock:      f.inStock,
 		Sort:         params.Sort,
 		OffsetValue:  offset,
 		LimitValue:   int32(params.Limit),
-	}
-	rows, err := s.queries.ListProductsPublic(ctx, listParams)
+	})
 	if err != nil {
 		return ProductListResult{}, fmt.Errorf("list products: %w", err)
 	}
 	items := make([]ProductListItem, 0, len(rows))
 	for _, row := range rows {
-		item := ProductListItem{
-			ID:          uuidString(row.ID),
-			Title:       row.Title,
-			Slug:        row.Slug,
-			Price:       row.Price,
-			InStock:     row.InStock,
-			Stock:       int(row.TotalStock),
-			Badges:      row.Badges,
-			Rating:      row.Rating,
-			ReviewCount: int(row.ReviewCount),
-		}
-		if row.CompareAt.Valid {
-			compareAt := row.CompareAt.Int64
-			item.CompareAt = &compareAt
-		}
-		if row.Thumbnail.Valid {
-			thumb := row.Thumbnail.String
-			item.Thumbnail = &thumb
-		}
-		// Category and brand come from LEFT JOINs, so both may be absent.
-		if row.CategoryID.Valid {
-			categoryID := uuidString(row.CategoryID)
-			item.CategoryID = &categoryID
-		}
-		if row.CategoryName.Valid {
-			categoryName := row.CategoryName.String
-			item.CategoryName = &categoryName
-		}
-		if row.BrandID.Valid {
-			brandID := uuidString(row.BrandID)
-			item.BrandID = &brandID
-		}
-		if row.BrandName.Valid {
-			brandName := row.BrandName.String
-			item.BrandName = &brandName
-		}
-		items = append(items, item)
+		items = append(items, listItemFromRow(row))
 	}
-	result := ProductListResult{Items: items, Total: total, Page: params.Page, Limit: params.Limit}
-	if shouldUseCache && s.cache != nil && key != "" {
-		_ = s.cache.SetJSON(ctx, key, cachedList{Items: items, Total: total})
-	}
+	result.Items = items
 	return result, nil
+}
+
+func listItemFromRow(row dbgen.ListProductsPublicRow) ProductListItem {
+	item := ProductListItem{
+		ID:          uuidString(row.ID),
+		Title:       row.Title,
+		Slug:        row.Slug,
+		Price:       row.Price,
+		InStock:     row.InStock,
+		Stock:       int(row.TotalStock),
+		Badges:      row.Badges,
+		Rating:      row.Rating,
+		ReviewCount: int(row.ReviewCount),
+	}
+	if row.CompareAt.Valid {
+		compareAt := row.CompareAt.Int64
+		item.CompareAt = &compareAt
+	}
+	if row.Thumbnail.Valid {
+		thumb := row.Thumbnail.String
+		item.Thumbnail = &thumb
+	}
+	// Category and brand come from LEFT JOINs, so both may be absent.
+	if row.CategoryID.Valid {
+		categoryID := uuidString(row.CategoryID)
+		item.CategoryID = &categoryID
+	}
+	if row.CategoryName.Valid {
+		categoryName := row.CategoryName.String
+		item.CategoryName = &categoryName
+	}
+	if row.BrandID.Valid {
+		brandID := uuidString(row.BrandID)
+		item.BrandID = &brandID
+	}
+	if row.BrandName.Valid {
+		brandName := row.BrandName.String
+		item.BrandName = &brandName
+	}
+	return item
+}
+
+// computeFacets runs the four facet queries; each omits its own dimension's filter.
+func (s *Service) computeFacets(ctx context.Context, q QueryProvider, params ListParams, mode string) (*Facets, error) {
+	f := newSearchFilter(ctx, params, mode)
+	facets := &Facets{Categories: []FacetTerm{}, Brands: []FacetTerm{}}
+
+	catRows, err := q.FacetCategoriesPublic(ctx, dbgen.FacetCategoriesPublicParams{
+		TenantID:  f.tenantID,
+		Q:         f.q,
+		MatchMode: f.mode,
+		BrandSlug: f.brandSlug,
+		MinPrice:  f.minPrice,
+		MaxPrice:  f.maxPrice,
+		InStock:   f.inStock,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("facet categories: %w", err)
+	}
+	for _, row := range catRows {
+		facets.Categories = append(facets.Categories, FacetTerm{ID: uuidString(row.ID), Name: row.Name, Slug: row.Slug, Count: row.Count})
+	}
+
+	brandRows, err := q.FacetBrandsPublic(ctx, dbgen.FacetBrandsPublicParams{
+		TenantID:     f.tenantID,
+		Q:            f.q,
+		MatchMode:    f.mode,
+		CategorySlug: f.categorySlug,
+		MinPrice:     f.minPrice,
+		MaxPrice:     f.maxPrice,
+		InStock:      f.inStock,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("facet brands: %w", err)
+	}
+	for _, row := range brandRows {
+		facets.Brands = append(facets.Brands, FacetTerm{ID: uuidString(row.ID), Name: row.Name, Slug: row.Slug, Count: row.Count})
+	}
+
+	priceRows, err := q.FacetPriceBucketsPublic(ctx, dbgen.FacetPriceBucketsPublicParams{
+		Edges:        s.priceEdges,
+		TenantID:     f.tenantID,
+		Q:            f.q,
+		MatchMode:    f.mode,
+		CategorySlug: f.categorySlug,
+		BrandSlug:    f.brandSlug,
+		InStock:      f.inStock,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("facet price buckets: %w", err)
+	}
+	facets.Price.Buckets = s.emptyPriceBuckets()
+	for _, row := range priceRows {
+		idx := int(row.Bucket)
+		if idx < 0 || idx >= len(facets.Price.Buckets) {
+			continue
+		}
+		facets.Price.Buckets[idx].Count += row.Count
+	}
+
+	stockRows, err := q.FacetInStockPublic(ctx, dbgen.FacetInStockPublicParams{
+		TenantID:     f.tenantID,
+		Q:            f.q,
+		MatchMode:    f.mode,
+		CategorySlug: f.categorySlug,
+		BrandSlug:    f.brandSlug,
+		MinPrice:     f.minPrice,
+		MaxPrice:     f.maxPrice,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("facet in stock: %w", err)
+	}
+	for _, row := range stockRows {
+		if row.InStock {
+			facets.InStock.True += row.Count
+		} else {
+			facets.InStock.False += row.Count
+		}
+	}
+	return facets, nil
+}
+
+// emptyPriceBuckets returns len(edges)+1 zero-count buckets: [0,e0), [e0,e1), ..., [eN,inf).
+func (s *Service) emptyPriceBuckets() []PriceBucket {
+	buckets := make([]PriceBucket, 0, len(s.priceEdges)+1)
+	var lower int64
+	for _, edge := range s.priceEdges {
+		upper := edge
+		buckets = append(buckets, PriceBucket{Min: lower, Max: &upper})
+		lower = edge
+	}
+	return append(buckets, PriceBucket{Min: lower})
+}
+
+// fuzzyEligible reports whether q gets the fuzzy fallback and suggestions.
+func fuzzyEligible(q string) bool {
+	n := utf8.RuneCountInString(q)
+	return n >= minFuzzyQueryRunes && n <= maxFuzzyQueryRunes
+}
+
+// suggest runs inside the fuzzy pass's transaction: it lowers the session trigram threshold
+// to suggestionMinScore (transaction-local) so SuggestProductTitles can use the trigram index.
+func (s *Service) suggest(ctx context.Context, q QueryProvider, query string) ([]Suggestion, error) {
+	if err := q.SetLocalWordSimilarityThreshold(ctx, formatThreshold(suggestionMinScore)); err != nil {
+		return nil, fmt.Errorf("set suggestion threshold: %w", err)
+	}
+	rows, err := q.SuggestProductTitles(ctx, dbgen.SuggestProductTitlesParams{
+		Q:          query,
+		TenantID:   tenantIDFromContext(ctx),
+		MinScore:   suggestionMinScore,
+		LimitValue: suggestionLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("suggest products: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	suggestions := make([]Suggestion, 0, len(rows))
+	for _, row := range rows {
+		suggestions = append(suggestions, Suggestion{Title: row.Title, Slug: row.Slug})
+	}
+	return suggestions, nil
 }
 
 // GetProductDetail returns product detail, variants, images, specs, and metadata.
@@ -553,7 +891,7 @@ func (s *Service) listCacheKey(ctx context.Context, params ListParams) (string, 
 	if params.Limit != s.defaultLimit {
 		return "", false
 	}
-	if params.Query != "" || params.Category != "" || params.Brand != "" || params.MinPrice != nil || params.MaxPrice != nil || params.InStock != nil || params.Sort != "" {
+	if params.Query != "" || params.Category != "" || params.Brand != "" || params.MinPrice != nil || params.MaxPrice != nil || params.InStock != nil || params.Sort != "" || params.IncludeFacets {
 		return "", false
 	}
 	return s.cache.ProductListKeyForTenant(tenantCacheKey(ctx)), true
@@ -595,8 +933,12 @@ func parseBool(value string) (bool, error) {
 func normalizeSort(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "price:asc", "price:desc", "title:asc", "title:desc":
+	case "price:asc", "price:desc", "title:asc", "title:desc", "popularity:desc", "rating:desc":
 		return s
+	case "popularity":
+		return "popularity:desc"
+	case "rating":
+		return "rating:desc"
 	default:
 		return ""
 	}

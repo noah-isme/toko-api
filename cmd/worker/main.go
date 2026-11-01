@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
 	"github.com/noah-isme/backend-toko/internal/config"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -215,6 +216,18 @@ func main() {
 		}
 	} else {
 		logger.Info().Msg("periodic jobs disabled (WORKER_JOBS_ENABLED=false)")
+	}
+
+	if cfg.ProductSalesRefresh > 0 {
+		popularity := catalog.PopularityRefresher{Pool: pool, Interval: cfg.ProductSalesRefresh, Logger: &logger}
+		components["popularity-refresh"] = func(ctx context.Context) error {
+			// Like the periodic jobs, a stopped refresher is logged without
+			// taking the delivery consumers down with it.
+			if err := popularity.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error().Err(err).Msg("popularity refresher stopped")
+			}
+			return nil
+		}
 	}
 
 	logger.Info().Msg("worker starting")

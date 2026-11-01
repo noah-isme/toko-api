@@ -71,10 +71,23 @@ func (h *Handler) Products(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Total-Count", strconv.FormatInt(result.Total, 10))
-	common.JSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"data":       result.Items,
 		"pagination": common.Pagination{Page: result.Page, PerPage: result.Limit, TotalItems: int(result.Total)},
-	})
+	}
+	// Additive fields: "meta" only for searches, "facets" only when requested, so
+	// clients that send neither q nor include receive exactly the previous shape.
+	if params.Query != "" {
+		meta := map[string]any{"searchMode": result.SearchMode}
+		if len(result.Suggestions) > 0 {
+			meta["suggestions"] = result.Suggestions
+		}
+		body["meta"] = meta
+	}
+	if result.Facets != nil {
+		body["facets"] = result.Facets
+	}
+	common.JSON(w, http.StatusOK, body)
 }
 
 // ProductDetail handles GET /api/v1/products/{slug}.

@@ -278,7 +278,7 @@ interface ProductFilters {
   minPrice?: number;
   maxPrice?: number;
   inStock?: boolean;
-  sort?: 'price:asc' | 'price:desc' | 'title:asc' | 'title:desc';
+  sort?: 'price:asc' | 'price:desc' | 'title:asc' | 'title:desc' | 'popularity:desc' | 'rating:desc';
   page?: number;
   limit?: number;
 }
