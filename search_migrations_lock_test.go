@@ -110,6 +110,39 @@ func (p lockProbe) run(file string) probeResult {
 	return res
 }
 
+// newSearchProbeSchema creates a throwaway schema holding minimal tenants/products
+// copies with 50 products, points conn's search_path at it (pg_trgm still resolves
+// from public) and drops it when the test ends.
+func newSearchProbeSchema(t *testing.T, ctx context.Context, conn *pgx.Conn) string {
+	t.Helper()
+	b := make([]byte, 5)
+	_, _ = rand.Read(b)
+	schema := "mig_lock_probe_" + hex.EncodeToString(b)
+	ident := pgx.Identifier{schema}.Sanitize()
+	_, err := conn.Exec(ctx, `CREATE SCHEMA `+ident)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if _, err := conn.Exec(context.Background(), `DROP SCHEMA `+ident+` CASCADE`); err != nil {
+			t.Errorf("drop probe schema: %v", err)
+		}
+	})
+	_, err = conn.Exec(ctx, `SET search_path = `+ident+`, public`)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, `
+		CREATE TABLE tenants (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+		CREATE TABLE products (
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id uuid,
+			title text NOT NULL,
+			description text,
+			search_vector tsvector
+		);
+		INSERT INTO products (title, description)
+		SELECT 'Sepatu ' || g, 'Deskripsi produk ' || g FROM generate_series(1, 50) g;`)
+	require.NoError(t, err)
+	return schema
+}
+
 func isLockTimeout(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
@@ -135,33 +168,7 @@ func TestIntegrationSearchMigrationsLockFootprint(t *testing.T) {
 		t.Skip("pg_trgm not installed in the test database (apply all migrations first)")
 	}
 
-	b := make([]byte, 5)
-	_, _ = rand.Read(b)
-	schema := "mig_lock_probe_" + hex.EncodeToString(b)
-	ident := pgx.Identifier{schema}.Sanitize()
-	_, err = conn.Exec(ctx, `CREATE SCHEMA `+ident)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		if _, err := conn.Exec(context.Background(), `DROP SCHEMA `+ident+` CASCADE`); err != nil {
-			t.Errorf("drop probe schema: %v", err)
-		}
-	})
-	// Unqualified names in the migrations resolve to the probe schema's minimal copies of
-	// tenants/products; pg_trgm's operator classes still resolve from public.
-	_, err = conn.Exec(ctx, `SET search_path = `+ident+`, public`)
-	require.NoError(t, err)
-	_, err = conn.Exec(ctx, `
-		CREATE TABLE tenants (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
-		CREATE TABLE products (
-			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-			tenant_id uuid,
-			title text NOT NULL,
-			description text,
-			search_vector tsvector
-		);
-		INSERT INTO products (title, description)
-		SELECT 'Sepatu ' || g, 'Deskripsi produk ' || g FROM generate_series(1, 50) g;`)
-	require.NoError(t, err)
+	schema := newSearchProbeSchema(t, ctx, conn)
 	_, err = reader.Exec(ctx, `SET lock_timeout = '500ms'`)
 	require.NoError(t, err)
 
@@ -220,6 +227,10 @@ func TestIntegrationSearchMigrationsLockFootprint(t *testing.T) {
 	require.Zero(t, r.tableLocks, "000050 with pre-built indexes must not lock products: %v", r.modes)
 	require.Equal(t, 1, countNull())
 
+	// A concurrent product write must not deadlock 000050 (which would leave golang-migrate
+	// dirty at 50). See searchMigration000050WithConcurrentWriter.
+	searchMigration000050WithConcurrentWriter(t, ctx, url)
+
 	// An INVALID index (failed CREATE INDEX CONCURRENTLY) aborts 000050 instead of being kept.
 	var super bool
 	require.NoError(t, conn.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super))
@@ -233,4 +244,90 @@ func TestIntegrationSearchMigrationsLockFootprint(t *testing.T) {
 	_, err = conn.Exec(ctx, readMigration(t, searchUp50))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "INVALID")
+}
+
+// searchMigration000050WithConcurrentWriter runs 000050 against an admin-style
+// product writer on a fresh probe schema. The writer holds ROW EXCLUSIVE and a row
+// lock on the last heap row when 000050 starts, and once 000050 is waiting it
+// updates the first heap row, which a backfill UPDATE would already have row-locked.
+// Without the LOCK TABLE ... IN SHARE MODE that precedes the backfill, the two
+// sessions wait on each other's row locks (and the later CREATE INDEX on the
+// writer's ROW EXCLUSIVE): Postgres aborts one with "deadlock detected". With it,
+// 000050 waits for the writer before touching any row, the writer finishes, and
+// the migration commits.
+func searchMigration000050WithConcurrentWriter(t *testing.T, ctx context.Context, url string) {
+	t.Helper()
+	migConn, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = migConn.Close(context.Background()) })
+	writer, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Close(context.Background()) })
+
+	schema := newSearchProbeSchema(t, ctx, migConn)
+	_, err = migConn.Exec(ctx, readMigration(t, searchUp49))
+	require.NoError(t, err, searchUp49)
+	_, err = writer.Exec(ctx, `SET search_path = `+pgx.Identifier{schema}.Sanitize()+`, public`)
+	require.NoError(t, err)
+	_, err = writer.Exec(ctx, `SET statement_timeout = '15s'`)
+	require.NoError(t, err)
+
+	var firstID, lastID string
+	require.NoError(t, writer.QueryRow(ctx, `SELECT id::text FROM products ORDER BY ctid LIMIT 1`).Scan(&firstID))
+	require.NoError(t, writer.QueryRow(ctx, `SELECT id::text FROM products ORDER BY ctid DESC LIMIT 1`).Scan(&lastID))
+
+	wtx, err := writer.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = wtx.Rollback(context.Background()) }()
+	_, err = wtx.Exec(ctx, `UPDATE products SET title = title || ' (edit)' WHERE id = $1`, lastID)
+	require.NoError(t, err)
+
+	migPID := migConn.PgConn().PID()
+	migErr := make(chan error, 1)
+	go func() {
+		tx, err := migConn.Begin(ctx)
+		if err != nil {
+			migErr <- err
+			return
+		}
+		if _, err := tx.Exec(ctx, readMigration(t, searchUp50)); err != nil {
+			_ = tx.Rollback(context.Background())
+			migErr <- err
+			return
+		}
+		migErr <- tx.Commit(ctx)
+	}()
+
+	// Wait until 000050 is blocked on a lock the writer holds.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		require.NoError(t, writer.QueryRow(ctx,
+			`SELECT coalesce(wait_event_type = 'Lock', false) FROM pg_stat_activity WHERE pid = $1`, migPID).Scan(&waiting))
+		if waiting {
+			break
+		}
+		select {
+		case err := <-migErr:
+			t.Fatalf("000050 finished before waiting on the writer: %v", err)
+		default:
+		}
+		require.True(t, time.Now().Before(deadline), "000050 never waited on the writer")
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_, err = wtx.Exec(ctx, `UPDATE products SET title = title || ' (edit)' WHERE id = $1`, firstID)
+	require.NoError(t, err, "the concurrent product write must not be aborted")
+	require.NoError(t, wtx.Commit(ctx))
+	require.NoError(t, <-migErr, "000050 must commit while a product write runs concurrently")
+
+	var nulls int
+	require.NoError(t, writer.QueryRow(ctx, `SELECT count(*) FROM products WHERE search_vector_simple IS NULL`).Scan(&nulls))
+	require.Zero(t, nulls)
+	for _, idx := range []string{"idx_products_search_simple", "idx_products_title_trgm"} {
+		var valid bool
+		require.NoError(t, writer.QueryRow(ctx, `SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+			WHERE i.indrelid = 'products'::regclass AND c.relname = $1`, idx).Scan(&valid))
+		require.True(t, valid, idx)
+	}
 }
