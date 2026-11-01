@@ -20,6 +20,7 @@
 - [Tenant Operations](contracts/operations.md)
 - [Reviews](contracts/reviews.md)
 - [Favorites](contracts/favorites.md)
+- [Product Alerts](contracts/alerts.md)
 - [Analytics](contracts/analytics.md)
 - [Admin](contracts/admin.md)
 - [Webhooks](contracts/webhooks.md)

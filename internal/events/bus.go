@@ -118,6 +118,15 @@ func (b *Bus) EmitLogged(ctx context.Context, topic string, aggregateID pgtype.U
 		Msg("domain event fan-out failed; the outbox relay will retry")
 }
 
+// Deliver fans out an event that the caller inserted inside its own
+// transaction (so the domain_events row commits atomically with its state
+// change), after that commit. It is Dispatch under the name internal/alerts
+// uses: the row is marked dispatched on success, and a failure is recorded
+// on it and returned for the caller's own retry.
+func (b *Bus) Deliver(ctx context.Context, ev dbgen.DomainEvent) error {
+	return b.Dispatch(ctx, ev)
+}
+
 // Dispatch fans an already-persisted event out to the webhook scheduler and all
 // notifiers. On success the row is marked dispatched; on failure the attempt
 // is recorded (dispatch_attempts, last_dispatch_error) and the joined error is

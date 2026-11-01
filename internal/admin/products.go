@@ -20,6 +20,20 @@ import (
 type CatalogHandler struct {
 	Q     dbgen.Querier
 	Cache *catalog.Cache
+	// Alerts, when set, is kicked after stock or price writes so the alerts
+	// runner drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
+}
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
+}
+
+func (h *CatalogHandler) kickAlerts() {
+	if h.Alerts != nil {
+		h.Alerts.Kick()
+	}
 }
 
 type productDTO struct {
@@ -435,6 +449,7 @@ func (h *CatalogHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.invalidate(ctx, existing.Slug)
+	h.kickAlerts()
 	if slug.Valid && slug.String != existing.Slug {
 		h.invalidate(ctx, slug.String)
 	}
@@ -560,6 +575,7 @@ func (h *CatalogHandler) UpdateProductStock(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.invalidate(ctx, product.Slug)
+	h.kickAlerts()
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"id":      uuidString(id),
 		"inStock": inStock,

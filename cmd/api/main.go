@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/admin"
+	"github.com/noah-isme/backend-toko/internal/alerts"
 	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/audit"
 	"github.com/noah-isme/backend-toko/internal/auth"
@@ -40,6 +41,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/favorites"
 	"github.com/noah-isme/backend-toko/internal/health"
+	"github.com/noah-isme/backend-toko/internal/invoice"
 	"github.com/noah-isme/backend-toko/internal/loyalty"
 	"github.com/noah-isme/backend-toko/internal/newsletter"
 	"github.com/noah-isme/backend-toko/internal/notifications"
@@ -383,8 +385,58 @@ func main() {
 		Scheduler: dispatcher,
 		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier, pushNotifier},
 	}
+	// Alerts get their own bus with NO Scheduler: alert payloads carry
+	// customer PII and are not offered to webhook endpoints. The in-app row is
+	// written by the dispatcher itself, so the notifications and push
+	// notifiers are not attached either, and the outbox relay skips alert
+	// topics (events.RelayTopics).
+	alertsBus := &events.Bus{Store: queries, Notifiers: []events.Notifier{emailNotifier}}
+	// Alert emails go through a durable outbox (product_alert_deliveries)
+	// drained by its own runner, so claiming subscriptions never waits on
+	// delivery. Delivering one now means enqueueing its email-delivery task
+	// (cmd/worker sends it); the per-send bound stays sized for the SMTP
+	// timeout so it is never the limiting factor.
+	alertsMailer := &alerts.Mailer{
+		Q:           queries,
+		Events:      alertsBus,
+		SendTimeout: 2*cfg.SMTPTimeout + 5*time.Second,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("deliver product alert email")
+		},
+	}
+	alertsMailRunner := &alerts.Runner{
+		Flusher: alertsMailer,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("drain product alert emails")
+		},
+		Log: func(res alerts.Result) {
+			logger.Debug().Int("attempted", res.Attempted).Int("delivered", res.Delivered).
+				Bool("more", res.More).Msg("product alert emails sent")
+		},
+	}
+	alertsDispatcher := &alerts.Dispatcher{
+		Pool:     pool,
+		Q:        queries,
+		Mailer:   alertsMailRunner,
+		Currency: cfg.CurrencyCode,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("product alerts maintenance")
+		},
+	}
+	alertsRunner := &alerts.Runner{
+		Flusher: alertsDispatcher,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("drain product alerts")
+		},
+		Log: func(res alerts.Result) {
+			logger.Debug().Int("events", res.Events).Int("claimed", res.Claimed).Int("notified", res.Notified).
+				Int("queued", res.Queued).Bool("more", res.More).Msg("product alerts drained")
+		},
+	}
+	alertsHandler := &alerts.Handler{Svc: &alerts.Service{Q: queries, Alerts: alertsRunner}}
+	invoiceHandler := &invoice.Handler{Svc: &invoice.Service{Q: queries, Pool: pool, Renderer: invoice.NewRenderer()}}
 
-	orderHandler := &order.Handler{Q: queries, Pool: pool}
+	orderHandler := &order.Handler{Q: queries, Pool: pool, Alerts: alertsRunner}
 	orderAdmin := &order.AdminHandler{Q: queries}
 	notifyAdmin := &notify.AdminHandler{Store: notifyStore, Disp: dispatcher}
 	queueAdmin := &queue.AdminHandler{
@@ -475,14 +527,14 @@ func main() {
 		Analytics:    nil,
 		Logger:       &logger,
 	}
-	platformHandler := &platform.Handler{Pool: pool, Providers: providers}
+	platformHandler := &platform.Handler{Pool: pool, Providers: providers, Alerts: alertsRunner}
 
 	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange, Prefix: cfg.RedisCachePrefix}
 	voucherHandler.Analytics = analyticsSvc
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
-	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache}
+	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache, Alerts: alertsRunner}
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
 	adminReports := &admin.ReportsHandler{Q: queries}
@@ -758,6 +810,15 @@ func main() {
 			f.Get("/{id}", favoritesHandler.Check)
 		})
 
+		// Back-in-stock / price-drop alert subscriptions
+		v.Route("/alerts", func(al chi.Router) {
+			al.Use(authMiddleware.RequireAuth)
+			al.Use(tenantMembership)
+			al.Get("/", alertsHandler.List)
+			al.Post("/", alertsHandler.Subscribe)
+			al.Delete("/{id}", alertsHandler.Unsubscribe)
+		})
+
 		v.Route("/auth", func(a chi.Router) {
 			a.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "auth"}))
 			a.Post("/register", authHandler.Register)
@@ -825,6 +886,7 @@ func main() {
 			authR.Get("/orders", orderHandler.List)
 			authR.Get("/orders/{orderId}", orderHandler.Get)
 			authR.Get("/orders/{orderId}/shipment", shipHandler.GetByOrder)
+			authR.Get("/orders/{orderId}/invoice", invoiceHandler.UserInvoice)
 			authR.With(idem.Middleware).Post("/orders/{orderId}/cancel", orderHandler.Cancel)
 			authR.With(idem.Middleware).Post("/orders/{orderId}/returns", platformHandler.ReturnCreate)
 			authR.Get("/returns", platformHandler.ReturnList)
@@ -902,6 +964,7 @@ func main() {
 			admin.Get("/orders", adminOrders.ListOrders)
 			admin.Get("/orders/stats", adminOrders.OrderStats)
 			admin.Get("/orders/{id}", adminOrders.GetOrder)
+			admin.Get("/orders/{id}/invoice", invoiceHandler.AdminInvoice)
 
 			admin.Get("/vouchers", adminOrders.ListVouchers)
 			admin.Get("/vouchers/stats", adminOrders.VoucherStats)
@@ -949,6 +1012,9 @@ func main() {
 		Handler: r,
 	}
 
+	alertsRunner.Start(context.Background())
+	alertsMailRunner.Start(context.Background())
+
 	health.SetReady(true)
 	logger.Info().Str("addr", srv.Addr).Msg("server starting")
 	go func() {
@@ -967,8 +1033,21 @@ func main() {
 	}
 	shutdownTimeout, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 	defer cancel()
+	// Stop starting new alert passes and wait, within the same grace period
+	// and in parallel with the HTTP drain, for the in-flight ones. Emails not
+	// sent when the grace period ends stay in product_alert_deliveries (leased
+	// rows become due again when their lease expires) and are sent by the next
+	// process.
+	alertsStopped := make(chan error, 2)
+	go func() { alertsStopped <- alertsRunner.Stop(shutdownTimeout) }()
+	go func() { alertsStopped <- alertsMailRunner.Stop(shutdownTimeout) }()
 	if err := srv.Shutdown(shutdownTimeout); err != nil {
 		logger.Error().Err(err).Msg("server shutdown")
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-alertsStopped; err != nil {
+			logger.Warn().Err(err).Msg("alerts runner did not finish before shutdown grace elapsed")
+		}
 	}
 }
 

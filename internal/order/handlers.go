@@ -24,6 +24,14 @@ type Handler struct {
 	Q *dbgen.Queries
 	// Pool runs the cancel transaction.
 	Pool *pgxpool.Pool
+	// Alerts, when set, is kicked after a cancellation releases stock so the
+	// alerts runner drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
+}
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
 }
 
 var (
@@ -331,6 +339,10 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to cancel order", nil)
 		return
+	}
+	if h.Alerts != nil {
+		// Released stock may re-arm back-in-stock alerts.
+		h.Alerts.Kick()
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "cancelled"}})
 }

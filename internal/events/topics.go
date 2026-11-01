@@ -20,6 +20,10 @@ const (
 	TopicShipmentShipped        = "shipment.shipped"
 	TopicShipmentOutForDelivery = "shipment.out_for_delivery"
 	TopicShipmentDelivered      = "shipment.delivered"
+	// Alert topics are emitted only on the dedicated alerts bus (no webhook
+	// scheduler); see internal/alerts.
+	TopicAlertBackInStock = "alert.back_in_stock"
+	TopicAlertPriceDrop   = "alert.price_drop"
 )
 
 // DefaultTopics returns the canonical list of topics that support notifications.
@@ -33,7 +37,26 @@ func DefaultTopics() []string {
 		TopicShipmentShipped,
 		TopicShipmentOutForDelivery,
 		TopicShipmentDelivered,
+		TopicAlertBackInStock,
+		TopicAlertPriceDrop,
 	}
+}
+
+// RelayTopics are the topics the outbox relay re-dispatches: DefaultTopics
+// without the alert topics. Alert events are inserted by internal/alerts in
+// its own transaction and delivered through their own durable outbox
+// (product_alert_deliveries) on a bus with only the email notifier; the
+// relay's bus would also schedule webhooks (alert payloads carry customer
+// PII) and write a second in-app notification.
+func RelayTopics() []string {
+	out := make([]string, 0, len(DefaultTopics()))
+	for _, topic := range DefaultTopics() {
+		if topic == TopicAlertBackInStock || topic == TopicAlertPriceDrop {
+			continue
+		}
+		out = append(out, topic)
+	}
+	return out
 }
 
 // IsCustomerSilent reports whether a topic is an internal/ops signal that must

@@ -51,7 +51,7 @@ type OutboxRelay struct {
 	MaxAttempts int32
 	// BatchSize caps the events handled per sweep (default 100).
 	BatchSize int32
-	// Topics restricts the sweep (default DefaultTopics()).
+	// Topics restricts the sweep (default RelayTopics()).
 	Topics []string
 	Logger *zerolog.Logger
 }
@@ -104,7 +104,7 @@ func (r *OutboxRelay) sweep(ctx context.Context) (int, error) {
 	now := time.Now()
 	topics := r.Topics
 	if len(topics) == 0 {
-		topics = DefaultTopics()
+		topics = RelayTopics()
 	}
 	rows, err := r.Store.ListUndispatchedDomainEvents(ctx, dbgen.ListUndispatchedDomainEventsParams{
 		Topics:      topics,

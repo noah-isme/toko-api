@@ -79,6 +79,7 @@ type Querier interface {
 	CheckUserReview(ctx context.Context, arg CheckUserReviewParams) (pgtype.UUID, error)
 	CommitFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
 	CountAddressesByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountAlertSubscriptionsForUser(ctx context.Context, arg CountAlertSubscriptionsForUserParams) (int64, error)
 	// Observability only: expired reservations still RESERVED on orders that went
 	// on to be paid or fulfilled.
 	CountAnomalousExpiredReservationsForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
@@ -128,6 +129,7 @@ type Querier interface {
 	CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error)
 	DecrementVariantStock(ctx context.Context, arg DecrementVariantStockParams) error
 	DeleteAddress(ctx context.Context, arg DeleteAddressParams) error
+	DeleteAlertSubscription(ctx context.Context, arg DeleteAlertSubscriptionParams) (int64, error)
 	DeleteAllPushSubscriptions(ctx context.Context, userID pgtype.UUID) error
 	DeleteCartItem(ctx context.Context, arg DeleteCartItemParams) error
 	DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUID) error
@@ -142,6 +144,9 @@ type Querier interface {
 	DeleteStaleProductSalesForTenant(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error
 	DequeueDueDeliveries(ctx context.Context, limit int32) ([]WebhookDelivery, error)
+	// Used by Subscribe when the target became sellable (or cheaper) between the
+	// subscription check and its commit, so the drainer re-evaluates it.
+	EnqueueAlertEvent(ctx context.Context, arg EnqueueAlertEventParams) error
 	EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error)
 	// Expires every still-pending intent of an order (superseded intents
 	// included). Callers hold the order row lock.
@@ -157,6 +162,9 @@ type Querier interface {
 	GetActiveCartByUser(ctx context.Context, arg GetActiveCartByUserParams) (Cart, error)
 	GetActiveRewards(ctx context.Context) ([]LoyaltyReward, error)
 	GetAddressByID(ctx context.Context, arg GetAddressByIDParams) (Address, error)
+	// Loads a product (and optionally one of its variants) inside a tenant with
+	// everything needed to decide sellability and the current price.
+	GetAlertTarget(ctx context.Context, arg GetAlertTargetParams) (GetAlertTargetRow, error)
 	GetBrandByID(ctx context.Context, arg GetBrandByIDParams) (GetBrandByIDRow, error)
 	GetBrandBySlug(ctx context.Context, slug string) (GetBrandBySlugRow, error)
 	GetCartByID(ctx context.Context, arg GetCartByIDParams) (Cart, error)
@@ -181,7 +189,15 @@ type Querier interface {
 	GetOrderByIDForUpdate(ctx context.Context, id pgtype.UUID) (Order, error)
 	GetOrderByIDForUser(ctx context.Context, arg GetOrderByIDForUserParams) (Order, error)
 	GetOrderByTenant(ctx context.Context, arg GetOrderByTenantParams) (GetOrderByTenantRow, error)
+	// Order invoices (PDF) and per-tenant invoice numbering.
+	// Tenant-scoped; user_id narrows to the order owner (NULL for admin access).
+	GetOrderForInvoice(ctx context.Context, arg GetOrderForInvoiceParams) (GetOrderForInvoiceRow, error)
+	GetOrderInvoice(ctx context.Context, arg GetOrderInvoiceParams) (GetOrderInvoiceRow, error)
 	GetOrderStatus(ctx context.Context, id pgtype.UUID) (OrderStatus, error)
+	// Re-reads the order status inside the numbering transaction and holds a
+	// share lock, so a concurrent cancel (an UPDATE of the row) either commits
+	// first and is seen here, or waits until the invoice row is committed.
+	GetOrderStatusForInvoice(ctx context.Context, arg GetOrderStatusForInvoiceParams) (OrderStatus, error)
 	GetOrderThumbnail(ctx context.Context, orderID pgtype.UUID) (string, error)
 	GetPasswordResetByToken(ctx context.Context, token string) (PasswordReset, error)
 	GetPersonalizedRecommendations(ctx context.Context, arg GetPersonalizedRecommendationsParams) ([]GetPersonalizedRecommendationsRow, error)
@@ -223,7 +239,10 @@ type Querier interface {
 	GetVoucherUsageByOrder(ctx context.Context, arg GetVoucherUsageByOrderParams) (VoucherUsage, error)
 	GetWebhookEndpoint(ctx context.Context, id pgtype.UUID) (WebhookEndpoint, error)
 	IncreaseVoucherUsedCount(ctx context.Context, id pgtype.UUID) error
+	IncrementInvoiceCounter(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	IncrementVoucherUsageByCode(ctx context.Context, code string) error
+	// Queues the email for one alert domain event (same transaction as the claim).
+	InsertAlertDelivery(ctx context.Context, arg InsertAlertDeliveryParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (InsertAuditLogRow, error)
 	// dispatched_at is written as NULL explicitly: that is what makes the row
 	// "pending" for the outbox relay. The column default (now()) exists only for
@@ -232,16 +251,23 @@ type Querier interface {
 	// outbox relay restores it so a re-dispatch reaches only that tenant's
 	// webhook endpoints.
 	InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error)
+	InsertOrderInvoice(ctx context.Context, arg InsertOrderInvoiceParams) (InsertOrderInvoiceRow, error)
 	InsertPaymentEvent(ctx context.Context, arg InsertPaymentEventParams) error
 	InsertShipmentEvent(ctx context.Context, arg InsertShipmentEventParams) (ShipmentEvent, error)
 	InsertVoucherUsage(ctx context.Context, arg InsertVoucherUsageParams) error
 	InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqParams) (WebhookDlq, error)
+	// System-level mailer (cross-tenant on purpose; each row carries tenant_id
+	// and follow-up writes filter by it). Leases a bounded batch of due rows by
+	// pushing next_attempt_at to lease_until, so a crashed or slow sender's rows
+	// become due again only after the lease expires.
+	LeaseDueAlertDeliveries(ctx context.Context, arg LeaseDueAlertDeliveriesParams) ([]LeaseDueAlertDeliveriesRow, error)
 	// Endpoints are tenant-owned: an event is only delivered to the endpoints of
 	// the tenant that produced it.
 	ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg ListActiveEndpointsForTopicAndTenantParams) ([]WebhookEndpoint, error)
 	// Tenants the periodic worker jobs iterate over.
 	ListActiveTenantIDs(ctx context.Context) ([]pgtype.UUID, error)
 	ListAddressesByUser(ctx context.Context, arg ListAddressesByUserParams) ([]Address, error)
+	ListAlertSubscriptionsForUser(ctx context.Context, arg ListAlertSubscriptionsForUserParams) ([]ListAlertSubscriptionsForUserRow, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Filtered variants back the admin audit-log screen. Each filter is skipped when
 	// its parameter is NULL so one query serves every combination.
@@ -267,6 +293,7 @@ type Querier interface {
 	ListFavorites(ctx context.Context, arg ListFavoritesParams) ([]ListFavoritesRow, error)
 	ListImagesByProduct(ctx context.Context, productID pgtype.UUID) ([]ProductImage, error)
 	ListInventoryReservationsByOrder(ctx context.Context, orderID pgtype.UUID) ([]InventoryReservation, error)
+	ListInvoiceItems(ctx context.Context, arg ListInvoiceItemsParams) ([]ListInvoiceItemsRow, error)
 	ListNewsletterSubscribers(ctx context.Context, arg ListNewsletterSubscribersParams) ([]NewsletterSubscriber, error)
 	ListNotifications(ctx context.Context, arg ListNotificationsParams) ([]Notification, error)
 	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
@@ -279,6 +306,22 @@ type Querier interface {
 	// rows are locked in ascending variant_id; SKIP LOCKED so the sweep never
 	// waits on a transaction that holds the order.
 	ListOrphanExpiredReservationsForTenant(ctx context.Context, arg ListOrphanExpiredReservationsForTenantParams) ([]InventoryReservation, error)
+	// System-level drainer: claims unprocessed outbox rows across all tenants.
+	// Every row carries its tenant_id and all follow-up queries are filtered by it.
+	// Events never attempted come first, then the ones whose last pass left them
+	// pending longest ago, so one popular product cannot starve other events.
+	ListPendingAlertEvents(ctx context.Context, batchSize int32) ([]ListPendingAlertEventsRow, error)
+	// Returns ONLY actionable rows (target sellable right now), so LIMIT and the
+	// row lock never spend budget on subscriptions that cannot fire. The caller
+	// asks for one row more than it will claim to detect overflow; that probe row
+	// is locked for the rest of the transaction but not claimed. Sellability is
+	// exactly the cart rule (internal/cart AddItem): a variant line needs variant
+	// stock > 0 (products.in_stock is not consulted); a product-level line needs
+	// products.in_stock.
+	ListPendingBackInStockSubscriptions(ctx context.Context, arg ListPendingBackInStockSubscriptionsParams) ([]ListPendingBackInStockSubscriptionsRow, error)
+	// Returns ONLY actionable rows (current effective price below the price at
+	// subscribe time); see ListPendingBackInStockSubscriptions for why.
+	ListPendingPriceDropSubscriptions(ctx context.Context, arg ListPendingPriceDropSubscriptionsParams) ([]ListPendingPriceDropSubscriptionsRow, error)
 	ListProductsByTenant(ctx context.Context, arg ListProductsByTenantParams) ([]ListProductsByTenantRow, error)
 	ListProductsPublic(ctx context.Context, arg ListProductsPublicParams) ([]ListProductsPublicRow, error)
 	ListRelatedByCategory(ctx context.Context, arg ListRelatedByCategoryParams) ([]ListRelatedByCategoryRow, error)
@@ -294,6 +337,7 @@ type Querier interface {
 	// (internal/catalog/popularity.go). Paid states must match the popularity rule:
 	// PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED (CANCELLED and unpaid states excluded).
 	ListTenantIDsForProductSales(ctx context.Context) ([]pgtype.UUID, error)
+	ListTenantSettingsByKeys(ctx context.Context, arg ListTenantSettingsByKeysParams) ([]ListTenantSettingsByKeysRow, error)
 	// Used by the outbox relay. The topic list plus the [not_before, older_than)
 	// window let the planner use idx_domain_events_topic_time (topic, occurred_at)
 	// as a bounded range scan per topic instead of scanning the append-only table.
@@ -308,11 +352,22 @@ type Querier interface {
 	// Locks the flash-sale items that still hold RESERVED quota for the given
 	// orders, in ascending id, before ReleaseFlashSaleReservations decrements them.
 	LockFlashSaleItemsForOrders(ctx context.Context, orderIds []pgtype.UUID) ([]pgtype.UUID, error)
+	// Upserts the tenant's counter row and takes its row lock, serializing invoice
+	// number assignment per tenant for the rest of the transaction.
+	LockInvoiceCounter(ctx context.Context, tenantID pgtype.UUID) (int64, error)
 	// Phase B re-check under the order row lock. ErrNoRows means the order is
 	// locked by another transaction or is no longer pending. payment_deadline
 	// uses the same rule as ListExpiredUnpaidOrderCandidates (NULL without
 	// payments).
 	LockPendingOrderForExpiry(ctx context.Context, arg LockPendingOrderForExpiryParams) (LockPendingOrderForExpiryRow, error)
+	MarkAlertDeliveryDelivered(ctx context.Context, arg MarkAlertDeliveryDeliveredParams) error
+	// Schedules a retry at next_attempt_at, or gives up when give_up is true.
+	MarkAlertDeliveryFailed(ctx context.Context, arg MarkAlertDeliveryFailedParams) error
+	// Rotates events that still have claimable subscriptions to the back of the
+	// pending order.
+	MarkAlertEventsAttempted(ctx context.Context, ids []int64) error
+	MarkAlertEventsProcessed(ctx context.Context, ids []int64) error
+	MarkAlertSubscriptionNotified(ctx context.Context, arg MarkAlertSubscriptionNotifiedParams) (int64, error)
 	MarkAllNotificationsRead(ctx context.Context, arg MarkAllNotificationsReadParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) error
 	MarkDelivering(ctx context.Context, id pgtype.UUID) error
@@ -322,6 +377,12 @@ type Querier interface {
 	MarkPasswordResetUsed(ctx context.Context, id pgtype.UUID) error
 	MarkUserEmailVerified(ctx context.Context, id pgtype.UUID) (MarkUserEmailVerifiedRow, error)
 	MoveToDLQ(ctx context.Context, arg MoveToDLQParams) error
+	// System-level retention job: deletes a bounded batch of delivered or
+	// abandoned rows older than the cutoff.
+	PruneFinishedAlertDeliveries(ctx context.Context, arg PruneFinishedAlertDeliveriesParams) (int64, error)
+	// System-level retention job (cross-tenant on purpose): deletes a bounded
+	// batch of events processed before the cutoff.
+	PruneProcessedAlertEvents(ctx context.Context, arg PruneProcessedAlertEventsParams) (int64, error)
 	RecordDomainEventDispatchFailure(ctx context.Context, arg RecordDomainEventDispatchFailureParams) error
 	// Release quota reserved by an unpaid, expired, or cancelled order.
 	ReleaseFlashSaleReservations(ctx context.Context, orderID pgtype.UUID) error
@@ -376,6 +437,9 @@ type Querier interface {
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (UpdateUserProfileRow, error)
 	UpdateVoucher(ctx context.Context, arg UpdateVoucherParams) (Voucher, error)
 	UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error)
+	// Product alert subscriptions (back-in-stock / price-drop).
+	// Creates a subscription or re-arms an existing one for the same target.
+	UpsertAlertSubscription(ctx context.Context, arg UpsertAlertSubscriptionParams) (ProductAlertSubscription, error)
 	UpsertOrderProductPair(ctx context.Context, arg UpsertOrderProductPairParams) (OrderProductPair, error)
 	// No row lock on products: locking every sold product on every run would dirty and
 	// WAL-log hot products pages even when nothing changed. A product deleted after this

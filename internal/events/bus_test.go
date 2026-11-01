@@ -220,3 +220,26 @@ func TestOrderIDForShipmentTopicUsesPayload(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, agg, got)
 }
+
+func TestDeliverDoesNotPersistAgain(t *testing.T) {
+	store := &stubStore{}
+	notifier := &captureNotifier{}
+	bus := &events.Bus{Store: store, Notifiers: []events.Notifier{notifier}}
+	ev := dbgen.DomainEvent{ID: toUUID(uuid.New()), Topic: events.TopicAlertBackInStock, AggregateID: toUUID(uuid.New())}
+	require.NoError(t, bus.Deliver(context.Background(), ev))
+	require.Empty(t, store.lastParams.Topic, "Deliver must not insert a domain event")
+	require.Len(t, notifier.events, 1)
+	require.Equal(t, ev.ID, notifier.events[0].ID)
+	require.Equal(t, []pgtype.UUID{ev.ID}, store.marked, "a delivered event is marked dispatched")
+
+	var nilBus *events.Bus
+	require.Error(t, nilBus.Deliver(context.Background(), ev))
+}
+
+func TestRelayTopicsExcludeAlertTopics(t *testing.T) {
+	topics := events.RelayTopics()
+	require.NotContains(t, topics, events.TopicAlertBackInStock)
+	require.NotContains(t, topics, events.TopicAlertPriceDrop)
+	require.Contains(t, topics, events.TopicOrderPaid)
+	require.Len(t, topics, len(events.DefaultTopics())-2)
+}

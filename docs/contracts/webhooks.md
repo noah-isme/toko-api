@@ -4,6 +4,8 @@
 
 Webhooks are public endpoints invoked by external payment gateways and shipping couriers. They do **not** require a `Bearer` token; authentication is provider-specific (signature verification, API keys, etc.).
 
+> Outbound webhook endpoints (`/api/v1/admin/webhooks`) never receive the product alert topics `alert.back_in_stock` and `alert.price_drop`. Those events carry customer data and are only delivered as in-app notifications and email (see [Product Alerts](alerts.md)).
+
 ---
 
 ## Payment Notification Webhook

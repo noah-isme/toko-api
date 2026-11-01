@@ -1330,6 +1330,94 @@ paths:
           description: Unauthorized
         '500':
           description: Server error
+  /api/v1/alerts:
+    get:
+      summary: List my product alert subscriptions
+      description: >
+        Returns the caller's back-in-stock / price-drop subscriptions in the active
+        tenant, newest first. Prices are whole currency units (rupiah).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 }, description: Clamped to 100 }
+        - { name: productId, in: query, schema: { type: string, format: uuid }, description: Optional filter to one product }
+      responses:
+        '200':
+          description: Paginated subscriptions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertListResponse' }
+        '400':
+          description: Invalid productId (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '500': { description: Server error }
+    post:
+      summary: Subscribe to (or re-arm) a product alert
+      description: >
+        Creates a BACK_IN_STOCK or PRICE_DROP subscription for a product or one of its
+        variants. Posting again for the same (product, variant, type) re-arms it
+        (status active, notifiedAt null, priceAtSubscribe refreshed for PRICE_DROP) and
+        returns 200. BACK_IN_STOCK is rejected with 409 ALREADY_IN_STOCK while the target
+        is sellable, using the cart rule (variant: stock > 0; product-level: inStock).
+        Alerts fire once, delivered as an in-app notification (type back_in_stock /
+        price_drop) and a queued, retried email; they are never sent to webhooks.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertSubscribeRequest' }
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSubscriptionResponse' }
+        '200':
+          description: Existing subscription re-armed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSubscriptionResponse' }
+        '400':
+          description: Invalid payload, ids or type (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Product not in tenant or variant not of product (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: BACK_IN_STOCK requested while the target is sellable (ALREADY_IN_STOCK)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/alerts/{id}:
+    delete:
+      summary: Delete one of my product alert subscriptions
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: Subscription ID }
+      responses:
+        '204': { description: Deleted }
+        '400':
+          description: Invalid id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Not found for this user in this tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/carts:
     get:
       summary: Get the active cart
@@ -1632,6 +1720,47 @@ paths:
   /api/v1/orders/{orderId}/shipment:
     get:
       summary: Get shipment detail for order
+  /api/v1/orders/{orderId}/invoice:
+    get:
+      summary: Download invoice PDF for my order
+      description: >
+        Order owner only, tenant-scoped. A number (INV-YYYY-NNNNNN, per-tenant counter,
+        year in tenant timezone) is assigned on first download and never changes. New
+        invoices require status PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED; an
+        already issued invoice stays downloadable. Amounts are whole rupiah.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Invoice PDF (attachment)
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="INV-YYYY-NNNNNN.pdf"'
+            Cache-Control:
+              schema: { type: string }
+              description: private, no-store
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid order id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Order not found, not owned by caller, or other tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Order not paid yet / cancelled and no invoice issued (INVOICE_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/admin/orders/{id}/shipment:
     post:
       summary: Create shipment for order
@@ -3238,6 +3367,44 @@ paths:
         '403': { description: Forbidden }
         '404': { description: Order not found }
         '500': { description: Server error }
+  /api/v1/admin/orders/{id}/invoice:
+    get:
+      summary: Download invoice PDF for an order (admin)
+      description: Same document and numbering as GET /api/v1/orders/{orderId}/invoice, for any order in the active tenant. Requires admin role; audited.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Invoice PDF (attachment)
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="INV-YYYY-NNNNNN.pdf"'
+            Cache-Control:
+              schema: { type: string }
+              description: private, no-store
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid order id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404':
+          description: Order not in this tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Order not paid yet / cancelled and no invoice issued (INVOICE_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/admin/vouchers/stats:
     get:
       summary: Voucher statistics (admin)
@@ -3816,6 +3983,56 @@ components:
         failed request (a handler panic, which ends as a 500, also releases it). Keys are global (not scoped per user or route): generate a fresh one per
         logical operation.
   schemas:
+    AlertSubscribeRequest:
+      type: object
+      required: [productId, type]
+      properties:
+        productId: { type: string, format: uuid }
+        variantId: { type: [string, 'null'], format: uuid, description: Omit or null for a product-level subscription }
+        type: { type: string, enum: [BACK_IN_STOCK, PRICE_DROP], description: Case-insensitive on input }
+    AlertSubscription:
+      type: object
+      required: [id, productId, variantId, type, priceAtSubscribe, status, notifiedAt, createdAt, product]
+      properties:
+        id: { type: string, format: uuid }
+        productId: { type: string, format: uuid }
+        variantId: { type: [string, 'null'], format: uuid }
+        type: { type: string, enum: [BACK_IN_STOCK, PRICE_DROP] }
+        priceAtSubscribe: { type: [integer, 'null'], format: int64, description: 'Whole currency units; null for BACK_IN_STOCK' }
+        status: { type: string, enum: [active, notified] }
+        notifiedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        product:
+          type: object
+          required: [title, slug, thumbnail, price, inStock]
+          properties:
+            title: { type: string }
+            slug: { type: string }
+            thumbnail: { type: [string, 'null'] }
+            price: { type: integer, format: int64 }
+            inStock: { type: boolean }
+        variant:
+          type: object
+          description: Omitted when variantId is null
+          required: [id, sku, price, stock]
+          properties:
+            id: { type: string, format: uuid }
+            sku: { type: [string, 'null'] }
+            price: { type: integer, format: int64 }
+            stock: { type: integer }
+    AlertSubscriptionResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AlertSubscription' }
+    AlertListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AlertSubscription' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
     ReturnRequest:
       type: object
       required: [reason]

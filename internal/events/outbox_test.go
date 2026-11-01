@@ -98,7 +98,7 @@ func TestOutboxRelayRunOnceRespectsWindowAndLimits(t *testing.T) {
 	arg := outbox.args[0]
 	require.Equal(t, int32(7), arg.MaxAttempts)
 	require.Equal(t, int32(50), arg.BatchSize)
-	require.ElementsMatch(t, events.DefaultTopics(), arg.Topics)
+	require.ElementsMatch(t, events.RelayTopics(), arg.Topics)
 	require.WithinDuration(t, before.Add(-30*time.Second), arg.OlderThan.Time, 2*time.Second)
 	require.WithinDuration(t, before.Add(-2*time.Hour), arg.NotBefore.Time, 2*time.Second)
 }
