@@ -67,16 +67,16 @@ func TestTenantMigrationsLockDiscipline(t *testing.T) {
 		require.True(t, check > 0 && drop > check, "%s must verify the per-tenant index before dropping %s", d.file, d.constraint)
 	}
 
-	// The 000058 backfill first runs its lock-free large-catalog guard (a DO block
-	// that reads pg_class.reltuples), then locks its table before touching rows.
+	// The 000058 backfill first runs its large-catalog guard (a DO block that takes
+	// only ACCESS SHARE and counts at most 50001 rows), then locks its table before touching rows.
 	body := readMigration(t, variantsUp58)
 	stmts := sqlStatements(body)
 	require.GreaterOrEqual(t, len(stmts), 4, variantsUp58)
 	require.Equal(t, "DO $$", stmts[1], "%s: the large-catalog guard must follow lock_timeout", variantsUp58)
 	require.Equal(t, "LOCK TABLE product_variants IN EXCLUSIVE MODE", stmts[2], "%s: the lock must follow the guard, before any UPDATE", variantsUp58)
-	guard := strings.Index(body, "reltuples")
+	guard := strings.Index(body, "LIMIT 50001")
 	lock := strings.Index(body, "LOCK TABLE")
-	require.True(t, guard > 0 && guard < lock, "%s: the guard must read pg_class.reltuples before the LOCK", variantsUp58)
+	require.True(t, guard > 0 && guard < lock, "%s: the guard must run its bounded count before the LOCK", variantsUp58)
 	require.Contains(t, body, "docs/ops/RUNBOOK.md", "%s: the guard must point at the RUNBOOK", variantsUp58)
 	require.True(t, strings.HasPrefix(stmts[3], "UPDATE product_variants"), variantsUp58)
 }
@@ -176,9 +176,10 @@ END;
 $$;`
 
 // TestIntegrationVariantsBackfill000058LargeCatalogGuard pins 000058's safety
-// default: above 50k variants (pg_class estimate) with rows still to backfill it
-// fails before taking its EXCLUSIVE lock and points at the RUNBOOK; after the
-// RUNBOOK's keyset backfill it passes.
+// default: above 50k variants (bounded exact count, so it also holds on a
+// never-analyzed table) with rows still to backfill it fails before taking its
+// EXCLUSIVE lock and points at the RUNBOOK; after the RUNBOOK's keyset backfill
+// it passes.
 func TestIntegrationVariantsBackfill000058LargeCatalogGuard(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -202,11 +203,16 @@ func TestIntegrationVariantsBackfill000058LargeCatalogGuard(t *testing.T) {
 			product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
 			sku text UNIQUE,
 			stock int NOT NULL DEFAULT 0
-		);
+		) WITH (autovacuum_enabled = false);
 		INSERT INTO tenants VALUES ('00000000-0000-0000-0000-000000000001'), ('00000000-0000-0000-0000-000000000002');
 		INSERT INTO products (tenant_id) SELECT CASE WHEN g % 2 = 0 THEN '00000000-0000-0000-0000-000000000001'::uuid ELSE '00000000-0000-0000-0000-000000000002'::uuid END FROM generate_series(1, 1000) g;
 		INSERT INTO product_variants (product_id, sku) SELECT p.id, 'SKU-' || g FROM generate_series(1, 50001) g JOIN LATERAL (SELECT id FROM products OFFSET g % 1000 LIMIT 1) p ON true;
-		ANALYZE product_variants;`)
+		`)
+	// Never analyzed (autovacuum is off for the table): pg_class.reltuples is 0 or -1
+	// here, so a guard that trusted it would let 000058 take its EXCLUSIVE lock.
+	var reltuples float32
+	require.NoError(t, conn.QueryRow(ctx, `SELECT reltuples FROM pg_class WHERE oid = 'product_variants'::regclass`).Scan(&reltuples))
+	require.LessOrEqual(t, reltuples, float32(0), "the table must be never-analyzed for this case")
 	_, err = conn.Exec(ctx, readMigration(t, variantsUp57))
 	require.NoError(t, err, variantsUp57)
 
