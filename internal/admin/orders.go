@@ -18,6 +18,9 @@ import (
 // carry inventory and payment side effects.
 type OrdersHandler struct {
 	Q dbgen.Querier
+	// ExportBatchSize is the number of orders fetched per export page
+	// (default 1000). Tests lower it to exercise page boundaries.
+	ExportBatchSize int
 }
 
 type orderSummaryDTO struct {
@@ -206,14 +209,19 @@ func (h *OrdersHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": detail})
 }
 
+// orderStatsDTO: totalRevenue/averageOrderValue follow the revenue rule
+// (docs/contracts/analytics.md); totalOrders and the status counters count
+// every order in range.
 type orderStatsDTO struct {
 	TotalOrders       int64 `json:"totalOrders"`
 	TotalRevenue      int64 `json:"totalRevenue"`
+	RevenueOrders     int64 `json:"revenueOrders"`
 	PendingOrders     int64 `json:"pendingOrders"`
 	PaidOrders        int64 `json:"paidOrders"`
 	ShippedOrders     int64 `json:"shippedOrders"`
 	DeliveredOrders   int64 `json:"deliveredOrders"`
 	CancelledOrders   int64 `json:"cancelledOrders"`
+	ExpiredOrders     int64 `json:"expiredOrders"`
 	AverageOrderValue int64 `json:"averageOrderValue"`
 }
 
@@ -241,11 +249,13 @@ func (h *OrdersHandler) OrderStats(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, http.StatusOK, map[string]any{"data": orderStatsDTO{
 		TotalOrders:       stats.TotalOrders,
 		TotalRevenue:      stats.TotalRevenue,
+		RevenueOrders:     stats.RevenueOrders,
 		PendingOrders:     stats.PendingOrders,
 		PaidOrders:        stats.PaidOrders,
 		ShippedOrders:     stats.ShippedOrders,
 		DeliveredOrders:   stats.DeliveredOrders,
 		CancelledOrders:   stats.CancelledOrders,
+		ExpiredOrders:     stats.ExpiredOrders,
 		AverageOrderValue: stats.AverageOrderValue,
 	}})
 }

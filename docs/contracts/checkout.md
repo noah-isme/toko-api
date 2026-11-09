@@ -1,6 +1,6 @@
 # Checkout Endpoints
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
 ## 4.1 Create Order (Checkout)
 
@@ -83,16 +83,21 @@ Requests with a `paymentMethod` not in this list are rejected with `400 BAD_REQU
 
 On successful checkout, the backend automatically creates a payment intent via the configured provider (Midtrans or Xendit):
 - `paymentUrl` — the provider's redirect URL for the customer to complete payment
-- `paymentExpiry` — when the intent expires (default 15 minutes)
+- `paymentExpiry` — when the intent expires (default 15 minutes; for Midtrans this is also the provider-side deadline for every method, including VA and bank transfer)
 
 If no payment provider is configured or intent creation fails, the order is still created with status `pending_payment`. In this case `paymentUrl` is an empty string and `paymentExpiry` is `null`. The customer can retry payment via `POST /api/v1/payments/intent`.
 
 ### Order Status Flow
 ```
 pending_payment → paid → packed → shipped → out_for_delivery → delivered
-                   ↓
-                cancelled
+      │   │        ↓
+      │   └──→ cancelled
+      └──────→ expired   (system only: payment deadline + grace passed, or provider expiry)
 ```
+
+`expired` is terminal (label "Kedaluwarsa"); see payment.md 6.4. The order keeps its stock reserved
+until it is paid, cancelled or expired, so `paymentExpiry` + grace (default 10 minutes) is the
+latest point at which the customer can still pay.
 
 Status values are returned in **lowercase** (e.g. `pending_payment`, not `PENDING_PAYMENT`).
 
@@ -105,6 +110,8 @@ Status values are returned in **lowercase** (e.g. `pending_payment`, not `PENDIN
 | 400 | `BAD_REQUEST` | `shippingCost` is negative |
 | 400 | `BAD_REQUEST` | `cartId` or `shippingAddressId` is not a valid UUID |
 | 401 | `UNAUTHORIZED` | Missing or invalid auth token |
+| 409 | `PRODUCT_UNAVAILABLE` | A cart line's product is no longer published (`details: {productId, slug}`) |
+| 409 | `CONFLICT` | Lost a row-lock race (deadlock, lock timeout, serialization failure) with another checkout or an admin catalog write; nothing was committed, retry (`details: {retryable: true}`) |
 | 500 | `INTERNAL` | `shippingAddressId` does not exist or belongs to another user |
 | 500 | `INTERNAL` | Cart is empty or does not belong to the user |
 | 500 | `INTERNAL` | Tenant context missing |

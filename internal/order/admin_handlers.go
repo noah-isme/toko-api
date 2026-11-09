@@ -1,6 +1,7 @@
 package order
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,11 +13,19 @@ import (
 
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
+
+// AdminOrderStore is the tenant-scoped query surface used by AdminHandler.
+// *dbgen.Queries satisfies it.
+type AdminOrderStore interface {
+	AdminGetOrderStatus(ctx context.Context, arg dbgen.AdminGetOrderStatusParams) (dbgen.OrderStatus, error)
+	AdminUpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.AdminUpdateOrderStatusIfAllowedParams) (pgtype.UUID, error)
+}
 
 // AdminHandler provides administrative order management endpoints.
 type AdminHandler struct {
-	Q *dbgen.Queries
+	Q AdminOrderStore
 }
 
 type patchStatusRequest struct {
@@ -49,7 +58,14 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "unsupported status", nil)
 		return
 	}
-	current, err := h.Q.GetOrderStatus(r.Context(), oID)
+	tenantID, ok := tenantFromRequest(r)
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	// Both statements filter by tenant: an order of another tenant is
+	// indistinguishable from a missing one (404), so ids never leak across tenants.
+	current, err := h.Q.AdminGetOrderStatus(r.Context(), dbgen.AdminGetOrderStatusParams{ID: oID, TenantID: tenantID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
@@ -62,7 +78,7 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusConflict, "INVALID_STATE", "cannot transition to equal or previous state", nil)
 		return
 	}
-	if _, err := h.Q.UpdateOrderStatusIfAllowed(r.Context(), dbgen.UpdateOrderStatusIfAllowedParams{ID: oID, Status: target}); err != nil {
+	if _, err := h.Q.AdminUpdateOrderStatusIfAllowed(r.Context(), dbgen.AdminUpdateOrderStatusIfAllowedParams{ID: oID, TenantID: tenantID, Status: target}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, http.StatusConflict, "INVALID_STATE", "state transition not allowed", nil)
 			return
@@ -73,6 +89,11 @@ func (h *AdminHandler) PatchStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// isAllowedAdminTarget lists the statuses an admin may set with PATCH status.
+// EXPIRED is system-only (checkout-expiry job or a provider-reported expiry)
+// and terminal, so it is neither a target here nor a source in
+// allowedOrderTransitions. PAID is reached through the payment webhook or
+// POST /admin/orders/{id}/confirm-payment, which also settle stock.
 func isAllowedAdminTarget(status dbgen.OrderStatus) bool {
 	switch status {
 	case dbgen.OrderStatusPACKED, dbgen.OrderStatusSHIPPED, dbgen.OrderStatusOUTFORDELIVERY, dbgen.OrderStatusDELIVERED, dbgen.OrderStatusCANCELLED:
@@ -105,6 +126,19 @@ var allowedOrderTransitions = map[dbgen.OrderStatus][]dbgen.OrderStatus{
 	dbgen.OrderStatusPACKED:         {dbgen.OrderStatusSHIPPED},
 	dbgen.OrderStatusSHIPPED:        {dbgen.OrderStatusOUTFORDELIVERY},
 	dbgen.OrderStatusOUTFORDELIVERY: {dbgen.OrderStatusDELIVERED},
+}
+
+// tenantFromRequest resolves the tenant set by the tenant resolver middleware.
+func tenantFromRequest(r *http.Request) (pgtype.UUID, bool) {
+	raw, ok := tenant.FromContext(r.Context())
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	id, err := parseUUID(raw)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return id, true
 }
 
 func parseUUID(value string) (pgtype.UUID, error) {

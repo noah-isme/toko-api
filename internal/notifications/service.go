@@ -2,7 +2,9 @@ package notifications
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
@@ -26,18 +28,31 @@ type Service struct {
 
 // Create persists a single in-app notification for a user. The data payload is
 // stored verbatim as JSON; callers pass nil or valid JSON bytes.
-func (s *Service) Create(ctx context.Context, userID, tenantID pgtype.UUID, kind, title, body string, data []byte) (dbgen.Notification, error) {
+//
+// A valid eventID makes the call idempotent per (event, user): when the
+// notification already exists, Create returns a zero Notification and a nil
+// error. Pass an invalid (zero) eventID for notifications not tied to an event.
+func (s *Service) Create(ctx context.Context, userID, tenantID, eventID pgtype.UUID, kind, title, body string, data []byte) (dbgen.Notification, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
-	return s.Q.CreateNotification(ctx, dbgen.CreateNotificationParams{
+	n, err := s.Q.CreateNotification(ctx, dbgen.CreateNotificationParams{
 		UserID:   userID,
 		TenantID: tenantID,
 		Type:     kind,
 		Title:    title,
 		Body:     body,
 		Data:     data,
+		EventID:  eventID,
 	})
+	if err != nil {
+		if eventID.Valid && errors.Is(err, pgx.ErrNoRows) {
+			// ON CONFLICT DO NOTHING: already recorded for this event.
+			return dbgen.Notification{}, nil
+		}
+		return dbgen.Notification{}, err
+	}
+	return n, nil
 }
 
 // List returns a page of notifications for a user together with the total count.

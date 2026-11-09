@@ -208,8 +208,7 @@ func (b *Breaker) recordTransition(ctx context.Context, from, to State) {
 	if to == Open && BreakerOpenedTotal != nil {
 		BreakerOpenedTotal.WithLabelValues(label).Inc()
 	}
-	logger := b.loggerFor(ctx)
-	traceID := traceIDFromContext(ctx)
+	logger, traceID := b.loggerFor(ctx)
 	evt := logger.Info().Str("target", label).Str("from_state", from.String()).Str("to_state", to.String())
 	if traceID != "" {
 		evt = evt.Str("trace_id", traceID)
@@ -225,15 +224,27 @@ func (b *Breaker) targetLabel() string {
 	return trimmed
 }
 
-func (b *Breaker) loggerFor(ctx context.Context) *zerolog.Logger {
-	if ctxLogger := zerolog.Ctx(ctx); ctxLogger != nil {
-		logger := ctxLogger.With().Logger()
-		return &logger
+func (b *Breaker) loggerFor(ctx context.Context) (*zerolog.Logger, string) {
+	return resolveLogger(ctx, b.logger)
+}
+
+// resolveLogger picks the logger for ctx. A logger attached to ctx (for
+// example the request logger from obs.RequestLogger) wins and already carries
+// trace_id, so the returned trace id is empty. Otherwise the configured
+// fallback, then zerolog.DefaultContextLogger, then a no-op logger is used,
+// and the trace id from ctx is returned so callers can add it manually.
+func resolveLogger(ctx context.Context, fallback *zerolog.Logger) (*zerolog.Logger, string) {
+	if ctxLogger := zerolog.Ctx(ctx); ctxLogger != nil && ctxLogger != zerolog.DefaultContextLogger && ctxLogger.GetLevel() != zerolog.Disabled {
+		return ctxLogger, ""
 	}
-	if b.logger == nil {
-		return &breakerNopLogger
+	traceID := traceIDFromContext(ctx)
+	if fallback != nil {
+		return fallback, traceID
 	}
-	return b.logger
+	if zerolog.DefaultContextLogger != nil {
+		return zerolog.DefaultContextLogger, traceID
+	}
+	return &breakerNopLogger, traceID
 }
 
 func stateGaugeValue(state State) float64 {

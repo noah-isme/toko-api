@@ -12,30 +12,54 @@ import (
 )
 
 const getSalesDailyRange = `-- name: GetSalesDailyRange :many
-SELECT day::timestamptz AS day,
-       paid_orders,
-       all_orders,
-       COALESCE(revenue, 0) AS revenue
-FROM mv_sales_daily
-WHERE day >= $1::timestamptz
-  AND day < $2::timestamptz
-ORDER BY day ASC
+
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = $2 AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
+SELECT (o.created_at AT TIME ZONE $1::text)::date AS day,
+       COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))::bigint AS paid_orders,
+       COUNT(*)::bigint AS all_orders,
+       COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0)::bigint AS revenue
+FROM orders o
+LEFT JOIN refunded r ON r.order_id = o.id
+WHERE o.tenant_id = $2
+  AND o.created_at >= $3::timestamptz
+  AND o.created_at < $4::timestamptz
+GROUP BY 1
+ORDER BY 1
 `
 
 type GetSalesDailyRangeParams struct {
+	Tz        string             `json:"tz"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
 	StartDate pgtype.Timestamptz `json:"start_date"`
 	EndDate   pgtype.Timestamptz `json:"end_date"`
 }
 
 type GetSalesDailyRangeRow struct {
-	Day        pgtype.Timestamptz `json:"day"`
-	PaidOrders int64              `json:"paid_orders"`
-	AllOrders  int64              `json:"all_orders"`
-	Revenue    int64              `json:"revenue"`
+	Day        pgtype.Date `json:"day"`
+	PaidOrders int64       `json:"paid_orders"`
+	AllOrders  int64       `json:"all_orders"`
+	Revenue    int64       `json:"revenue"`
 }
 
+// Revenue rule (docs/contracts/analytics.md "Revenue rule"), shared by every
+// analytics/admin revenue query:
+//
+//	refunded = non-FAILED refunds (PENDING and SUCCEEDED) summed per order;
+//	revenue order iff status IN (PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY,
+//	DELIVERED) AND it is not fully refunded (no refund, or refunded < total);
+//	order-level revenue = pricing_total - refunded (net).
 func (q *Queries) GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRangeParams) ([]GetSalesDailyRangeRow, error) {
-	rows, err := q.db.Query(ctx, getSalesDailyRange, arg.StartDate, arg.EndDate)
+	rows, err := q.db.Query(ctx, getSalesDailyRange,
+		arg.Tz,
+		arg.TenantID,
+		arg.StartDate,
+		arg.EndDate,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -60,26 +84,58 @@ func (q *Queries) GetSalesDailyRange(ctx context.Context, arg GetSalesDailyRange
 }
 
 const getTopProducts = `-- name: GetTopProducts :many
-SELECT product_id, qty_sold, gross
-FROM mv_top_products
-ORDER BY qty_sold DESC
-LIMIT $2 OFFSET $1
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = $1 AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
+SELECT oi.product_id,
+       SUM(oi.qty)::bigint      AS qty_sold,
+       SUM(oi.subtotal)::bigint AS gross
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id AND o.tenant_id = $1
+LEFT JOIN refunded r ON r.order_id = o.id
+WHERE o.tenant_id = $1
+  AND o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)
+  AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR o.created_at < $3::timestamptz)
+GROUP BY oi.product_id
+ORDER BY qty_sold DESC, oi.product_id
+LIMIT $5 OFFSET $4
 `
 
 type GetTopProductsParams struct {
-	OffsetRows int32 `json:"offset_rows"`
-	LimitCount int32 `json:"limit_count"`
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	StartAt    pgtype.Timestamptz `json:"start_at"`
+	EndAt      pgtype.Timestamptz `json:"end_at"`
+	OffsetRows int32              `json:"offset_rows"`
+	LimitCount int32              `json:"limit_count"`
 }
 
-func (q *Queries) GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]MvTopProduct, error) {
-	rows, err := q.db.Query(ctx, getTopProducts, arg.OffsetRows, arg.LimitCount)
+type GetTopProductsRow struct {
+	ProductID pgtype.UUID `json:"product_id"`
+	QtySold   int64       `json:"qty_sold"`
+	Gross     int64       `json:"gross"`
+}
+
+// Item-level: gross order_items.subtotal of revenue orders (partially refunded
+// orders keep their full item value; fully refunded orders are excluded).
+func (q *Queries) GetTopProducts(ctx context.Context, arg GetTopProductsParams) ([]GetTopProductsRow, error) {
+	rows, err := q.db.Query(ctx, getTopProducts,
+		arg.TenantID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.OffsetRows,
+		arg.LimitCount,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []MvTopProduct
+	var items []GetTopProductsRow
 	for rows.Next() {
-		var i MvTopProduct
+		var i GetTopProductsRow
 		if err := rows.Scan(&i.ProductID, &i.QtySold, &i.Gross); err != nil {
 			return nil, err
 		}
@@ -89,22 +145,4 @@ func (q *Queries) GetTopProducts(ctx context.Context, arg GetTopProductsParams) 
 		return nil, err
 	}
 	return items, nil
-}
-
-const refreshSalesDaily = `-- name: RefreshSalesDaily :exec
-REFRESH MATERIALIZED VIEW CONCURRENTLY mv_sales_daily
-`
-
-func (q *Queries) RefreshSalesDaily(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, refreshSalesDaily)
-	return err
-}
-
-const refreshTopProducts = `-- name: RefreshTopProducts :exec
-REFRESH MATERIALIZED VIEW CONCURRENTLY mv_top_products
-`
-
-func (q *Queries) RefreshTopProducts(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, refreshTopProducts)
-	return err
 }

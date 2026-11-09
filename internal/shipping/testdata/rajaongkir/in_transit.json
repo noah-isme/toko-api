@@ -1,0 +1,4 @@
+{"rajaongkir":{"status":{"code":200,"description":"OK"},"result":{"delivered":false,"summary":{"status":"ON PROCESS"},"delivery_status":{"status":"ON PROCESS","pod_receiver":"","pod_date":"","pod_time":""},"manifest":[
+{"manifest_code":"1","manifest_description":"Manifested","city_name":"JAKARTA","manifest_date":"2025-01-02","manifest_time":"10:00:00"},
+{"manifest_code":"2","manifest_description":"UNDELIVERED - ALAMAT TIDAK DITEMUKAN","city_name":"KEDIRI","manifest_date":"2025-01-03","manifest_time":"08:15"},
+{"manifest_code":"3","manifest_description":"WITH DELIVERY COURIER","city_name":"KEDIRI","manifest_date":"2025-01-04","manifest_time":"09:30:00"}]}}}

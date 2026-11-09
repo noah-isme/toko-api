@@ -78,15 +78,28 @@ WHERE o.id = sqlc.arg(id)
 LIMIT 1;
 
 -- name: AdminOrderStats :one
+-- Revenue rule (docs/contracts/analytics.md): total_revenue is net of
+-- non-FAILED refunds over revenue orders; average_order_value =
+-- total_revenue / revenue_orders. Status counters count every order.
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = sqlc.arg(tenant_id) AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
 SELECT COUNT(*)::bigint                                                                    AS total_orders,
-       COALESCE(SUM(o.pricing_total), 0)::bigint                                           AS total_revenue,
+       COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0)::bigint AS total_revenue,
+       COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))::bigint AS revenue_orders,
        COUNT(*) FILTER (WHERE o.status = 'PENDING_PAYMENT')::bigint                        AS pending_orders,
        COUNT(*) FILTER (WHERE o.status = 'PAID')::bigint                                   AS paid_orders,
        COUNT(*) FILTER (WHERE o.status IN ('SHIPPED', 'OUT_FOR_DELIVERY'))::bigint         AS shipped_orders,
        COUNT(*) FILTER (WHERE o.status = 'DELIVERED')::bigint                              AS delivered_orders,
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
-       COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
+       COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::bigint                                AS expired_orders,
+       COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))
+                / NULLIF(COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0), 0)::bigint AS average_order_value
 FROM orders o
+LEFT JOIN refunded r ON r.order_id = o.id
 WHERE o.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
   AND (sqlc.narg(end_at)::timestamptz IS NULL OR o.created_at < sqlc.arg(end_at)::timestamptz);
@@ -104,6 +117,13 @@ FROM products
 WHERE tenant_id = sqlc.arg(tenant_id);
 
 -- name: AdminTopProductsByRevenue :many
+-- Item-level gross subtotal of revenue orders (fully refunded orders excluded).
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = sqlc.arg(tenant_id) AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
 SELECT oi.product_id,
        MIN(oi.title)::text            AS title,
        MIN(oi.slug)::text             AS slug,
@@ -111,11 +131,13 @@ SELECT oi.product_id,
        SUM(oi.subtotal)::bigint       AS revenue
 FROM order_items oi
 JOIN orders o ON o.id = oi.order_id
+LEFT JOIN refunded r ON r.order_id = o.id
 WHERE o.tenant_id = sqlc.arg(tenant_id)
-  AND o.status <> 'CANCELLED'
+  AND o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)
   AND (sqlc.narg(start_at)::timestamptz IS NULL OR o.created_at >= sqlc.arg(start_at)::timestamptz)
+  AND (sqlc.narg(end_at)::timestamptz IS NULL OR o.created_at < sqlc.arg(end_at)::timestamptz)
 GROUP BY oi.product_id
-ORDER BY revenue DESC
+ORDER BY revenue DESC, oi.product_id
 LIMIT sqlc.arg(limit_value);
 
 -- name: AdminListVouchers :many

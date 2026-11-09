@@ -28,7 +28,7 @@ func TestNotifyOnDelivered(t *testing.T) {
 		NotifyOnDelivered: true,
 	}
 
-	_, err := svc.Create(ctx, toPGUUID(orderID), "jne", "TRACK123")
+	_, err := svc.Create(ctx, testTenantID, toPGUUID(orderID), "jne", "TRACK123")
 	require.NoError(t, err)
 
 	_, _, err = svc.AppendEvent(ctx, toPGUUID(orderID), dbgen.ShipmentStatusSHIPPED, nil, nil, nil, []byte(`{}`))

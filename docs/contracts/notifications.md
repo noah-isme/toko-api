@@ -1,10 +1,28 @@
 # In-App Notifications
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
 Per-user in-app notifications. Notifications are created automatically as a side
 effect of order and shipment lifecycle events (see [Webhooks](webhooks.md) for
 the underlying domain topics) and read back through the endpoints below.
+
+**Delivery model.** Every lifecycle event is first stored in `domain_events`
+(which doubles as an outbox) and then fanned out to webhooks, in-app
+notifications, transactional email and web push. The API responds before email
+and push are sent: they are queued (`email-delivery`, `push-delivery`) and
+delivered by `cmd/worker` with retries and a dead-letter queue. If fan-out
+fails or the process crashes before it completes, the worker's outbox relay
+re-dispatches the event (after 30 s, for up to 24 h, at most 10 attempts).
+Fan-out is idempotent per event: an in-app notification is created at most once
+per event and user (unique `(event_id, user_id)`), and email/push tasks are
+deduplicated by event id while queued and for the relay window (24 h) after
+they complete, so a re-dispatch never sends the same email or push twice. A
+push that reached at least one of the user's devices is not retried for the
+devices that failed. Shipment emails are produced only by this event path;
+the `NOTIFY_ON_SHIPPED`, `NOTIFY_ON_OUT_FOR_DELIVERY` and `NOTIFY_ON_DELIVERED`
+flags still gate them (together with `NOTIFY_EMAIL_ENABLED` and the per-topic
+toggles), so a shipment status change sends one email, not two. Web push is
+documented in [Web Push](push.md).
 
 All endpoints require a Bearer token and are tenant-scoped: a user only ever
 sees notifications belonging to their own account within the active tenant.
@@ -48,6 +66,8 @@ Base path: `/api/v1/notifications`
 | `shipment_shipped`         | A shipment is handed to the courier.  |
 | `shipment_out_for_delivery`| A shipment is out for delivery.       |
 | `shipment_delivered`       | A shipment is delivered.              |
+| `back_in_stock`            | A product/variant the user subscribed to is sellable again (see [Product Alerts](alerts.md)). |
+| `price_drop`               | A subscribed product/variant price fell below the price at subscribe time (see [Product Alerts](alerts.md)). |
 
 ---
 

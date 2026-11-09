@@ -1,0 +1,1 @@
+-- no-op: a validated CHECK cannot be un-validated; 000055 down replaces the constraint.

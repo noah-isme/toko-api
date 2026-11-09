@@ -1,6 +1,6 @@
 # Order Management Endpoints
 
-> **Last Updated:** 2026-08-07
+> **Last Updated:** 2026-10-25
 
 ## 4.2 List User Orders
 
@@ -136,6 +136,10 @@ Authorization: Bearer <token>
 }
 ```
 
+**`payment.status` mapping** (from the stored payment status): `PAID` and
+`PARTIALLY_REFUNDED` → `paid` (a partial refund leaves the order paid); `PENDING` →
+`pending`; `FAILED`, `EXPIRED` and `REFUNDED` → `failed`.
+
 ---
 
 ## 4.4 Cancel Order
@@ -158,7 +162,28 @@ Authorization: Bearer <token>
 
 **Notes:**
 - Hanya bisa cancel order dengan status `pending_payment`
-- Order yang sudah `packed`, `shipped`, `out_for_delivery`, atau `delivered` tidak bisa dicancel
+- Order yang sudah `packed`, `shipped`, `out_for_delivery`, `delivered`, `expired`, atau `cancelled` tidak bisa dicancel: `400 INVALID_STATE` (`"only pending orders can be canceled"`). Order milik user lain: `404 NOT_FOUND`.
+- Cancel runs under the order row lock with the status guard, so it cannot overwrite an order that a payment callback or the expiry job has just moved to `paid`/`expired`; stock is released only by the request that actually cancelled.
+
+---
+
+## Order status values
+
+Customer endpoints serialise statuses in lowercase with an Indonesian `statusLabel`:
+
+| status | statusLabel | notes |
+| --- | --- | --- |
+| `pending_payment` | Menunggu Pembayaran | payable until the payment deadline + grace (payment.md 6.4) |
+| `paid` | Dibayar | |
+| `packed` | Dikemas | |
+| `shipped` | Sedang Dikirim | |
+| `out_for_delivery` | Dalam Pengiriman | |
+| `delivered` | Selesai | |
+| `cancelled` | Dibatalkan | |
+| `expired` | Kedaluwarsa | **new.** Terminal, set only by the system when the payment deadline passed (worker) or the provider reported the payment expired. Not cancellable; no new payment intent or proof upload (`409 INVALID_STATE`). |
+
+For an expired order `statusHistory` ends with `{"status": "expired", "timestamp": <updatedAt>}`, e.g.
+`[{"status":"pending_payment","timestamp":"..."},{"status":"expired","timestamp":"..."}]`.
 
 ---
 
@@ -204,3 +229,71 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+**Tracking sources:** events come from courier webhooks and from the worker's tracking poller
+(webhooks.md "Shipment tracking poller"). Poller events use the carrier's own time (WIB, returned
+in UTC) as `timestamp`; the response shape is unchanged.
+
+---
+
+## 4.6 Download Invoice (PDF)
+
+```http
+GET /api/v1/orders/{orderId}/invoice
+Authorization: Bearer <token>
+```
+
+Returns the invoice for one of the caller's own orders in the active tenant, as
+a PDF. Replaces the client-side `.txt` invoice.
+
+**Response:** `200 OK`
+
+| Header                | Value |
+|-----------------------|-------|
+| `Content-Type`        | `application/pdf` |
+| `Content-Disposition` | `attachment; filename="INV-2026-000001.pdf"` |
+| `Cache-Control`       | `private, no-store` |
+| `Content-Length`      | PDF size in bytes |
+
+Body: the PDF bytes. Fetch it as a blob, for example
+`fetch(url, { headers }).then(r => r.blob())`, and take the download name from
+`Content-Disposition`.
+
+**Eligibility:** a new invoice is issued only for orders with status `paid`,
+`packed`, `shipped`, `out_for_delivery` or `delivered`. Orders in
+`pending_payment` or `cancelled` get `409 INVOICE_NOT_AVAILABLE`. Once issued,
+an invoice stays downloadable even if the order is later cancelled or refunded.
+The payment status line then shows the current state.
+
+**Invoice number:** `INV-YYYY-NNNNNN`. `YYYY` is the issue year in the tenant's
+timezone. `NNNNNN` is a per-tenant counter, zero-padded and never reset. The
+number is assigned on the first download (by the customer or an admin) and
+never changes after that. Repeated downloads return the same number.
+
+**PDF content:** store name, email, phone and description (from admin settings,
+falling back to the tenant name and contact email), invoice number and issue
+date, order number and order date, payment status and channel, order status,
+customer name and email, shipping address, line items (title, SKU, qty, unit
+price, subtotal), and subtotal, discount (with voucher code), tax, shipping and
+total. Amounts are whole rupiah formatted as `Rp 1.250.000`, the same values as
+the order detail response. Labels are in Indonesian. Text is encoded as
+Windows-1252, so Latin-1 letters and typographic punctuation (`é`, `’`, `–`)
+render as-is and any other character renders as `?`. The SKU column shows the
+variant's current SKU (order lines do not snapshot SKUs); titles, quantities
+and amounts are the order-time snapshot.
+
+An order cancelled at the same moment as its first invoice request is not
+issued a number: eligibility is re-checked under a row lock inside the
+numbering transaction.
+
+**Errors** (JSON envelope):
+
+| Status | `error.code`            | When |
+|--------|-------------------------|------|
+| 400    | `BAD_REQUEST`           | `orderId` is not a UUID. |
+| 401    | `UNAUTHORIZED`          | Missing/invalid token. |
+| 404    | `NOT_FOUND`             | Order does not exist, belongs to another user, or belongs to another tenant. |
+| 409    | `INVOICE_NOT_AVAILABLE` | Order not paid yet (or cancelled) and no invoice was issued before. |
+| 500    | `INTERNAL`              | Rendering or database failure. |
+
+Admin equivalent: `GET /api/v1/admin/orders/{id}/invoice` ([Admin 6.29](admin.md#629-download-order-invoice-pdf)).

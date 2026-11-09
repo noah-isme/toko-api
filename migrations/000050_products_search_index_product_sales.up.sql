@@ -1,0 +1,83 @@
+SET LOCAL lock_timeout = '5s';
+-- Search, part 2 of 2 (backfill + indexes), then the product_sales table.
+--
+-- Lock footprint. This file runs as ONE implicit transaction, separate from 000049, and
+-- never takes ACCESS EXCLUSIVE on products: before the backfill it takes EXCLUSIVE on
+-- products (LOCK TABLE ... IN EXCLUSIVE MODE), then the backfill UPDATE takes ROW EXCLUSIVE
+-- and row-locks the rows it fills, the two GIN builds take SHARE, and the product_sales FK
+-- takes SHARE ROW EXCLUSIVE, all held until commit. Plain product READS (storefront
+-- list/detail, cart and checkout totals) continue throughout; product WRITES and row locks (stock flag updates,
+-- admin catalog edits, FOR NO KEY UPDATE in bulk/import) wait from the start until the
+-- file commits. So does every INSERT into a table that references products: EXCLUSIVE
+-- conflicts with the ROW SHARE that the foreign-key check (SELECT ... FOR KEY SHARE) takes
+-- on the referenced product. These flows wait for the whole window: checkout inventory reservations, add-to-cart (cart_items), favorites and
+-- reviews, product alert subscriptions, product questions, user_product_views and
+-- order_product_pairs, and campaign items. The 5 s lock_timeout also means the file must
+-- wait for any open transaction that has inserted a row referencing products (a checkout
+-- or cart write left open), not only for admin edits; it fails with `lock timeout`
+-- instead. Taking EXCLUSIVE first matters: without it the backfill row-locks rows
+-- while concurrent writers still hold ROW EXCLUSIVE, and the later CREATE INDEX (SHARE)
+-- and a writer waiting on a backfilled row deadlock. SHARE is not enough either: it
+-- admits ROW SHARE, so a writer that already holds a product row lock
+-- (AdminGetProductsByIDsForUpdate, then UPDATE products) makes the backfill wait on its
+-- row while its UPDATE waits on the SHARE lock. Either deadlock aborts the migration and
+-- leaves the database dirty. Measured ~5 s on a 20k-product tenant with ~600-character
+-- descriptions; the cost grows linearly with the catalog. Above ~20k products run the
+-- batched, concurrent procedure in docs/ops/RUNBOOK.md before the deploy: this file then
+-- finds both indexes, skips the backfill and builds nothing.
+--
+-- The backfill runs only while idx_products_search_simple does not exist yet. The manual
+-- procedure builds that index only after its batched backfill reports UPDATE 0, and the
+-- 000049 trigger fills the column on every insert/update from then on, so an existing valid
+-- index means there is nothing left to backfill. An INVALID index (a failed
+-- CREATE INDEX CONCURRENTLY) aborts the file instead of being silently kept or rebuilt
+-- under lock; see the RUNBOOK for the recovery.
+DO $$
+DECLARE
+  simple_valid boolean;
+  trgm_valid   boolean;
+BEGIN
+  SELECT i.indisvalid INTO simple_valid
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE i.indrelid = 'products'::regclass AND c.relname = 'idx_products_search_simple';
+  SELECT i.indisvalid INTO trgm_valid
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE i.indrelid = 'products'::regclass AND c.relname = 'idx_products_title_trgm';
+
+  IF simple_valid IS FALSE OR trgm_valid IS FALSE THEN
+    RAISE EXCEPTION 'products search index is INVALID (failed CREATE INDEX CONCURRENTLY): DROP INDEX CONCURRENTLY it and rebuild it as in docs/ops/RUNBOOK.md, then re-run the migration';
+  END IF;
+
+  IF simple_valid IS NULL THEN
+    -- Writers and row lockers wait from here instead of deadlocking against the backfill
+    -- and the index build below. Kept inside this branch so re-runs and the manual
+    -- large-catalog path take no lock.
+    LOCK TABLE products IN EXCLUSIVE MODE;
+    -- Rows written before the 000049 trigger existed.
+    UPDATE products
+    SET search_vector_simple =
+          setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
+          setweight(to_tsvector('simple', coalesce(description, '')), 'B')
+    WHERE search_vector_simple IS NULL;
+    CREATE INDEX idx_products_search_simple ON products USING GIN (search_vector_simple);
+  END IF;
+  IF trgm_valid IS NULL THEN
+    CREATE INDEX idx_products_title_trgm ON products USING GIN (title gin_trgm_ops);
+  END IF;
+END;
+$$;
+
+-- product_sales: derived per-product counter of units sold in paid orders, used by the
+-- storefront popularity sort. It is written ONLY by the worker's periodic refresh job
+-- (internal/catalog/popularity.go), which recomputes it per tenant from order_items JOIN
+-- orders; popularity may therefore be up to one refresh interval stale. Deliberately no
+-- triggers: keeping the counter out of the payment-settlement transaction means paid
+-- webhooks never contend on a shared row (see .plans/rec-api-search.md, Decision 5/15).
+-- No backfill here (the first worker run fills the table) and no lock on orders/order_items.
+CREATE TABLE IF NOT EXISTS product_sales (
+  product_id UUID PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+  tenant_id  UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  units_sold BIGINT NOT NULL DEFAULT 0 CHECK (units_sold >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_product_sales_tenant ON product_sales(tenant_id);

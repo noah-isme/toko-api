@@ -54,6 +54,47 @@ func (l Locker) WithLock(ctx context.Context, key string, ttl time.Duration, fn 
 	}
 }
 
+// TryLock makes a single attempt to take the lock. When another holder has it,
+// TryLock returns (false, nil) without running fn. Otherwise it runs fn while
+// holding the lock, releases it, and returns (true, fn's error). Periodic jobs
+// use it so only one instance runs each tick and the others skip instead of
+// queueing up behind the holder.
+func (l Locker) TryLock(ctx context.Context, key string, ttl time.Duration, fn func(context.Context) error) (bool, error) {
+	if l.R == nil {
+		return false, errors.New("lock: redis client not configured")
+	}
+	if fn == nil {
+		return false, errors.New("lock: callback not provided")
+	}
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+	token := uuid.NewString()
+	ok, err := l.R.SetNX(ctx, key, token, ttl).Result()
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	defer l.release(context.Background(), key, token)
+	return true, fn(ctx)
+}
+
+// TryLease takes key for ttl if it is free and reports whether it did. It
+// never waits and never releases: the lease simply expires. Use it for
+// periodic jobs that should run at most once per ttl across replicas, where
+// releasing early would let the next replica's tick run the job again.
+func (l Locker) TryLease(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if l.R == nil {
+		return false, errors.New("lock: redis client not configured")
+	}
+	if ttl <= 0 {
+		return false, errors.New("lock: lease ttl must be positive")
+	}
+	return l.R.SetNX(ctx, key, uuid.NewString(), ttl).Result()
+}
+
 func (l Locker) release(ctx context.Context, key, token string) {
 	const script = `if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])

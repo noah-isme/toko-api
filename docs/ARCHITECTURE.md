@@ -30,16 +30,16 @@ Toko API is a Go modular monolith backed by PostgreSQL and Redis. The repository
 | Binary | Source | Purpose |
 |--------|--------|---------|
 | `api` | `cmd/api` | HTTP API server — all REST endpoints |
-| `worker` | `cmd/worker` | Background webhook-delivery consumer |
+| `worker` | `cmd/worker` | Background consumers for the `webhook-delivery`, `email-delivery` and `push-delivery` queues, the outbox relay that re-dispatches undispatched domain events, and periodic jobs (checkout expiry, shipment tracking) |
 | `migrate` | `cmd/migrate` | Schema migration runner (embeds SQL files) |
-| tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`) |
+| tools | `cmd/tools/*` | Maintenance CLIs (`tenant_guard`, `backfill_tenant`, `vapid_keygen`) |
 
 ## Package Architecture
 
 ```
 internal/
-├── admin/          # Admin CRUD handlers (catalog, orders, analytics)
-├── analytics/      # Sales analytics service with materialized views
+├── admin/          # Admin CRUD handlers (catalog, orders, analytics, reports + CSV)
+├── analytics/      # Tenant-scoped sales analytics (live queries + Redis cache)
 ├── app/            # Application wiring helpers
 ├── audit/          # Audit logging with sampling and HTTP recorder
 ├── auth/           # JWT authentication, sessions, password reset, email verification
@@ -53,14 +53,15 @@ internal/
 ├── db/
 │   ├── gen/        # sqlc-generated Go code (DO NOT EDIT)
 │   └── queries/    # SQL source files for sqlc
-├── events/         # Domain event bus with notifier fan-out
+├── events/         # Domain event bus (domain_events outbox), fan-out, outbox relay
 ├── favorites/      # Wishlist / favorites
 ├── health/         # Liveness and readiness probes
 ├── http/           # HTTP-layer helpers
+├── jobs/           # Worker periodic jobs: runner, checkout expiry, shipment tracking
 ├── lock/           # Distributed locking (Redis)
 ├── loyalty/        # Points-based loyalty program
 ├── notifications/  # In-app notification centre
-├── notify/         # Outbound webhook delivery with HMAC, retry, DLQ
+├── notify/         # Outbound webhook delivery (HMAC, retry, DLQ) and queued transactional email
 ├── obs/            # Observability: Prometheus, OpenTelemetry, structured logging
 ├── order/          # Order queries and admin status transitions
 ├── payment/        # Payment intent, webhook handlers (Midtrans, Xendit)
@@ -71,12 +72,13 @@ internal/
 ├── queue/          # Redis-based task queue with DLQ and visibility timeouts
 ├── ratelimit/      # Sliding-window rate limiter (global, IP, user, login)
 ├── recommendations/# Collaborative-filtering recommendation engine
+├── reservation/    # Lock-ordered inventory reservation release helpers
 ├── repo/           # Repository pattern helpers
 ├── resilience/     # Circuit breakers, jittered retry, HTTP client wrapper
 ├── reviews/        # Product reviews with aggregated stats
 ├── security/       # CORS, CSRF, HSTS, body-size limits
 ├── services/       # Cross-domain service adapters (tenant-scoped repos)
-├── shipping/       # Shipping cost estimation (RajaOngkir), tracking webhooks
+├── shipping/       # Shipping cost estimation (RajaOngkir), tracking webhooks and waybill tracker
 ├── tenant/         # Multi-tenant resolver (header / subdomain)
 ├── user/           # User profile and address management
 └── voucher/        # Voucher engine (percentage, fixed, free-shipping, per-user limits)
@@ -100,9 +102,44 @@ internal/
 | Payment webhook replay | `wh:{provider}:{sha256(body)}` |
 | Shipping webhook replay | `shwh:{courier}:{sha256(body)}` |
 | Outbound webhook replay | `wh:{endpoint_uuid}:{event_uuid}` |
-| Distributed delivery locks | `lock:delivery:{delivery_uuid}` |
+| Distributed delivery locks | `lock:delivery:{delivery_uuid}`, `lock:outbox:relay` (one outbox relay sweep at a time) |
+| Periodic job locks | `lock:job:{job_name}` (`checkout_expiry`, `shipment_tracking`) |
 | Task queue | `{QUEUE_REDIS_PREFIX}:queue:{kind}`, `{QUEUE_REDIS_PREFIX}:{kind}:processing`, and `{QUEUE_REDIS_PREFIX}:dedup:{kind}:{key}` (default prefix: `q`) |
 | Rate limiting | `{RATE_LIMIT_REDIS_PREFIX}{scope}:{key}` (default prefix: `rl:`) |
+
+## Periodic Jobs
+
+`cmd/worker` runs `internal/jobs.Runner` beside the webhook queue worker when
+`WORKER_JOBS_ENABLED=true` (default `false` for the release that introduced it; see the RUNBOOK).
+Each job runs on its own ticker; every tick takes the Redis lock `lock:job:<name>` once
+(`lock.Locker.TryLock`, TTL `JOB_LOCK_TTL_SEC`) so only one replica runs it, and every write is
+conditional so an overlapping run is harmless. Each run logs a `job run` line with counters and the
+runner logs `jobs heartbeat` every `WORKER_HEARTBEAT_SEC`; metrics `worker_job_runs_total`,
+`worker_job_duration_seconds`, `worker_job_last_success_timestamp_seconds` and
+`worker_job_items_total` are registered (the standalone worker has no `/metrics` listener yet, so
+logs are the primary signal there).
+
+- `checkout_expiry` (`JOB_CHECKOUT_EXPIRY_*`): per active tenant, expires `PENDING_PAYMENT` orders
+  past payment deadline + grace to `EXPIRED` (one order per transaction, order row locked with
+  `SKIP LOCKED`), releases stock and flash-sale quota, emits `payment.expired` + `order.canceled`
+  (silently for backlog), then releases expired reservations left on `CANCELLED`/`EXPIRED` orders.
+- `shipment_tracking` (`JOB_SHIPMENT_TRACKING_INTERVAL_SEC`, `SHIPMENT_TRACK_*`): polls RajaOngkir
+  for `SHIPPED`/`OUT_FOR_DELIVERY` shipments through a circuit breaker with per-shipment backoff
+  (`shipments.track_*` columns) and a per-tick call cap, applying forward status changes through
+  `shipping.Service`.
+
+**Settlement lock order** (worker, payment webhook, admin payment confirmation, customer cancel,
+payment intent creation, checkout): `orders` row → `payments` → `inventory_reservations` (ascending
+`variant_id`) → `product_variants` (ascending id) → `flash_sale_order_items` / `flash_sale_items`
+(ascending id) → `vouchers`. Checkout reserves all variants in ascending id before any flash-sale
+row, and checkout, the webhook, cancel and the per-order expiry transaction retry on deadlock
+(`internal/db/txretry`).
+
+## Domain Events and Notification Delivery
+
+Emitters (checkout, payment webhooks, shipping) call `events.Bus.EmitLogged` after their business transaction commits. The bus inserts a `domain_events` row with `dispatched_at = NULL` (the table is the outbox), then fans out: webhook deliveries are scheduled, in-app notifications are created (unique per event and user), and opaque `{eventId, topic}` tasks are enqueued for `email-delivery` and `push-delivery` (deduplicated by event id). When every handler succeeds the row is marked dispatched; otherwise the failure is recorded and the worker's outbox relay re-dispatches it. The row also stores the emitting request's `tenant_id`; the relay restores it before re-dispatching, because webhook scheduling only targets the event tenant's endpoints. Emit failures are logged with the request logger and never fail the business operation; `EmitLogged` runs detached from client cancellation.
+
+`cmd/worker` loads the event for each email/push task, renders the message and sends it (SMTP, or VAPID web push to the user's stored subscriptions honouring push preferences). Failures retry with backoff and land in `queue_dlq` after `QUEUE_MAX_ATTEMPTS`; errors stored there are redacted so the global admin DLQ exposes no recipient address or endpoint URL.
 
 ## Request Flow
 
@@ -148,7 +185,8 @@ Both paths expect PostgreSQL and Redis configuration from the deployment environ
 | **Midtrans** | Payment gateway | `internal/payment` |
 | **Xendit** | Payment gateway (alt) | `internal/payment` |
 | **RajaOngkir** | Shipping rates + tracking | `internal/shipping` |
-| **SMTP** | Transactional email | `internal/common` (SMTPSender) |
+| **SMTP** | Transactional email (order/payment/shipment mail sent by `cmd/worker` from the `email-delivery` queue; auth mail sent inline) | `internal/common` (SMTPSender), `internal/notify` (EmailWorker) |
+| **Web Push services** (FCM, Mozilla, WNS, Apple) | VAPID web push from the `push-delivery` queue and `POST /push/send-test` | `internal/push` (WebPushSender, SSRF-safe client from `common.NewOutboundHTTPClient`) |
 | **Prometheus** | Metrics export | `internal/obs` |
 | **OpenTelemetry** | Distributed tracing | `internal/obs` |
 
@@ -157,10 +195,10 @@ Both paths expect PostgreSQL and Redis configuration from the deployment environ
 | Concern | Implementation |
 |---------|---------------|
 | Authentication | HS256 JWT access tokens plus PostgreSQL-backed refresh sessions via `lestrrat-go/jwx` |
-| Multi-tenancy | Header/subdomain resolver + membership middleware |
+| Multi-tenancy | Header/subdomain resolver + membership middleware + tenant role permissions (`internal/rbac`); platform-global admin resources stay behind the global `users.roles` admin check |
 | Rate limiting | Redis sliding-window (global, IP, user, login) |
 | Idempotency | Redis-backed `Idem` middleware |
-| Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client; payment and shipping clients currently use their own HTTP clients |
+| Circuit breaking | `internal/resilience` for the webhook-delivery HTTP client and the worker's shipment-tracking calls; payment and shipping-rate clients currently use their own HTTP clients |
 | Audit trail | Sampled HTTP recorder on selected auth/admin routes writing to `audit_logs` |
 | Observability | Prometheus counters/histograms, OTLP traces, zerolog |
 | Graceful shutdown | Readiness toggle → drain in-flight → close pools |

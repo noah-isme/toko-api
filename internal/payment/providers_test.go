@@ -3,11 +3,13 @@ package payment
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -39,6 +41,7 @@ func TestMidtransCreateIntentUsesSnapAPI(t *testing.T) {
 }
 
 func TestMidtransRefundUsesIdempotentSnapPayload(t *testing.T) {
+	var payloads []string
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/v2/order-1/refund" || r.Method != http.MethodPost {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -47,18 +50,25 @@ func TestMidtransRefundUsesIdempotentSnapPayload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload := string(body)
-		if !strings.Contains(payload, `"refund_key":"order-1-refund"`) || !strings.Contains(payload, `"amount":12500`) {
-			t.Fatalf("unexpected refund payload: %s", payload)
-		}
+		payloads = append(payloads, string(body))
 		if r.Header.Get("transaction-source") != "SNAP_API" {
 			t.Fatalf("transaction-source = %q", r.Header.Get("transaction-source"))
 		}
-		return jsonResponse(`{"refund_key":"order-1-refund","status_code":"200"}`), nil
+		return jsonResponse(`{"refund_key":"rf-abc-0","status_code":"200","transaction_status":"partial_refund"}`), nil
 	})}
-	ref, err := (Midtrans{ServerKey: "server-key", BaseURL: "https://provider.test", HTTPClient: client}).Refund(context.Background(), "order-1", 12500, "customer return")
-	if err != nil || ref != "order-1-refund" {
-		t.Fatalf("refund = %q err=%v", ref, err)
+	m := Midtrans{ServerKey: "server-key", BaseURL: "https://provider.test", HTTPClient: client}
+	res, err := m.Refund(context.Background(), RefundRequest{OrderID: "order-1", RefundKey: "rf-abc-0", Amount: 12500, Reason: "customer return"})
+	if err != nil || res.ProviderRef != "rf-abc-0" || res.Status != RefundStatusSucceeded {
+		t.Fatalf("refund = %+v err=%v", res, err)
+	}
+	if !strings.Contains(payloads[0], `"refund_key":"rf-abc-0"`) || !strings.Contains(payloads[0], `"amount":12500`) {
+		t.Fatalf("unexpected refund payload: %s", payloads[0])
+	}
+	if _, err := m.Refund(context.Background(), RefundRequest{OrderID: "order-1", RefundKey: "rf-abc-1", Amount: 12500, Reason: "customer return"}); err != nil {
+		t.Fatal(err)
+	}
+	if payloads[0] == payloads[1] || !strings.Contains(payloads[1], `"refund_key":"rf-abc-1"`) {
+		t.Fatalf("different keys must produce different payloads: %v", payloads)
 	}
 }
 
@@ -88,5 +98,64 @@ func TestXenditWebhookUsesCallbackToken(t *testing.T) {
 	result, err := (Xendit{CallbackToken: "callback-token"}).VerifyWebhook(req, body)
 	if err != nil || !result.Valid || result.OrderID != "order-3" || result.Status != "PAID" {
 		t.Fatalf("unexpected webhook result: %+v err=%v", result, err)
+	}
+}
+
+func TestMidtransCreateIntentSendsSnapExpiry(t *testing.T) {
+	var sent map[string]any
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &sent); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(`{"token":"snap-token","redirect_url":"https://pay.example/snap-token"}`), nil
+	})}
+	before := time.Now().Truncate(time.Second)
+	result, err := (Midtrans{ServerKey: "server-key", BaseURL: "https://provider.test", HTTPClient: client}).CreateIntent(context.Background(), IntentRequest{OrderID: "order-1", Amount: 12500, ExpiresAtSec: 900})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry, ok := sent["expiry"].(map[string]any)
+	if !ok {
+		t.Fatalf("snap request has no expiry: %v", sent)
+	}
+	if expiry["unit"] != "minute" || expiry["duration"] != float64(15) {
+		t.Fatalf("unexpected expiry: %v", expiry)
+	}
+	start, err := time.Parse("2006-01-02 15:04:05 -0700", expiry["start_time"].(string))
+	if err != nil {
+		t.Fatalf("start_time format: %v", err)
+	}
+	if !strings.HasSuffix(expiry["start_time"].(string), "+0700") {
+		t.Fatalf("start_time must be in WIB: %v", expiry["start_time"])
+	}
+	if start.Before(before) || start.After(time.Now()) {
+		t.Fatalf("start_time %v not within the call window", start)
+	}
+	// The local deadline is exactly the provider's deadline.
+	if got, want := result.ExpiresAt, start.Add(15*time.Minute).Unix(); got != want {
+		t.Fatalf("ExpiresAt = %d, want %d", got, want)
+	}
+	if !result.ExpirySynced {
+		t.Fatal("ExpirySynced must be set when the Snap expiry was sent")
+	}
+	// The marker is what the checkout-expiry job reads from provider_payload.
+	stored, _ := json.Marshal(map[string]any{"response": result})
+	var decoded struct {
+		Response map[string]any `json:"response"`
+	}
+	if err := json.Unmarshal(stored, &decoded); err != nil || decoded.Response["ExpirySynced"] != true {
+		t.Fatalf("stored payload lacks response.ExpirySynced: %s", stored)
+	}
+}
+
+func TestSnapExpiryWindowRoundsUpToMinutes(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 600, time.UTC)
+	start, minutes := snapExpiryWindow(now, 61)
+	if minutes != 2 || !start.Equal(now.Truncate(time.Second)) {
+		t.Fatalf("got start=%v minutes=%d", start, minutes)
+	}
+	if _, minutes := snapExpiryWindow(now, 0); minutes != 0 {
+		t.Fatalf("zero TTL must not send an expiry, got %d", minutes)
 	}
 }

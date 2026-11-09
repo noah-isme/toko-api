@@ -24,6 +24,22 @@ FROM orders
 WHERE id = $1
 LIMIT 1;
 
+-- Settlement writers (payment webhook, admin payment confirmation, checkout
+-- expiry, customer cancel, payment intent creation) lock the order row first;
+-- see the lock-order comment in internal/jobs/checkout_expiry.go.
+-- name: GetOrderByIDForUpdate :one
+-- FOR NO KEY UPDATE, not FOR UPDATE: it still serializes every writer of the
+-- order row, but lets child-row inserts (voucher_usages, payment_events, ...)
+-- take their FK KEY SHARE lock. Payment settlement keeps this lock while the
+-- voucher service inserts voucher_usages on another pooled connection; with
+-- FOR UPDATE that insert waited on the settlement's own transaction until the
+-- request timed out.
+SELECT *
+FROM orders
+WHERE id = $1
+LIMIT 1
+FOR NO KEY UPDATE;
+
 -- name: ListOrdersForUser :many
 SELECT *
 FROM orders

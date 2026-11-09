@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -40,14 +40,9 @@ func (h *Handler) PublicList(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "voucher service not configured", nil)
 		return
 	}
-	tenantID, ok := tenant.FromContext(r.Context())
+	tenantUUID, ok := tenantUUIDFromRequest(r)
 	if !ok {
 		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
-		return
-	}
-	tenantUUID, err := uuid.Parse(strings.TrimSpace(tenantID))
-	if err != nil {
-		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "invalid tenant", nil)
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(), `
@@ -157,6 +152,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "voucher queries not configured", nil)
 		return
 	}
+	tenantID, ok := tenantUUIDFromRequest(r)
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
 	var payload voucherPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid payload", nil)
@@ -167,6 +167,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
+	params.TenantID = tenantID
 	ctx := r.Context()
 	voucher, err := h.Q.CreateVoucher(ctx, params)
 	if err != nil {
@@ -193,6 +194,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "code is required", nil)
 		return
 	}
+	tenantID, ok := tenantUUIDFromRequest(r)
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
 	var payload voucherPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid payload", nil)
@@ -203,6 +209,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
+	// A voucher of another tenant matches no row and is reported as 404.
+	params.TenantID = tenantID
 	ctx := r.Context()
 	voucher, err := h.Q.UpdateVoucher(ctx, params)
 	if err != nil {
@@ -233,12 +241,45 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	result, err := h.Svc.Preview(r.Context(), req.Code, req.UserID, req.CartTotal, items)
+	if h.Q == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "voucher queries not configured", nil)
+		return
+	}
+	tenantID, ok := tenantUUIDFromRequest(r)
+	if !ok {
+		common.JSONError(w, http.StatusBadRequest, "MISSING_TENANT", "tenant is required", nil)
+		return
+	}
+	// Codes are unique per tenant: a code that only exists in another tenant
+	// reads as missing (404), exactly like an unknown code.
+	exists, err := h.Q.AdminVoucherExistsForTenant(r.Context(), dbgen.AdminVoucherExistsForTenantParams{TenantID: tenantID, Code: strings.TrimSpace(req.Code)})
+	if err != nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to load voucher", nil)
+		return
+	}
+	if !exists {
+		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "voucher not found", nil)
+		return
+	}
+	result, err := h.Svc.Preview(r.Context(), tenantID, req.Code, req.UserID, req.CartTotal, items)
 	if err != nil {
 		common.JSONError(w, http.StatusBadRequest, "NOT_ELIGIBLE", err.Error(), nil)
 		return
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+// tenantUUIDFromRequest resolves the tenant set by the tenant resolver middleware.
+func tenantUUIDFromRequest(r *http.Request) (pgtype.UUID, bool) {
+	raw, ok := tenant.FromContext(r.Context())
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	parsed, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return pgtype.UUID{Bytes: parsed, Valid: true}, true
 }
 
 func buildCreateParams(payload voucherPayload, defaultPriority int) (dbgen.CreateVoucherParams, error) {

@@ -1,6 +1,7 @@
 package order
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,15 +11,33 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/cart"
 	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
+	"github.com/noah-isme/backend-toko/internal/db/txretry"
+	"github.com/noah-isme/backend-toko/internal/reservation"
 )
 
 type Handler struct {
 	Q *dbgen.Queries
+	// Pool runs the cancel transaction.
+	Pool *pgxpool.Pool
+	// Alerts, when set, is kicked after a cancellation releases stock so the
+	// alerts runner drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
 }
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
+}
+
+var (
+	errOrderNotFound       = errors.New("order not found")
+	errOrderNotCancellable = errors.New("order not cancellable")
+)
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.Q == nil {
@@ -270,35 +289,60 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid user id", nil)
 		return
 	}
-	ord, err := h.Q.GetOrderByIDForUser(r.Context(), dbgen.GetOrderByIDForUserParams{ID: oID, UserID: uID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
-			return
-		}
-		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "order lookup failed", nil)
+	if h.Pool == nil {
+		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "order database not configured", nil)
 		return
 	}
-	if ord.Status != dbgen.OrderStatusPENDINGPAYMENT {
+	// Lock the order and cancel through the status guard so a cancel racing
+	// the payment webhook or the checkout-expiry job can neither overwrite a
+	// PAID/EXPIRED order nor release its stock twice.
+	err = txretry.Run(r.Context(), txretry.DefaultAttempts, func(ctx context.Context) error {
+		tx, err := h.Pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		qtx := h.Q.WithTx(tx)
+		ord, err := qtx.GetOrderByIDForUpdate(ctx, oID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errOrderNotFound
+			}
+			return err
+		}
+		if !ord.UserID.Valid || ord.UserID != uID {
+			return errOrderNotFound
+		}
+		// The guard also allows PAID->CANCELLED (admin flow); customers may
+		// only cancel unpaid orders.
+		if ord.Status != dbgen.OrderStatusPENDINGPAYMENT {
+			return errOrderNotCancellable
+		}
+		if _, err := qtx.UpdateOrderStatusIfAllowed(ctx, dbgen.UpdateOrderStatusIfAllowedParams{ID: ord.ID, Status: dbgen.OrderStatusCANCELLED}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errOrderNotCancellable
+			}
+			return err
+		}
+		if _, err := reservation.ReleaseOrder(ctx, qtx, ord.ID, dbgen.InventoryReservationStatusRELEASED); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+	switch {
+	case errors.Is(err, errOrderNotFound):
+		common.JSONError(w, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
+		return
+	case errors.Is(err, errOrderNotCancellable):
 		common.JSONError(w, http.StatusBadRequest, "INVALID_STATE", "only pending orders can be canceled", nil)
 		return
-	}
-	if err := h.Q.UpdateOrderStatus(r.Context(), dbgen.UpdateOrderStatusParams{ID: ord.ID, Status: dbgen.OrderStatusCANCELLED}); err != nil {
+	case err != nil:
 		common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to cancel order", nil)
 		return
 	}
-	if reservations, reservationErr := h.Q.ListInventoryReservationsByOrder(r.Context(), ord.ID); reservationErr == nil {
-		for _, reservation := range reservations {
-			if _, transitionErr := h.Q.TransitionInventoryReservation(r.Context(), dbgen.TransitionInventoryReservationParams{
-				ID: reservation.ID, FromStatus: dbgen.InventoryReservationStatusRESERVED, ToStatus: dbgen.InventoryReservationStatusRELEASED,
-			}); transitionErr == nil {
-				_ = h.Q.ReleaseVariantStock(r.Context(), dbgen.ReleaseVariantStockParams{ID: reservation.VariantID, Qty: reservation.Qty})
-			}
-		}
-	}
-	if err := h.Q.ReleaseFlashSaleReservations(r.Context(), ord.ID); err != nil {
-		common.JSONError(w, http.StatusInternalServerError, "FLASH_SALE_RELEASE_FAILED", "failed to release flash-sale quota", nil)
-		return
+	if h.Alerts != nil {
+		// Released stock may re-arm back-in-stock alerts.
+		h.Alerts.Kick()
 	}
 	common.JSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "cancelled"}})
 }

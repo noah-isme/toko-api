@@ -424,15 +424,25 @@ func (q *Queries) AdminListVouchers(ctx context.Context, arg AdminListVouchersPa
 }
 
 const adminOrderStats = `-- name: AdminOrderStats :one
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = $1 AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
 SELECT COUNT(*)::bigint                                                                    AS total_orders,
-       COALESCE(SUM(o.pricing_total), 0)::bigint                                           AS total_revenue,
+       COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0)::bigint AS total_revenue,
+       COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))::bigint AS revenue_orders,
        COUNT(*) FILTER (WHERE o.status = 'PENDING_PAYMENT')::bigint                        AS pending_orders,
        COUNT(*) FILTER (WHERE o.status = 'PAID')::bigint                                   AS paid_orders,
        COUNT(*) FILTER (WHERE o.status IN ('SHIPPED', 'OUT_FOR_DELIVERY'))::bigint         AS shipped_orders,
        COUNT(*) FILTER (WHERE o.status = 'DELIVERED')::bigint                              AS delivered_orders,
        COUNT(*) FILTER (WHERE o.status = 'CANCELLED')::bigint                              AS cancelled_orders,
-       COALESCE(AVG(o.pricing_total), 0)::bigint                                           AS average_order_value
+       COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::bigint                                AS expired_orders,
+       COALESCE(SUM(o.pricing_total - COALESCE(r.amount, 0)) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total))
+                / NULLIF(COUNT(*) FILTER (WHERE o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)), 0), 0)::bigint AS average_order_value
 FROM orders o
+LEFT JOIN refunded r ON r.order_id = o.id
 WHERE o.tenant_id = $1
   AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
   AND ($3::timestamptz IS NULL OR o.created_at < $3::timestamptz)
@@ -447,31 +457,44 @@ type AdminOrderStatsParams struct {
 type AdminOrderStatsRow struct {
 	TotalOrders       int64 `json:"total_orders"`
 	TotalRevenue      int64 `json:"total_revenue"`
+	RevenueOrders     int64 `json:"revenue_orders"`
 	PendingOrders     int64 `json:"pending_orders"`
 	PaidOrders        int64 `json:"paid_orders"`
 	ShippedOrders     int64 `json:"shipped_orders"`
 	DeliveredOrders   int64 `json:"delivered_orders"`
 	CancelledOrders   int64 `json:"cancelled_orders"`
+	ExpiredOrders     int64 `json:"expired_orders"`
 	AverageOrderValue int64 `json:"average_order_value"`
 }
 
+// Revenue rule (docs/contracts/analytics.md): total_revenue is net of
+// non-FAILED refunds over revenue orders; average_order_value =
+// total_revenue / revenue_orders. Status counters count every order.
 func (q *Queries) AdminOrderStats(ctx context.Context, arg AdminOrderStatsParams) (AdminOrderStatsRow, error) {
 	row := q.db.QueryRow(ctx, adminOrderStats, arg.TenantID, arg.StartAt, arg.EndAt)
 	var i AdminOrderStatsRow
 	err := row.Scan(
 		&i.TotalOrders,
 		&i.TotalRevenue,
+		&i.RevenueOrders,
 		&i.PendingOrders,
 		&i.PaidOrders,
 		&i.ShippedOrders,
 		&i.DeliveredOrders,
 		&i.CancelledOrders,
+		&i.ExpiredOrders,
 		&i.AverageOrderValue,
 	)
 	return i, err
 }
 
 const adminTopProductsByRevenue = `-- name: AdminTopProductsByRevenue :many
+WITH refunded AS (
+    SELECT rf.order_id, SUM(rf.amount)::bigint AS amount
+    FROM refunds rf
+    WHERE rf.tenant_id = $1 AND rf.status <> 'FAILED'
+    GROUP BY rf.order_id
+)
 SELECT oi.product_id,
        MIN(oi.title)::text            AS title,
        MIN(oi.slug)::text             AS slug,
@@ -479,17 +502,20 @@ SELECT oi.product_id,
        SUM(oi.subtotal)::bigint       AS revenue
 FROM order_items oi
 JOIN orders o ON o.id = oi.order_id
+LEFT JOIN refunded r ON r.order_id = o.id
 WHERE o.tenant_id = $1
-  AND o.status <> 'CANCELLED'
+  AND o.status IN ('PAID','PACKED','SHIPPED','OUT_FOR_DELIVERY','DELIVERED') AND (r.order_id IS NULL OR r.amount < o.pricing_total)
   AND ($2::timestamptz IS NULL OR o.created_at >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR o.created_at < $3::timestamptz)
 GROUP BY oi.product_id
-ORDER BY revenue DESC
-LIMIT $3
+ORDER BY revenue DESC, oi.product_id
+LIMIT $4
 `
 
 type AdminTopProductsByRevenueParams struct {
 	TenantID   pgtype.UUID        `json:"tenant_id"`
 	StartAt    pgtype.Timestamptz `json:"start_at"`
+	EndAt      pgtype.Timestamptz `json:"end_at"`
 	LimitValue int32              `json:"limit_value"`
 }
 
@@ -501,8 +527,14 @@ type AdminTopProductsByRevenueRow struct {
 	Revenue   int64       `json:"revenue"`
 }
 
+// Item-level gross subtotal of revenue orders (fully refunded orders excluded).
 func (q *Queries) AdminTopProductsByRevenue(ctx context.Context, arg AdminTopProductsByRevenueParams) ([]AdminTopProductsByRevenueRow, error) {
-	rows, err := q.db.Query(ctx, adminTopProductsByRevenue, arg.TenantID, arg.StartAt, arg.LimitValue)
+	rows, err := q.db.Query(ctx, adminTopProductsByRevenue,
+		arg.TenantID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.LimitValue,
+	)
 	if err != nil {
 		return nil, err
 	}

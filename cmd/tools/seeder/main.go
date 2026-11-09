@@ -186,11 +186,11 @@ func seedCatalog(db *sql.DB, tenantID string) (map[string]string, map[string]str
 		err := db.QueryRow(`
 			INSERT INTO categories (name, slug, tenant_id)
 			VALUES ($1, $2, $3)
-			ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+			ON CONFLICT (tenant_id, slug) DO UPDATE SET name = EXCLUDED.name
 			RETURNING id;
 		`, c.Name, c.Slug, tenantID).Scan(&id)
 		if err != nil {
-			_ = db.QueryRow("SELECT id FROM categories WHERE slug = $1", c.Slug).Scan(&id)
+			_ = db.QueryRow("SELECT id FROM categories WHERE tenant_id = $1 AND slug = $2", tenantID, c.Slug).Scan(&id)
 		}
 		catIDs[c.Slug] = id
 	}
@@ -227,11 +227,11 @@ func seedCatalog(db *sql.DB, tenantID string) (map[string]string, map[string]str
 		err := db.QueryRow(`
 			INSERT INTO brands (name, slug, tenant_id)
 			VALUES ($1, $2, $3)
-			ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+			ON CONFLICT (tenant_id, slug) DO UPDATE SET name = EXCLUDED.name
 			RETURNING id;
 		`, b.Name, b.Slug, tenantID).Scan(&id)
 		if err != nil {
-			_ = db.QueryRow("SELECT id FROM brands WHERE slug = $1", b.Slug).Scan(&id)
+			_ = db.QueryRow("SELECT id FROM brands WHERE tenant_id = $1 AND slug = $2", tenantID, b.Slug).Scan(&id)
 		}
 		brandIDs[b.Slug] = id
 	}
@@ -483,7 +483,7 @@ func seedCatalog(db *sql.DB, tenantID string) (map[string]string, map[string]str
 		err := db.QueryRow(`
 			INSERT INTO products (title, slug, brand_id, category_id, price, compare_at, in_stock, thumbnail, badges, description, tenant_id, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8::text[], $9, $10, NOW() - INTERVAL '30 days', NOW())
-			ON CONFLICT (slug) DO UPDATE SET
+			ON CONFLICT (tenant_id, slug) DO UPDATE SET
 				title = EXCLUDED.title,
 				price = EXCLUDED.price,
 				compare_at = EXCLUDED.compare_at,
@@ -492,7 +492,6 @@ func seedCatalog(db *sql.DB, tenantID string) (map[string]string, map[string]str
 				thumbnail = EXCLUDED.thumbnail,
 				badges = EXCLUDED.badges,
 				description = EXCLUDED.description,
-				tenant_id = EXCLUDED.tenant_id,
 				updated_at = NOW()
 			RETURNING id;
 		`, p.Title, p.Slug, brandID, catID, p.Price, p.CompareAt, p.Image, pq.Array(p.Badges), p.Description, tenantID).Scan(&prodID)
@@ -507,12 +506,12 @@ func seedCatalog(db *sql.DB, tenantID string) (map[string]string, map[string]str
 		// Seed Variants
 		for _, v := range p.Variants {
 			_, err = db.Exec(`
-				INSERT INTO product_variants (product_id, sku, price, stock)
-				VALUES ($1, $2, $3, $4)
-				ON CONFLICT (sku) DO UPDATE SET
+				INSERT INTO product_variants (product_id, sku, price, stock, tenant_id)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (tenant_id, sku) DO UPDATE SET
 					price = EXCLUDED.price,
 					stock = EXCLUDED.stock;
-			`, prodID, v.SKU, v.Price, v.Stock)
+			`, prodID, v.SKU, v.Price, v.Stock, tenantID)
 			if err != nil {
 				log.Printf("Failed to upsert variant %s: %v", v.SKU, err)
 			}
@@ -585,7 +584,7 @@ func seedVouchers(db *sql.DB, tenantID string) {
 		_, err := db.Exec(`
 			INSERT INTO vouchers (code, value, kind, min_spend, usage_limit, used_count, tenant_id, valid_from, valid_to, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, 42, $6, NOW() - INTERVAL '10 days', NOW() + INTERVAL '180 days', NOW() - INTERVAL '10 days', NOW())
-			ON CONFLICT (code) DO UPDATE SET
+			ON CONFLICT (tenant_id, code) DO UPDATE SET
 				value = EXCLUDED.value,
 				min_spend = EXCLUDED.min_spend,
 				usage_limit = EXCLUDED.usage_limit,

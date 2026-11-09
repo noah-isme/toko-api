@@ -280,7 +280,8 @@ func orderStatusFilter(raw string) (dbgen.NullOrderStatus, error) {
 		dbgen.OrderStatusSHIPPED,
 		dbgen.OrderStatusOUTFORDELIVERY,
 		dbgen.OrderStatusDELIVERED,
-		dbgen.OrderStatusCANCELLED:
+		dbgen.OrderStatusCANCELLED,
+		dbgen.OrderStatusEXPIRED:
 		return dbgen.NullOrderStatus{OrderStatus: status, Valid: true}, nil
 	}
 	return dbgen.NullOrderStatus{}, errors.New("invalid status")

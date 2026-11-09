@@ -51,6 +51,7 @@ WHERE upv.tenant_id = $1
   )
   AND upv.product_id != $2
   AND p.in_stock = true
+  AND p.status = 'published'
 GROUP BY upv.product_id, p.id, p.title, p.slug, p.price, p.compare_at, p.in_stock, p.thumbnail, p.badges, p.created_at, c.id, c.name, b.id, b.name
 ORDER BY COUNT(DISTINCT upv.user_id) DESC, rating DESC
 LIMIT $3
@@ -151,6 +152,7 @@ LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE opp.tenant_id = $1
   AND (opp.product_id_a = $2 OR opp.product_id_b = $2)
   AND p.in_stock = true
+  AND p.status = 'published'
 ORDER BY opp.pair_count DESC, rating DESC
 LIMIT $3
 `
@@ -271,6 +273,7 @@ category_recs AS (
     LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
     WHERE p.tenant_id = $1
       AND p.in_stock = true
+      AND p.status = 'published'
       AND p.id NOT IN (SELECT product_id FROM viewed_products)
       AND p.category_id IN (SELECT category_id FROM user_categories)
     ORDER BY rating DESC, p.created_at DESC
@@ -299,6 +302,7 @@ brand_recs AS (
     LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
     WHERE p.tenant_id = $1
       AND p.in_stock = true
+      AND p.status = 'published'
       AND p.id NOT IN (SELECT product_id FROM viewed_products)
       AND p.brand_id IN (SELECT brand_id FROM user_brands)
     ORDER BY rating DESC, p.created_at DESC
@@ -327,6 +331,7 @@ trending_recs AS (
     LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
     WHERE p.tenant_id = $1
       AND p.in_stock = true
+      AND p.status = 'published'
       AND p.id NOT IN (SELECT product_id FROM viewed_products)
     ORDER BY rating DESC, p.created_at DESC
     LIMIT $3
@@ -467,6 +472,7 @@ LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
 LEFT JOIN categories c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
 WHERE p.tenant_id = $1
   AND p.in_stock = true
+  AND p.status = 'published'
 ORDER BY rating DESC, p.created_at DESC
 LIMIT $2
 `

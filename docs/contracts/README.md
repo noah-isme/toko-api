@@ -23,7 +23,8 @@
 - [Loyalty](loyalty.md)
 - [Web Push](push.md)
 - [Favorites](favorites.md)
-- [Analytics](analytics.md)
+- [Product Alerts](alerts.md)
+- [Analytics](analytics.md) (revenue rule, tenant timezone, admin reports and CSV export)
 - [Admin](admin.md)
 - [Webhooks](webhooks.md)
 - [Testing & Development](testing.md)
@@ -45,6 +46,13 @@ Refresh token disimpan dalam **HTTP-only cookie** dengan nama `refresh_token`.
 
 **Access Token TTL:** 15 menit  
 **Refresh Token TTL:** 30 hari
+
+### Roles & Permissions
+Endpoint admin diotorisasi berdasarkan role anggota di tenant aktif (`owner`,
+`admin`, `manager`, `catalog`, `fulfillment`, `support`, `analyst`) dan daftar
+`permissions` dari `GET /auth/me`. Matriks lengkap, aturan platform-admin, dan
+urutan error: [auth.md 1.12](auth.md#112-roles--permissions). Izin per endpoint:
+[admin.md](admin.md#permissions-per-endpoint).
 
 ---
 

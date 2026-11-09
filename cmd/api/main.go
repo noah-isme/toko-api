@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/admin"
+	"github.com/noah-isme/backend-toko/internal/alerts"
 	"github.com/noah-isme/backend-toko/internal/analytics"
 	"github.com/noah-isme/backend-toko/internal/audit"
 	"github.com/noah-isme/backend-toko/internal/auth"
@@ -40,6 +40,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/favorites"
 	"github.com/noah-isme/backend-toko/internal/health"
+	"github.com/noah-isme/backend-toko/internal/invoice"
 	"github.com/noah-isme/backend-toko/internal/loyalty"
 	"github.com/noah-isme/backend-toko/internal/newsletter"
 	"github.com/noah-isme/backend-toko/internal/notifications"
@@ -52,6 +53,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/qa"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/ratelimit"
+	"github.com/noah-isme/backend-toko/internal/rbac"
 	"github.com/noah-isme/backend-toko/internal/recommendations"
 	"github.com/noah-isme/backend-toko/internal/resilience"
 	"github.com/noah-isme/backend-toko/internal/reviews"
@@ -71,6 +73,8 @@ func main() {
 	logFormat := envOrDefault("OBS_LOG_FORMAT", "json")
 	logLevel := envOrDefault("OBS_LOG_LEVEL", "info")
 	logger := obs.NewLogger(logFormat, logLevel).With().Str("env", cfg.AppEnv).Logger()
+	// Fallback for zerolog.Ctx outside HTTP requests (background jobs, startup).
+	zerolog.DefaultContextLogger = &logger
 	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "development") && cfg.ShippingProvider == "rajaongkir-mock" {
 		logger.Warn().Msg("shipping provider is using deterministic mock rates in development")
 	}
@@ -102,7 +106,7 @@ func main() {
 		}
 	}
 
-	mailer := buildMailer(cfg, logger)
+	mailer := notify.NewMailer(cfg, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -216,6 +220,7 @@ func main() {
 	catalogCache := catalog.NewCache(redisClient, cfg.CatalogCacheTTL, cfg.RedisCachePrefix)
 	catalogService, err := catalog.NewService(catalog.ServiceConfig{
 		Queries:      queries,
+		FuzzyRunner:  catalog.PoolFuzzyRunner{Pool: pool},
 		Cache:        catalogCache,
 		DefaultPage:  cfg.CatalogDefaultPage,
 		DefaultLimit: cfg.CatalogDefaultLimit,
@@ -283,7 +288,7 @@ func main() {
 		baseDomain = baseURL.Hostname()
 	}
 	tenantResolver := tenant.NewResolver("X-Tenant-ID", baseDomain, defaultTenantIDStr)
-	tenantMembership := requireTenantMembership(pool)
+	tenantMembership := rbac.RequireMembership(queries)
 
 	cartSvc := &cart.Service{
 		Q:                          queries,
@@ -306,6 +311,12 @@ func main() {
 
 	notifyStore := notify.NewStore(queries)
 	taskQueue := queue.Enqueuer{R: redisClient, Prefix: cfg.QueueRedisPrefix, DedupTTL: cfg.IdempotencyTTL, MaxAttempts: cfg.QueueMaxAttempts}
+	// Email/push tasks are keyed by event id and re-dispatched by the outbox
+	// relay for up to OutboxRelayMaxAge, so their dedup key must outlive a
+	// queued or retrying task for that long; with IdempotencyTTL (10 min) a
+	// backlogged worker would let a re-dispatch queue a second copy.
+	notifyQueue := taskQueue
+	notifyQueue.DedupTTL = cfg.OutboxRelayMaxAge
 	webhookHTTPClient := notify.HttpClient(int(cfg.WebhookRequestTimeout/time.Millisecond), cfg.WebhookAllowInsecureTLS)
 	dispatcher := &notify.Dispatcher{
 		Store: notifyStore,
@@ -325,12 +336,16 @@ func main() {
 		Enabled:            cfg.WebhookDeliveryEnabled,
 		Replay:             notify.RedisReplayProtector{Client: redisClient},
 		ReplayTTL:          cfg.WebhookReplayTTL,
+		Logger:             &logger,
 	}
+	// Transactional email is delivered by cmd/worker: the notifier only
+	// enqueues an opaque {eventId, topic} task (see notify.EmailWorker).
 	emailNotifier := notify.EmailNotifier{
-		Mail:         mailer,
-		Enabled:      cfg.NotifyEmailEnabled,
-		From:         cfg.NotifyEmailFrom,
-		TopicToggles: cfg.NotifyEmailTopics,
+		Queue:   &notify.EmailQueue{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
+		Enabled: cfg.NotifyEmailEnabled,
+		From:    cfg.NotifyEmailFrom,
+		TopicToggles: notify.MergeShipmentToggles(cfg.NotifyEmailTopics,
+			cfg.NotifyOnShipped, cfg.NotifyOnOutForDelivery, cfg.NotifyOnDelivered),
 	}
 	notificationsSvc := &notifications.Service{Q: queries}
 	notificationsHandler := &notifications.Handler{Svc: notificationsSvc}
@@ -343,13 +358,85 @@ func main() {
 			}
 		},
 	}
+	// Web push: real VAPID sending when both keys are configured; otherwise
+	// the push routes answer 503 PUSH_DISABLED and nothing is enqueued.
+	var pushSender push.Sender
+	if cfg.PushEnabled() {
+		pushSender = push.NewWebPushSender(cfg.PushVAPIDPublicKey, cfg.PushVAPIDPrivateKey, cfg.PushVAPIDSubject,
+			int(cfg.PushTTL.Seconds()), common.NewOutboundHTTPClient(cfg.OutboundTimeout, false))
+	} else {
+		logger.Warn().Msg("PUSH_VAPID_PUBLIC_KEY/PUSH_VAPID_PRIVATE_KEY not set: web push disabled")
+	}
+	pushSvc := &push.Service{
+		Q:                queries,
+		Sender:           pushSender,
+		PublicKey:        cfg.PushVAPIDPublicKey,
+		AllowedHosts:     cfg.PushEndpointAllowedHosts,
+		MaxSubscriptions: int32(cfg.PushMaxSubscriptionsPerUser),
+	}
+	pushHandler := &push.Handler{Svc: pushSvc}
+	pushNotifier := &push.Notifier{
+		Enqueue: &push.Enqueuer{Queue: notifyQueue, MaxAttempts: cfg.QueueMaxAttempts},
+		Enabled: cfg.PushEnabled(),
+	}
+
 	bus := &events.Bus{
 		Store:     queries,
 		Scheduler: dispatcher,
-		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier},
+		Notifiers: []events.Notifier{emailNotifier, notificationsNotifier, pushNotifier},
 	}
+	// Alerts get their own bus with NO Scheduler: alert payloads carry
+	// customer PII and are not offered to webhook endpoints. The in-app row is
+	// written by the dispatcher itself, so the notifications and push
+	// notifiers are not attached either, and the outbox relay skips alert
+	// topics (events.RelayTopics).
+	alertsBus := &events.Bus{Store: queries, Notifiers: []events.Notifier{emailNotifier}}
+	// Alert emails go through a durable outbox (product_alert_deliveries)
+	// drained by its own runner, so claiming subscriptions never waits on
+	// delivery. Delivering one now means enqueueing its email-delivery task
+	// (cmd/worker sends it); the per-send bound stays sized for the SMTP
+	// timeout so it is never the limiting factor.
+	alertsMailer := &alerts.Mailer{
+		Q:           queries,
+		Events:      alertsBus,
+		SendTimeout: 2*cfg.SMTPTimeout + 5*time.Second,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("deliver product alert email")
+		},
+	}
+	alertsMailRunner := &alerts.Runner{
+		Flusher: alertsMailer,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("drain product alert emails")
+		},
+		Log: func(res alerts.Result) {
+			logger.Debug().Int("attempted", res.Attempted).Int("delivered", res.Delivered).
+				Bool("more", res.More).Msg("product alert emails sent")
+		},
+	}
+	alertsDispatcher := &alerts.Dispatcher{
+		Pool:     pool,
+		Q:        queries,
+		Mailer:   alertsMailRunner,
+		Currency: cfg.CurrencyCode,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("product alerts maintenance")
+		},
+	}
+	alertsRunner := &alerts.Runner{
+		Flusher: alertsDispatcher,
+		OnError: func(err error) {
+			logger.Error().Err(err).Msg("drain product alerts")
+		},
+		Log: func(res alerts.Result) {
+			logger.Debug().Int("events", res.Events).Int("claimed", res.Claimed).Int("notified", res.Notified).
+				Int("queued", res.Queued).Bool("more", res.More).Msg("product alerts drained")
+		},
+	}
+	alertsHandler := &alerts.Handler{Svc: &alerts.Service{Q: queries, Alerts: alertsRunner}}
+	invoiceHandler := &invoice.Handler{Svc: &invoice.Service{Q: queries, Pool: pool, Renderer: invoice.NewRenderer()}}
 
-	orderHandler := &order.Handler{Q: queries}
+	orderHandler := &order.Handler{Q: queries, Pool: pool, Alerts: alertsRunner}
 	orderAdmin := &order.AdminHandler{Q: queries}
 	notifyAdmin := &notify.AdminHandler{Store: notifyStore, Disp: dispatcher}
 	queueAdmin := &queue.AdminHandler{
@@ -370,9 +457,12 @@ func main() {
 		logger.Fatal().Str("provider", cfg.ShippingProvider).Msg("unsupported shipping provider")
 	}
 	shipSvc := &shipping.Service{
-		Q:                      queries,
-		Provider:               shipProvider,
-		Mail:                   mailer,
+		Q:        queries,
+		Provider: shipProvider,
+		// Mail stays nil: shipment emails come only from the event path
+		// (EmailNotifier -> email-delivery queue), gated by NOTIFY_ON_* via
+		// MergeShipmentToggles above. Setting it would send each one twice.
+		Mail:                   nil,
 		NotifyOnShipped:        cfg.NotifyOnShipped,
 		NotifyOnOutForDelivery: cfg.NotifyOnOutForDelivery,
 		NotifyOnDelivered:      cfg.NotifyOnDelivered,
@@ -406,6 +496,7 @@ func main() {
 	}
 	paymentSvc := &payment.Service{
 		Q:               queries,
+		Pool:            pool,
 		Provider:        activeProvider,
 		IntentTTL:       cfg.PaymentIntentTTL,
 		CallbackBaseURL: cfg.PaymentCallbackBaseURL,
@@ -434,17 +525,19 @@ func main() {
 		Events:       bus,
 		CatalogCache: catalogCache,
 		Analytics:    nil,
+		Logger:       &logger,
 	}
-	platformHandler := &platform.Handler{Pool: pool, Providers: providers}
+	platformHandler := &platform.Handler{Pool: pool, Providers: providers, Alerts: alertsRunner}
 
 	analyticsSvc := &analytics.Service{Q: queries, R: redisClient, TTL: cfg.AnalyticsCacheTTL, DefaultRange: cfg.AnalyticsDefaultRange, Prefix: cfg.RedisCachePrefix}
 	voucherHandler.Analytics = analyticsSvc
 	webhookHandler.Analytics = analyticsSvc
 	analyticsHandler := &analytics.Handler{Svc: analyticsSvc}
 
-	adminCatalog := &admin.CatalogHandler{Q: queries, Cache: catalogCache}
 	adminOrders := &admin.OrdersHandler{Q: queries}
 	adminAnalytics := &admin.AnalyticsHandler{Q: queries}
+	adminReports := &admin.ReportsHandler{Q: queries}
+	staffHandler := &rbac.StaffHandler{Pool: pool, Q: queries}
 
 	reviewsSvc := &reviews.Service{Q: queries}
 	reviewsHandler := &reviews.Handler{Svc: reviewsSvc}
@@ -454,9 +547,6 @@ func main() {
 
 	loyaltySvc := &loyalty.Service{Q: queries}
 	loyaltyHandler := &loyalty.Handler{Svc: loyaltySvc}
-
-	pushSvc := &push.Service{Q: queries}
-	pushHandler := &push.Handler{Svc: pushSvc}
 
 	favoritesSvc := &favorites.Service{Q: queries}
 	favoritesHandler := &favorites.Handler{Svc: favoritesSvc}
@@ -473,6 +563,18 @@ func main() {
 	}
 	auditEnabled := envBool("AUDIT_ENABLED", true) && auditSample > 0
 	auditSvc := &audit.Service{Store: queries, Enabled: auditEnabled, SamplingRate: auditSample}
+	// Catalog operations write explicit, unsampled audit rows inside their own
+	// transactions (bulk updates, imports) when auditing is enabled at all.
+	adminCatalog := &admin.CatalogHandler{
+		Q:            queries,
+		Cache:        catalogCache,
+		Pool:         pool,
+		Events:       bus,
+		AuditEnabled: auditEnabled,
+		Alerts:       alertsRunner,
+	}
+	platformHandler.Cache = catalogCache
+	platformHandler.Events = bus
 	auditHandler := audit.Handler{Store: auditSvc.Store}
 	auditRecorder := audit.HTTPRecorder{
 		Service: auditSvc,
@@ -558,6 +660,26 @@ func main() {
 		},
 		OnError: rateLimitErr,
 	}.Middleware
+	// send-test fans out one outbound POST per stored subscription, so it gets
+	// its own tight per-user budget on top of userLimiter.
+	pushTestLimiter := ratelimit.Handler{
+		Limiter: limiter,
+		Config: ratelimit.Config{
+			Key: func(r *http.Request) string {
+				if userID, ok := common.UserID(r.Context()); ok && strings.TrimSpace(userID) != "" {
+					return "push-test:user:" + userID
+				}
+				ip := common.ClientIP(r)
+				if ip == "" {
+					ip = "unknown"
+				}
+				return "push-test:anon:" + ip
+			},
+			Window: time.Duration(envInt("RATE_LIMIT_PUSH_TEST_WINDOW_SEC", 60)) * time.Second,
+			Max:    envInt("RATE_LIMIT_PUSH_TEST_MAX", 5),
+		},
+		OnError: rateLimitErr,
+	}.Middleware
 	loginLimiter := ratelimit.Handler{
 		Limiter: limiter,
 		Config: ratelimit.Config{
@@ -612,7 +734,9 @@ func main() {
 	if strings.TrimSpace(corsOrigins) != "" {
 		r.Use(security.AllowCORS(corsOrigins))
 	}
-	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes)}.Middleware)
+	// The CSV import has its own 5 MiB cap (enforced in the handler), so it is
+	// exempt from the global limit; every other route keeps bodyLimitBytes.
+	r.Use(security.BodyLimit{Max: int64(bodyLimitBytes), Overrides: admin.BodyLimitOverrides()}.Middleware)
 	if csrfEnabled {
 		r.Use(security.CSRF{
 			Header:         csrfHeader,
@@ -688,12 +812,7 @@ func main() {
 		v.Route("/push", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
 			p.Use(tenantMembership)
-			p.Get("/vapid-key", pushHandler.GetVapidPublicKey)
-			p.Post("/subscription", pushHandler.Subscribe)
-			p.Delete("/subscription", pushHandler.Unsubscribe)
-			p.Get("/preferences", pushHandler.GetPreferences)
-			p.Patch("/preferences", pushHandler.UpdatePreferences)
-			p.Post("/send-test", pushHandler.SendTest)
+			pushHandler.Mount(p, pushTestLimiter)
 		})
 
 		// Favorites
@@ -703,6 +822,15 @@ func main() {
 			f.Get("/", favoritesHandler.List)
 			f.Post("/", favoritesHandler.Toggle)
 			f.Get("/{id}", favoritesHandler.Check)
+		})
+
+		// Back-in-stock / price-drop alert subscriptions
+		v.Route("/alerts", func(al chi.Router) {
+			al.Use(authMiddleware.RequireAuth)
+			al.Use(tenantMembership)
+			al.Get("/", alertsHandler.List)
+			al.Post("/", alertsHandler.Subscribe)
+			al.Delete("/{id}", alertsHandler.Unsubscribe)
 		})
 
 		v.Route("/auth", func(a chi.Router) {
@@ -772,8 +900,9 @@ func main() {
 			authR.Get("/orders", orderHandler.List)
 			authR.Get("/orders/{orderId}", orderHandler.Get)
 			authR.Get("/orders/{orderId}/shipment", shipHandler.GetByOrder)
-			authR.Post("/orders/{orderId}/cancel", orderHandler.Cancel)
-			authR.Post("/orders/{orderId}/returns", platformHandler.ReturnCreate)
+			authR.Get("/orders/{orderId}/invoice", invoiceHandler.UserInvoice)
+			authR.With(idem.Middleware).Post("/orders/{orderId}/cancel", orderHandler.Cancel)
+			authR.With(idem.Middleware).Post("/orders/{orderId}/returns", platformHandler.ReturnCreate)
 			authR.Get("/returns", platformHandler.ReturnList)
 			authR.Get("/returns/{returnId}", platformHandler.ReturnGet)
 			authR.Post("/support/tickets", platformHandler.TicketCreate)
@@ -787,85 +916,33 @@ func main() {
 			authR.Post("/notifications/{id}/read", notificationsHandler.MarkRead)
 		})
 
-		v.Route("/admin", func(admin chi.Router) {
-			admin.Use(authMiddleware.RequireAuth)
-			admin.Use(tenantMembership)
-			admin.Use(requireRole(queries, "admin"))
-			admin.Use(auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}))
-			admin.Post("/vouchers", voucherHandler.Create)
-			admin.Put("/vouchers/{code}", voucherHandler.Update)
-			admin.Post("/vouchers/preview", voucherHandler.Preview)
-			admin.Post("/flash-sales", campaignHandler.AdminCreate)
-			admin.Get("/flash-sales", campaignHandler.AdminList)
-			admin.Get("/flash-sales/{id}", campaignHandler.AdminGet)
-			admin.Patch("/flash-sales/{id}", campaignHandler.AdminUpdate)
-			admin.Post("/orders/{id}/shipment", shipHandler.AdminCreate)
-			admin.Patch("/orders/{id}/status", orderAdmin.PatchStatus)
-			admin.Post("/webhooks", notifyAdmin.CreateEndpoint)
-			admin.Put("/webhooks/{id}", notifyAdmin.UpdateEndpoint)
-			admin.Get("/webhooks", notifyAdmin.ListEndpoints)
-			admin.Delete("/webhooks/{id}", notifyAdmin.DeleteEndpoint)
-			admin.Get("/webhook-deliveries", notifyAdmin.ListDeliveries)
-			admin.Post("/webhook-deliveries/{id}/replay", notifyAdmin.ReplayDelivery)
-			admin.Get("/queue/dlq", queueAdmin.ListDLQ)
-			admin.Post("/queue/dlq/replay", queueAdmin.ReplayDLQ)
-			admin.Get("/queue/stats", queueAdmin.Stats)
-			admin.Get("/audit-logs", auditHandler.List)
-			admin.Get("/customers", platformHandler.Customers)
-			admin.Get("/inventory", platformHandler.InventoryList)
-			admin.Patch("/inventory/{variantId}", platformHandler.InventoryUpdate)
-			admin.Get("/returns", platformHandler.AdminReturnList)
-			admin.Patch("/returns/{returnId}", platformHandler.AdminReturnStatus)
-			admin.Post("/returns/{returnId}/refund", platformHandler.AdminRefund)
-			admin.Get("/support/tickets", platformHandler.AdminTicketList)
-			admin.Get("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessages)
-			admin.Patch("/support/tickets/{ticketId}", platformHandler.AdminTicketStatus)
-			admin.Post("/support/tickets/{ticketId}/messages", platformHandler.AdminTicketMessage)
-			admin.Get("/settings", platformHandler.SettingsGet)
-			admin.Patch("/settings", platformHandler.SettingsUpdate)
-			admin.Post("/onboarding", platformHandler.Onboarding)
-
-			// Catalog management.
-			admin.Get("/products", adminCatalog.ListProducts)
-			admin.Post("/products", adminCatalog.CreateProduct)
-			admin.Get("/products/{id}", adminCatalog.GetProduct)
-			admin.Patch("/products/{id}", adminCatalog.UpdateProduct)
-			admin.Delete("/products/{id}", adminCatalog.DeleteProduct)
-			admin.Patch("/products/{id}/stock", adminCatalog.UpdateProductStock)
-
-			admin.Get("/categories", adminCatalog.ListCategories)
-			admin.Post("/categories", adminCatalog.CreateCategory)
-			admin.Patch("/categories/{id}", adminCatalog.UpdateCategory)
-			admin.Delete("/categories/{id}", adminCatalog.DeleteCategory)
-
-			admin.Get("/brands", adminCatalog.ListBrands)
-			admin.Post("/brands", adminCatalog.CreateBrand)
-			admin.Patch("/brands/{id}", adminCatalog.UpdateBrand)
-			admin.Delete("/brands/{id}", adminCatalog.DeleteBrand)
-
-			// Order and voucher management reads. "/orders/stats" is registered
-			// before "/orders/{id}" so chi does not treat "stats" as an id.
-			admin.Get("/orders", adminOrders.ListOrders)
-			admin.Get("/orders/stats", adminOrders.OrderStats)
-			admin.Get("/orders/{id}", adminOrders.GetOrder)
-
-			admin.Get("/vouchers", adminOrders.ListVouchers)
-			admin.Get("/vouchers/stats", adminOrders.VoucherStats)
-			admin.Delete("/vouchers/{code}", adminOrders.DeleteVoucher)
-
-			admin.Get("/newsletter/subscribers", newsletterHandler.AdminList)
-
-			admin.Get("/analytics/overview", adminAnalytics.Overview)
-		})
-
-		v.Route("/analytics", func(an chi.Router) {
-			an.Use(authMiddleware.RequireAuth)
-			an.Use(tenantMembership)
-			an.Use(requireRole(queries, "admin"))
-			an.Get("/sales", analyticsHandler.Sales)
-			an.Get("/top-products", analyticsHandler.TopProducts)
-			an.Get("/overview", analyticsHandler.Overview)
-		})
+		adminRoutes := adminDeps{
+			RequireAuth:    authMiddleware.RequireAuth,
+			Membership:     tenantMembership,
+			PlatformAdmin:  rbac.RequirePlatformAdmin(queries),
+			Audit:          auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "admin"}),
+			AnalyticsAudit: auditRecorder.Middleware(audit.HTTPConfig{ResourceType: "analytics"}),
+			Idempotency:    idem.Middleware,
+			Vouchers:       voucherHandler,
+			Campaigns:      campaignHandler,
+			Shipping:       shipHandler,
+			Orders:         orderAdmin,
+			Notify:         notifyAdmin,
+			Queue:          queueAdmin,
+			AuditLogs:      auditHandler,
+			Platform:       platformHandler,
+			Catalog:        adminCatalog,
+			AdminOrders:    adminOrders,
+			AdminAnalytics: adminAnalytics,
+			AdminReports:   adminReports,
+			Invoices:       invoiceHandler,
+			Payments:       webhookHandler,
+			Newsletter:     newsletterHandler,
+			Analytics:      analyticsHandler,
+			Staff:          staffHandler,
+		}
+		v.Route("/admin", func(a chi.Router) { registerAdminRoutes(a, adminRoutes) })
+		v.Route("/analytics", func(an chi.Router) { registerAnalyticsRoutes(an, adminRoutes) })
 
 		v.Route("/payments", func(p chi.Router) {
 			p.Use(authMiddleware.RequireAuth)
@@ -883,10 +960,19 @@ func main() {
 		v.Post("/webhooks/payment/{provider}", webhookHandler.Handle)
 	})
 
+	// Fail fast if a body-limit override no longer names a mounted route
+	// (e.g. the admin prefix moved): CSV imports would silently get 413.
+	if err := checkBodyLimitOverrides(r, admin.BodyLimitOverrides()); err != nil {
+		logger.Fatal().Err(err).Msg("body limit overrides")
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr(),
 		Handler: r,
 	}
+
+	alertsRunner.Start(context.Background())
+	alertsMailRunner.Start(context.Background())
 
 	health.SetReady(true)
 	logger.Info().Str("addr", srv.Addr).Msg("server starting")
@@ -906,75 +992,21 @@ func main() {
 	}
 	shutdownTimeout, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 	defer cancel()
+	// Stop starting new alert passes and wait, within the same grace period
+	// and in parallel with the HTTP drain, for the in-flight ones. Emails not
+	// sent when the grace period ends stay in product_alert_deliveries (leased
+	// rows become due again when their lease expires) and are sent by the next
+	// process.
+	alertsStopped := make(chan error, 2)
+	go func() { alertsStopped <- alertsRunner.Stop(shutdownTimeout) }()
+	go func() { alertsStopped <- alertsMailRunner.Stop(shutdownTimeout) }()
 	if err := srv.Shutdown(shutdownTimeout); err != nil {
 		logger.Error().Err(err).Msg("server shutdown")
 	}
-}
-
-func requireRole(q dbgen.Querier, role string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if q == nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "role validator not configured", nil)
-				return
-			}
-			userID, ok := common.UserID(r.Context())
-			if !ok {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			uid, err := cart.ToUUID(userID)
-			if err != nil {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			user, err := q.GetUserByID(r.Context(), uid)
-			if err != nil {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
-				return
-			}
-			if !slices.Contains(user.Roles, role) {
-				common.JSONError(w, http.StatusForbidden, "FORBIDDEN", "insufficient permissions", nil)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// requireTenantMembership prevents an authenticated user from selecting an
-// arbitrary tenant with X-Tenant-ID. Public catalogue requests remain open,
-// while every authenticated workflow requires an ACTIVE membership row.
-func requireTenantMembership(pool *pgxpool.Pool) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if pool == nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "tenant membership store not configured", nil)
-				return
-			}
-			userID, hasUser := common.UserID(r.Context())
-			tenantID, hasTenant := tenant.FromContext(r.Context())
-			if !hasUser || !hasTenant {
-				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication and tenant are required", nil)
-				return
-			}
-			uid, userErr := cart.ToUUID(userID)
-			tid, tenantErr := cart.ToUUID(tenantID)
-			if userErr != nil || tenantErr != nil {
-				common.JSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authentication or tenant context", nil)
-				return
-			}
-			var member bool
-			if err := pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND status='ACTIVE')`, tid, uid).Scan(&member); err != nil {
-				common.JSONError(w, http.StatusInternalServerError, "INTERNAL", "failed to validate tenant membership", nil)
-				return
-			}
-			if !member {
-				common.JSONError(w, http.StatusForbidden, "TENANT_FORBIDDEN", "user is not a member of this tenant", nil)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
+	for i := 0; i < 2; i++ {
+		if err := <-alertsStopped; err != nil {
+			logger.Warn().Err(err).Msg("alerts runner did not finish before shutdown grace elapsed")
+		}
 	}
 }
 
@@ -1009,52 +1041,6 @@ func envOrDefault(key, fallback string) string {
 		}
 	}
 	return fallback
-}
-
-// buildMailer returns the transactional email sender. Without SMTP_HOST it
-// falls back to a no-op and says so loudly: password reset and email
-// verification both mint tokens that are useless if nothing delivers them, and
-// that failure is otherwise completely silent.
-func buildMailer(cfg *config.Config, logger zerolog.Logger) common.EmailSender {
-	if strings.TrimSpace(cfg.SMTPHost) == "" {
-		logger.Warn().
-			Msg("SMTP_HOST not set: transactional email is disabled, password reset and email verification links will not be delivered")
-		return common.NopEmailSender{}
-	}
-
-	sender, err := common.NewSMTPSender(common.SMTPSender{
-		Host:             cfg.SMTPHost,
-		Port:             cfg.SMTPPort,
-		Username:         cfg.SMTPUsername,
-		Password:         cfg.SMTPPassword,
-		From:             cfg.SMTPFrom,
-		ImplicitTLS:      cfg.SMTPImplicitTLS,
-		AllowInsecureTLS: cfg.SMTPAllowInsecureTLS,
-		Timeout:          cfg.SMTPTimeout,
-	})
-	if err != nil {
-		// Misconfigured SMTP is an operator error worth failing on: starting
-		// with silently broken email is worse than not starting.
-		logger.Fatal().Err(err).Msg("configure smtp sender")
-	}
-
-	if cfg.SMTPAllowInsecureTLS {
-		logger.Warn().Msg("SMTP_ALLOW_INSECURE_TLS is enabled: TLS certificates are not verified")
-	}
-	if strings.TrimSpace(cfg.PublicBaseURL) == "" {
-		// Reset and verification mails embed a storefront link built from this
-		// value. Without it the link is relative, which no mail client can follow.
-		logger.Warn().
-			Msg("PUBLIC_BASE_URL not set: password reset and verification emails will contain relative, unusable links")
-	}
-	logger.Info().
-		Str("host", cfg.SMTPHost).
-		Int("port", cfg.SMTPPort).
-		Bool("implicitTLS", cfg.SMTPImplicitTLS).
-		Str("from", cfg.SMTPFrom).
-		Msg("transactional email enabled")
-
-	return sender
 }
 
 // resolveDefaultTenantID returns the tenant every unscoped request falls back to.

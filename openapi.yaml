@@ -128,6 +128,66 @@ paths:
       responses:
         '204':
           description: Logged out; refresh cookie cleared
+  /api/v1/auth/logout/all:
+    post:
+      summary: Revoke every session of the current user
+      description: >-
+        Revokes all refresh tokens of the authenticated user on every device
+        and clears the refresh cookie on this response. Access tokens already
+        issued stay valid until they expire.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: All sessions revoked; refresh cookie cleared
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/auth/sessions:
+    get:
+      summary: List the active sessions of the current user
+      description: >-
+        One entry per stored refresh-token session of the user, newest first.
+        Expired sessions are only purged when they are next used, so they can
+        still appear. `lastActive` is the session's creation time and
+        `current` is always false today (the current session is not tracked).
+        `location` is never set yet.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: Not an active member of the current tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/auth/me:
     get:
       summary: Get the current authenticated user
@@ -424,11 +484,30 @@ paths:
   /api/v1/products:
     get:
       summary: List products
+      description: >-
+        Lists products with filters, sorting and pagination. When `q` is set the
+        search uses full-text matching (`simple` config, no stemming) over title
+        and description; if that finds nothing and `q` has 3 to 64 characters,
+        it falls back to typo-tolerant trigram matching on the title
+        (`meta.searchMode = fuzzy`). When both find nothing, `meta.suggestions`
+        offers up to 5 closest titles. Longer queries (65-200 characters) get
+        full-text matching only. The fuzzy pass and suggestions run under a
+        short server-side time limit; if it is exceeded the response is the
+        (empty) full-text result with `searchMode = fts` and no suggestions,
+        never an error. `include=facets` adds facet counts.
+        `meta` is present only when `q` is non-empty and `facets` only when
+        requested, so the response is unchanged for clients that send neither.
       parameters:
         - in: query
           name: q
+          description: >-
+            Search text (websearch syntax), trimmed. At most 200 characters
+            (Unicode code points) after trimming; longer values return 400 with
+            `error.details.field = "q"`. Typo-tolerant fallback and suggestions
+            apply to 3-64 characters.
           schema:
             type: string
+            maxLength: 200
         - in: query
           name: category
           schema:
@@ -451,6 +530,14 @@ paths:
             type: boolean
         - in: query
           name: sort
+          description: >-
+            Sort order. `popularity:desc` = units sold in paid orders of this
+            tenant (PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED),
+            recomputed by the worker every few minutes, so it can lag slightly.
+            `rating:desc` = average review rating, ties broken by review count.
+            Bare `popularity` / `rating` are aliases of the `:desc` forms.
+            Unknown values fall back to the default order (relevance when `q`
+            is set, otherwise newest first).
           schema:
             type: string
             enum:
@@ -458,6 +545,19 @@ paths:
               - price:desc
               - title:asc
               - title:desc
+              - popularity:desc
+              - rating:desc
+              - popularity
+              - rating
+        - in: query
+          name: include
+          description: >-
+            Comma-separated extras. Only `facets` is recognised; any other
+            token returns 400 with `details.field = "include"`. Empty tokens
+            are ignored.
+          schema:
+            type: string
+            example: facets
         - in: query
           name: page
           schema:
@@ -482,6 +582,16 @@ paths:
                       $ref: '#/components/schemas/ProductListItem'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ProductSearchMeta'
+                  facets:
+                    $ref: '#/components/schemas/ProductFacets'
+        '400':
+          description: Invalid filter (`q` longer than 200 characters, `page`, `limit`, `minPrice`, `maxPrice`, `price`, `inStock` or `include`); `error.details.field` names it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/products/{slug}:
     get:
       summary: Get product detail by slug
@@ -974,6 +1084,12 @@ paths:
   /api/v1/push/vapid-key:
     get:
       summary: Get VAPID public key for web push
+      description: |
+        Returns the VAPID application server key (base64url, uncompressed P-256 point)
+        to pass as `applicationServerKey` to `PushManager.subscribe`. Both field
+        spellings carry the same value; clients should prefer `publicKey`.
+        Answers `503 PUSH_DISABLED` when the server has no VAPID keys configured;
+        clients should then hide or disable push UI.
       security:
         - bearerAuth: []
       responses:
@@ -982,17 +1098,107 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - public_key
-                properties:
-                  public_key:
-                    type: string
+                $ref: '#/components/schemas/PushVapidKeyResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          description: Web push is not configured on this server (`PUSH_DISABLED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/push/send-test:
+    post:
+      summary: Send a test push notification to the caller
+      description: |
+        Synchronously sends a test push (`{"title":"Notifikasi uji","body":"Push notification berfungsi.","tag":"test","data":{"url":"/account/notifications"}}`)
+        to every stored subscription of the authenticated user. Per-type
+        preferences are ignored (explicit debug action). Subscriptions that can
+        never receive a push are deleted and counted in `pruned`: the push
+        service answered 404/410, the stored endpoint is not https, or the
+        stored keys are unusable (`p256dh` not an uncompressed P-256 point,
+        `auth` not 16 bytes). Server-side failures (e.g. misconfigured VAPID
+        keys, or the push host resolving to an address the server's outbound
+        guard refuses) count as `failed` and never delete a subscription.
+        Rate-limited per user (default 5 calls per 60 seconds,
+        `RATE_LIMIT_PUSH_TEST_MAX` / `RATE_LIMIT_PUSH_TEST_WINDOW_SEC`).
+        No request body.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: At least one push service accepted the notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushSendTestResponse'
+        '401':
+          description: Unauthorized (`UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: The user has no stored subscription (`NO_SUBSCRIPTION`); subscribe first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limit exceeded. Carries `Retry-After` and `X-RateLimit-*` headers.
+          headers:
+            Retry-After:
+              description: Seconds until the next call is allowed.
+              schema:
+                type: integer
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: rate limit exceeded
+        '500':
+          description: |
+            Subscriptions could not be loaded (`PUSH_SEND_FAILED`, no details), or
+            the token's user id is not a UUID (`INVALID_USER_ID`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '502':
+          description: |
+            No push service accepted the notification (`PUSH_SEND_FAILED`).
+            `error.details` is `{ "sent": 0, "failed": <int>, "pruned": <int> }`
+            with the same meaning as in the 200 response (`pruned` subscriptions
+            were deleted: 404/410, non-https endpoint or unusable keys;
+            `failed` ones were kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          description: Web push is not configured on this server (`PUSH_DISABLED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/push/subscription:
     post:
       summary: Subscribe to web push notifications
+      description: |
+        Stores (upserts) a browser push subscription for the authenticated user.
+        The endpoint must be an absolute `https://` URL without credentials whose
+        host is a DNS name (no IP literals) of a known push service. Default
+        allowlist: `fcm.googleapis.com`, `*.push.services.mozilla.com`,
+        `*.notify.windows.com`, `web.push.apple.com`, `*.push.apple.com`
+        (operators extend it with `PUSH_ENDPOINT_ALLOWED_HOSTS`). `endpoint` is
+        limited to 2048 bytes and each key to 512 bytes. At most
+        `PUSH_MAX_SUBSCRIPTIONS_PER_USER` (default 10) subscriptions are kept per
+        user; subscribing another endpoint silently evicts the one least
+        recently (re)subscribed.
       security:
         - bearerAuth: []
       requestBody:
@@ -1030,9 +1236,24 @@ paths:
                   message:
                     type: string
         '400':
-          description: Missing fields
+          description: |
+            `MISSING_FIELDS` (endpoint or keys empty), `INVALID_BODY` (malformed JSON,
+            endpoint > 2048 bytes or a key > 512 bytes) or `INVALID_ENDPOINT`
+            (endpoint is not an https URL of an allowlisted push service;
+            `error.details` is the validation reason, e.g.
+            `push: invalid subscription endpoint: scheme must be https`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '401':
           description: Unauthorized
+        '500':
+          description: Storing the subscription failed (`SUBSCRIBE_FAILED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
     delete:
       summary: Unsubscribe from web push notifications
       security:
@@ -1169,6 +1390,94 @@ paths:
           description: Unauthorized
         '500':
           description: Server error
+  /api/v1/alerts:
+    get:
+      summary: List my product alert subscriptions
+      description: >
+        Returns the caller's back-in-stock / price-drop subscriptions in the active
+        tenant, newest first. Prices are whole currency units (rupiah).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 }, description: Clamped to 100 }
+        - { name: productId, in: query, schema: { type: string, format: uuid }, description: Optional filter to one product }
+      responses:
+        '200':
+          description: Paginated subscriptions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertListResponse' }
+        '400':
+          description: Invalid productId (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '500': { description: Server error }
+    post:
+      summary: Subscribe to (or re-arm) a product alert
+      description: >
+        Creates a BACK_IN_STOCK or PRICE_DROP subscription for a product or one of its
+        variants. Posting again for the same (product, variant, type) re-arms it
+        (status active, notifiedAt null, priceAtSubscribe refreshed for PRICE_DROP) and
+        returns 200. BACK_IN_STOCK is rejected with 409 ALREADY_IN_STOCK while the target
+        is sellable, using the cart rule (variant: stock > 0; product-level: inStock).
+        Alerts fire once, delivered as an in-app notification (type back_in_stock /
+        price_drop) and a queued, retried email; they are never sent to webhooks.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertSubscribeRequest' }
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSubscriptionResponse' }
+        '200':
+          description: Existing subscription re-armed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSubscriptionResponse' }
+        '400':
+          description: Invalid payload, ids or type (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Product not in tenant or variant not of product (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: BACK_IN_STOCK requested while the target is sellable (ALREADY_IN_STOCK)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/alerts/{id}:
+    delete:
+      summary: Delete one of my product alert subscriptions
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: Subscription ID }
+      responses:
+        '204': { description: Deleted }
+        '400':
+          description: Invalid id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Not found for this user in this tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/carts:
     get:
       summary: Get the active cart
@@ -1189,6 +1498,8 @@ paths:
                     $ref: '#/components/schemas/Cart'
     post:
       summary: Create a cart
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '201':
           description: Created cart
@@ -1235,6 +1546,8 @@ paths:
           format: uuid
     post:
       summary: Add an item to the cart
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -1252,7 +1565,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/Cart'
         '400':
-          description: Validation failed
+          description: Validation failed, including "product is not available" for draft or archived products
           content:
             application/json:
               schema:
@@ -1310,6 +1623,52 @@ paths:
   /api/v1/carts/{id}/apply-voucher:
     post:
       summary: Apply voucher
+      description: >-
+        Vouchers belong to one tenant. A code that belongs to another tenant
+        is treated exactly like an unknown code (404).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Voucher applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      discount:
+                        type: integer
+                        format: int64
+        '400':
+          description: Invalid payload, or the voucher is not active, expired, used up or below minimum spend (BAD_REQUEST)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Cart not found, or voucher code unknown or owned by another tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
   /api/v1/carts/{id}/voucher:
     delete:
       summary: Remove voucher
@@ -1325,6 +1684,8 @@ paths:
   /api/v1/checkout:
     post:
       summary: Create order (pending payment)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       description: |
         Creates an order from the user's cart, resolves the shipping address by ID,
         generates a human-readable order number, and opens a payment intent with the
@@ -1351,11 +1712,26 @@ paths:
           description: Invalid request (missing fields, invalid paymentMethod, negative shippingCost)
         '401':
           description: Authentication required
+        '409':
+          description: |
+            `PRODUCT_UNAVAILABLE`: a cart line's product was set to draft or
+            archived (or deleted) after it was added. Nothing is reserved or
+            ordered. `details: {productId, slug}`.
+
+            `CONFLICT`: the checkout lost a row-lock race (deadlock, lock
+            timeout or serialization failure) with another checkout or an
+            admin catalog write. Nothing was committed; retry the request.
+            `details: {retryable: true}`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '500':
           description: Address not found, cart empty, or tenant missing
   /api/v1/checkout/draft:
     post:
       summary: Preview checkout totals before creating an order
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       security:
         - bearerAuth: []
       requestBody:
@@ -1432,11 +1808,81 @@ paths:
   /api/v1/orders/{orderId}/cancel:
     post:
       summary: Cancel order if pending
+      description: Runs under the order row lock with the status guard; only pending_payment orders can be cancelled (expired, paid or cancelled orders return 400 INVALID_STATE).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { description: Order cancelled }
+        '400':
+          description: >
+            `INVALID_STATE` when the order is not `pending_payment` (only pending orders
+            can be cancelled), or `BAD_REQUEST` for an invalid order or user id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: '`NOT_FOUND`: no order with this id for the current user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: >
+            `IDEMPOTENT_REPLAY`: the same `Idempotency-Key` was used within the TTL and
+            the first response was not a 5xx.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/orders/{orderId}/shipment:
     get:
       summary: Get shipment detail for order
+  /api/v1/orders/{orderId}/invoice:
+    get:
+      summary: Download invoice PDF for my order
+      description: >
+        Order owner only, tenant-scoped. A number (INV-YYYY-NNNNNN, per-tenant counter,
+        year in tenant timezone) is assigned on first download and never changes. New
+        invoices require status PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED; an
+        already issued invoice stays downloadable. Amounts are whole rupiah.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Invoice PDF (attachment)
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="INV-YYYY-NNNNNN.pdf"'
+            Cache-Control:
+              schema: { type: string }
+              description: private, no-store
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid order id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '404':
+          description: Order not found, not owned by caller, or other tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Order not paid yet / cancelled and no invoice issued (INVOICE_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/admin/orders/{id}/shipment:
     post:
+      x-permission: orders:write
       summary: Create shipment for order
       description: Registers courier and tracking data for an order.
       security:
@@ -1481,6 +1927,7 @@ paths:
           description: Server error
   /api/v1/admin/orders/{id}/status:
     patch:
+      x-permission: orders:write
       summary: Update order status (admin restricted)
       description: Advances the order status using state-machine validation.
       security:
@@ -1514,8 +1961,90 @@ paths:
           description: Invalid state transition
         '500':
           description: Server error
-  /api/v1/admin/vouchers:
+  /api/v1/admin/orders/{id}/confirm-payment:
     post:
+      x-permission: refunds:write
+      summary: Confirm a manual payment (admin)
+      description: |
+        Settles a PENDING_PAYMENT order after an admin verified a manual bank transfer, exactly like a
+        provider PAID callback under the order row lock: latest payment PAID (a "manual" payment is
+        created when none exists) with a payment_events row {source: admin, reason: manual_confirmation,
+        actorId, note}, order PAID via the status guard, reservations and flash-sale quota committed,
+        voucher settled, order.paid emitted. Admin role required; audit-logged. Tenant-scoped.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Order ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminConfirmPaymentRequest'
+      responses:
+        '200':
+          description: Payment confirmed and order settled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminConfirmPaymentResponse'
+        '400':
+          description: BAD_REQUEST (invalid id or payload), VALIDATION_ERROR (note too long) or TENANT_REQUIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404':
+          description: Order not found in the caller's tenant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: INVALID_STATE - the order is not PENDING_PAYMENT (paid, cancelled or expired) or its latest payment was refunded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/admin/vouchers:
+    get:
+      x-permission: promotions:read
+      summary: List vouchers (admin)
+      description: Paginated voucher list for the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: search, in: query, description: Match on voucher code, schema: { type: string } }
+        - { name: kind, in: query, description: Discount kind filter, schema: { type: string, enum: [fixed_amount, percent] } }
+      responses:
+        '200':
+          description: Voucher page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminVoucher' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Invalid kind filter (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
+    post:
+      x-permission: promotions:write
       summary: Create voucher
       description: Creates a new voucher rule.
       security:
@@ -1545,11 +2074,28 @@ paths:
         '403':
           description: Forbidden
         '409':
-          description: Voucher code already exists
+          description: This tenant already has a voucher with this code (`CONFLICT`). Codes are unique per tenant; another tenant's codes never conflict.
         '500':
           description: Server error
   /api/v1/admin/vouchers/{code}:
+    delete:
+      x-permission: promotions:write
+      summary: Delete voucher (admin)
+      description: Deletes an unused voucher of the current tenant.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Voucher deleted }
+        '400': { description: Missing code (`BAD_REQUEST`) }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Voucher not found in this tenant (`NOT_FOUND`) }
+        '409': { description: Voucher has been used and cannot be deleted (`CONFLICT`) }
+        '500': { description: Server error }
     put:
+      x-permission: promotions:write
       summary: Update voucher
       description: Updates the voucher identified by its code.
       security:
@@ -1591,6 +2137,7 @@ paths:
           description: Server error
   /api/v1/admin/vouchers/preview:
     post:
+      x-permission: promotions:read
       summary: Preview voucher discount (dry-run)
       description: Dry-run evaluation of a voucher for a given cart context.
       security:
@@ -1623,8 +2170,24 @@ paths:
           description: Server error
   /api/v1/admin/webhooks:
     post:
+      x-permission: platform-admin
       summary: Create webhook endpoint
-      description: Registers a new webhook endpoint.
+      description: |
+        Registers a new webhook endpoint. Catalog topics `product.price_changed`,
+        `product.stock_changed` and `product.status_changed` (payload
+        `{tenantId, productId, slug?, variantId?, sku?, field, old, new,
+        source: single|bulk|import, requestId, actorUserId?}`) are delivered
+        only to endpoints of the emitting tenant. Order, payment and shipment
+        events are stamped with the emitting request's tenant (the payment
+        webhook uses the order's tenant) and are likewise delivered only to
+        that tenant's endpoints; an event without a tenant reaches none.
+
+        The endpoint belongs to the request's tenant (`tenant_id` is set from
+        the resolved tenant, never from the body), so it receives exactly that
+        tenant's events. List, update and delete only ever see the request
+        tenant's endpoints.
+
+        Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -1649,8 +2212,9 @@ paths:
         '500':
           description: Server error
     get:
+      x-permission: platform-admin
       summary: List webhook endpoints
-      description: Returns configured webhook endpoints.
+      description: Returns the request tenant's webhook endpoints (never another tenant's). Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1690,8 +2254,9 @@ paths:
           description: Server error
   /api/v1/admin/webhooks/{id}:
     put:
+      x-permission: platform-admin
       summary: Update webhook endpoint
-      description: Updates the webhook endpoint identified by id.
+      description: Updates the request tenant's webhook endpoint identified by id; an endpoint of another tenant is `404 NOT_FOUND`. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1722,12 +2287,13 @@ paths:
         '403':
           description: Forbidden
         '404':
-          description: Endpoint not found
+          description: Endpoint not found, or owned by another tenant (NOT_FOUND)
         '500':
           description: Server error
     delete:
+      x-permission: platform-admin
       summary: Delete webhook endpoint
-      description: Removes the webhook endpoint identified by id.
+      description: Removes the request tenant's webhook endpoint identified by id; an unknown id or an endpoint of another tenant is `404 NOT_FOUND` and nothing is deleted. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1748,13 +2314,14 @@ paths:
         '403':
           description: Forbidden
         '404':
-          description: Endpoint not found
+          description: Endpoint not found, or owned by another tenant (NOT_FOUND)
         '500':
           description: Server error
   /api/v1/admin/webhook-deliveries:
     get:
+      x-permission: platform-admin
       summary: List webhook deliveries
-      description: Returns webhook delivery attempts with optional filtering.
+      description: Returns webhook delivery attempts with optional filtering. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1814,8 +2381,9 @@ paths:
           description: Server error
   /api/v1/admin/webhook-deliveries/{id}/replay:
     post:
+      x-permission: platform-admin
       summary: Replay a webhook delivery
-      description: Resets the delivery for retry and releases any related DLQ lock.
+      description: Resets the delivery for retry and releases any related DLQ lock. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1845,8 +2413,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq:
     get:
+      x-permission: platform-admin
       summary: List dead-letter queue items
-      description: Returns DLQ entries filtered by kind with pagination.
+      description: Returns DLQ entries filtered by kind with pagination. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1884,8 +2453,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/dlq/replay:
     post:
+      x-permission: platform-admin
       summary: Replay DLQ items
-      description: Re-enqueues DLQ entries either by ID list or by batch kind.
+      description: Re-enqueues DLQ entries either by ID list or by batch kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       requestBody:
@@ -1911,8 +2481,9 @@ paths:
           description: Server error
   /api/v1/admin/queue/stats:
     get:
+      x-permission: platform-admin
       summary: Queue depth and DLQ metrics
-      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind.
+      description: Returns queue depth, in-flight count, DLQ size, and oldest lag for a given queue kind. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1939,8 +2510,9 @@ paths:
           description: Server error
   /api/v1/admin/audit-logs:
     get:
+      x-permission: platform-admin
       summary: List audit logs (admin)
-      description: Returns a paginated list of audit logs.
+      description: Returns a paginated list of audit logs. Requires the global `admin` role (`users.roles`); not granted by any tenant role.
       security:
         - bearerAuth: []
       parameters:
@@ -1975,8 +2547,12 @@ paths:
           description: Server error
   /api/v1/analytics/sales:
     get:
+      x-permission: analytics:read
       summary: Sales trend (daily)
-      description: Returns daily sales aggregates for the requested date range. Range is inclusive of `from` and exclusive of `to`.
+      description: >-
+        Returns daily sales aggregates for the requested date range, bucketed by tenant-local day
+        (tenants.timezone). Range is inclusive of `from` and exclusive of `to`. When `from`/`to` are
+        omitted the `days` window ends at the next tenant-local midnight. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
       parameters:
@@ -2000,7 +2576,7 @@ paths:
             type: integer
             default: 30
             minimum: 1
-          description: Number of days to look back when from/to are omitted
+          description: Number of whole tenant-local days to look back when from/to are omitted
       responses:
         '200':
           description: Daily sales aggregates
@@ -2016,17 +2592,22 @@ paths:
                     items:
                       $ref: '#/components/schemas/AnalyticsSalesDay'
         '400':
-          description: Invalid date range
+          description: Invalid date range or missing tenant (TENANT_REQUIRED)
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden (admin required)
+          description: Forbidden (not staff or missing the x-permission)
         '500':
           description: Analytics service error
   /api/v1/analytics/top-products:
     get:
+      x-permission: analytics:read
       summary: Top products by qty
-      description: Returns top-selling products ordered by quantity sold.
+      description: >-
+        Returns the tenant's top-selling products ordered by quantity sold (all time unless `from`/`to`
+        are given). Item-level gross: sums order_items.subtotal of orders matching the revenue rule
+        (partially refunded orders keep their full item value, fully refunded orders are excluded).
+        Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
       parameters:
@@ -2036,7 +2617,8 @@ paths:
             type: integer
             default: 10
             minimum: 1
-          description: Number of items to return
+            maximum: 100
+          description: Number of items to return (values above 100 are clamped)
         - name: offset
           in: query
           schema:
@@ -2044,6 +2626,14 @@ paths:
             default: 0
             minimum: 0
           description: Number of items to skip
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+          description: Optional inclusive lower bound on order created_at (RFC3339)
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+          description: Optional exclusive upper bound on order created_at (RFC3339); must be after `from`
       responses:
         '200':
           description: Top selling products
@@ -2058,18 +2648,33 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AnalyticsTopProduct'
+        '400':
+          description: Invalid range or missing tenant (TENANT_REQUIRED)
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden (admin required)
+          description: Forbidden (not staff or missing the x-permission)
         '500':
           description: Analytics service error
   /api/v1/analytics/overview:
     get:
+      x-permission: analytics:read
       summary: Overview for dashboard
-      description: Aggregated order and revenue metrics for the requested date range.
+      description: >-
+        Aggregated order and revenue metrics for the requested date range (sum of /analytics/sales
+        rows). Default window is `days` (default 30) whole tenant-local days. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md. Requires a staff role with `analytics:read`.
       security:
         - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 30, minimum: 1 }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
       responses:
         '200': { description: Analytics overview }
         '400': { description: Invalid range }
@@ -2114,6 +2719,7 @@ paths:
           description: Invalid email format or missing body
   /api/v1/admin/newsletter/subscribers:
     get:
+      x-permission: customers:read
       summary: List newsletter subscribers
       security: [{ bearerAuth: [] }]
       parameters:
@@ -2123,7 +2729,31 @@ paths:
         '200':
           description: List of subscribers
   /api/v1/admin/flash-sales:
+    get:
+      x-permission: promotions:read
+      summary: List flash-sale campaigns
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Campaign page (each campaign includes its items)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/FlashSaleCampaign' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '500': { description: Server error }
     post:
+      x-permission: promotions:write
       summary: Create a flash-sale campaign
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -2147,10 +2777,31 @@ paths:
                     properties:
                       productId: { type: string, format: uuid }
                       salePrice: { type: integer, minimum: 0 }
-                      stockLimit: { type: integer, minimum: 1, nullable: true }
+                      stockLimit: { type: integer, minimum: 1, nullable: true, description: 'null or absent means unlimited; 0 is rejected with 400' }
       responses: { '201': { description: Campaign created } }
   /api/v1/admin/flash-sales/{id}:
+    get:
+      x-permission: promotions:read
+      summary: Get a flash-sale campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The campaign with all its items
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/FlashSaleCampaign' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404': { description: Campaign not found for this tenant (`NOT_FOUND`) }
+        '500': { description: Server error }
     patch:
+      x-permission: promotions:write
       summary: Update a flash-sale campaign (full or partial)
       description: >
         Partial update: absent fields are left unchanged, and a bare
@@ -2205,6 +2856,8 @@ paths:
   /api/v1/payments/intent:
     post:
       summary: Create or reuse a payment intent
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       security:
         - bearerAuth: []
       requestBody:
@@ -2231,6 +2884,11 @@ paths:
           description: Unauthorized
         '404':
           description: Order not found
+        '409':
+          description: INVALID_STATE - the order is no longer pending_payment (expired, cancelled or paid), including when that happened during the provider call
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '500':
           description: Payment provider error
   /api/v1/payments/{orderId}/instructions:
@@ -2255,7 +2913,20 @@ paths:
               required: [proof]
               properties:
                 proof: { type: string, format: binary }
-      responses: { '201': { description: Payment proof stored } }
+      description: |
+        Stores a transfer proof for a pending_payment order. A proof keeps the order from expiring for
+        JOB_CHECKOUT_PROOF_HOLD_HOURS (default 72h) counted from the first proof, so an admin can confirm it.
+      responses:
+        '201': { description: Payment proof stored }
+        '400': { description: Missing file or file larger than 5 MB }
+        '401': { description: Unauthorized }
+        '404': { description: Order not found }
+        '409':
+          description: INVALID_STATE - payment proof can only be uploaded for pending orders
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/webhooks/shipping/{courier}:
     post:
       summary: Shipping webhook receiver (idempotent)
@@ -2321,6 +2992,10 @@ paths:
       summary: Payment webhook receiver
       description: |
         Payment provider callback that verifies the provider signature and updates the order payment status. Request body and signature header are provider-specific.
+        Locks the order first; payment rows and events change only on real state transitions (idempotent retries).
+        A PAID callback for an EXPIRED/CANCELLED order records the payment as PAID, leaves the order unchanged,
+        emits the ops-only payment.late event and returns 204. Provider EXPIRED moves a pending order to EXPIRED.
+        The replay key is kept only for successful (2xx) requests.
       parameters:
         - name: provider
           in: path
@@ -2341,16 +3016,16 @@ paths:
             schema:
               $ref: '#/components/schemas/PaymentWebhookPayload'
       responses:
-        '200':
-          description: Webhook processed
+        '204':
+          description: Webhook processed (including no-op duplicates and late payments)
         '400':
-          description: Invalid body or order identifier
+          description: Invalid body, order identifier or amount mismatch
         '401':
           description: Signature verification failed
         '404':
-          description: Provider not supported or payment not found
+          description: Provider not supported, order not found or payment not found
         '409':
-          description: Duplicate webhook or amount mismatch
+          description: Duplicate webhook (REPLAY)
         '500':
           description: Server error
   /api/v1/notifications:
@@ -2442,6 +3117,7 @@ paths:
           description: Server error
   /api/v1/admin/products:
     get:
+      x-permission: catalog:read
       summary: List products (admin)
       description: |
         Paginated product list for the admin dashboard. Unlike the public catalog
@@ -2471,6 +3147,26 @@ paths:
         - name: inStock
           in: query
           schema: { type: boolean }
+        - name: sort
+          in: query
+          description: |
+            `field[:asc|desc]` with field `name|price|stock|created|updated`.
+            Bare `name|price|stock` sort ascending, bare `created|updated`
+            descending. Default `created:desc` (the previous fixed order).
+            `stock` is the sum of variant stock. Unknown values return 400.
+          schema: { type: string, default: 'created:desc', example: 'price:asc' }
+        - name: status
+          in: query
+          description: Product status filter (omit for all)
+          schema: { type: string, enum: [draft, published, archived] }
+        - name: stockStatus
+          in: query
+          description: |
+            Product-level stock status (see AdminProduct.stockStatus): `out` when
+            the summed variant stock is 0, `low` when it is at most the effective
+            low-stock threshold, `in` otherwise. A product without variants
+            follows its inStock flag.
+          schema: { type: string, enum: [in, low, out] }
       responses:
         '200':
           description: Product page
@@ -2486,10 +3182,12 @@ paths:
                       $ref: '#/components/schemas/AdminProduct'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
+        '400': { description: Invalid sort, status or stockStatus }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create product (admin)
       security:
         - bearerAuth: []
@@ -2514,13 +3212,352 @@ paths:
                     properties:
                       id: { type: string, format: uuid }
                       slug: { type: string }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
-        '409': { description: Slug already exists }
+        '409': { description: "This tenant already has a product with this slug, or a variant with one of the given SKUs (CONFLICT). Slugs and SKUs are unique per tenant; another tenant's values never conflict. On a SKU conflict the product row itself was created ('product created but a variant sku already exists in this store', details.id/slug)." }
         '500': { description: Server error }
+  /api/v1/admin/products/bulk/price:
+    post:
+      summary: Bulk price update (admin)
+      x-permission: catalog:write
+      description: |
+        All-or-nothing update of up to 500 items (request body at most 1 MiB).
+        A `productId` item sets the product price (and `compareAt` when sent)
+        and, with the default `applyTo: both`, every variant price of that
+        product, so the storefront listing and the cart agree (the cart charges
+        the variant price). `applyTo: product` changes only the listing price
+        (the cart keeps charging each variant's own price); `applyTo: variants`
+        changes only the variants. A `variantId` item sets one variant price.
+        Every target is locked (id order, lock_timeout 5 s) before writing.
+        Emits one `product.price_changed` event per changed value after commit
+        and writes one audit row (`catalog.bulk.price`, per-item from/to)
+        inside the transaction.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkPriceRequest' }
+            example:
+              items:
+                - { productId: 7f9c2d1e-0000-4000-8000-000000000001, price: 125000, compareAt: 150000 }
+                - { productId: 7f9c2d1e-0000-4000-8000-000000000002, price: 99000, applyTo: product }
+                - { variantId: 7f9c2d1e-0000-4000-8000-0000000000a1, price: 105000 }
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [updated, items]
+                    properties:
+                      updated: { type: integer, description: Items that changed at least one value }
+                      items:
+                        type: array
+                        items:
+                          oneOf:
+                            - type: object
+                              required: [productId, slug, price, compareAt, applyTo, variantsUpdated]
+                              properties:
+                                productId: { type: string, format: uuid }
+                                slug: { type: string }
+                                price: { type: integer, description: Product price after the update }
+                                compareAt: { type: [integer, "null"] }
+                                applyTo: { type: string, enum: [both, product, variants] }
+                                variantsUpdated: { type: integer }
+                            - type: object
+                              required: [variantId, productId, sku, price]
+                              properties:
+                                variantId: { type: string, format: uuid }
+                                productId: { type: string, format: uuid }
+                                sku: { type: [string, "null"] }
+                                price: { type: integer }
+        '400': { $ref: '#/components/responses/BulkBadRequest' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '409': { $ref: '#/components/responses/CatalogConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BulkValidationFailed' }
+  /api/v1/admin/products/bulk/stock:
+    post:
+      summary: Bulk variant stock update (admin)
+      x-permission: inventory:write
+      description: |
+        All-or-nothing, up to 500 items. Each item targets one variant and sends
+        either an absolute `stock` or a `delta`. Deltas are applied atomically
+        against the live stock after locking the row, so concurrent checkout
+        reservations are respected; a result below zero rejects the row
+        (`NEGATIVE_RESULT`, nothing is clamped) and a result above
+        2147483647 is `OUT_OF_RANGE`. `products.in_stock` is
+        recomputed for every touched product. Emits `product.stock_changed`
+        per changed variant and writes one `catalog.bulk.stock` audit row.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkStockRequest' }
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [updated, items]
+                    properties:
+                      updated: { type: integer }
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required: [variantId, productId, sku, stock, inStock]
+                          properties:
+                            variantId: { type: string, format: uuid }
+                            productId: { type: string, format: uuid }
+                            sku: { type: [string, "null"] }
+                            stock: { type: integer, description: Stock after the update }
+                            inStock: { type: [boolean, "null"], description: Recomputed product flag; null when the product was not changed }
+        '400': { $ref: '#/components/responses/BulkBadRequest' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '409': { $ref: '#/components/responses/CatalogConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BulkValidationFailed' }
+  /api/v1/admin/products/bulk/status:
+    post:
+      summary: Bulk product status (publish / draft / archive)
+      x-permission: catalog:write
+      description: |
+        All-or-nothing, up to 500 items. Non-published (draft, archived)
+        products disappear from public listing, detail, search, related
+        products, recommendations, favourites and flash sales; they cannot be
+        added to a cart (400 "product is not available"), and existing cart
+        lines fail at checkout with 409 `PRODUCT_UNAVAILABLE`. Emits
+        `product.status_changed` and writes one `catalog.bulk.status` audit row.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkStatusRequest' }
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [updated, items]
+                    properties:
+                      updated: { type: integer }
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required: [productId, slug, status]
+                          properties:
+                            productId: { type: string, format: uuid }
+                            slug: { type: string }
+                            status: { type: string, enum: [draft, published, archived] }
+        '400': { $ref: '#/components/responses/BulkBadRequest' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '409': { $ref: '#/components/responses/CatalogConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BulkValidationFailed' }
+  /api/v1/admin/products/export:
+    get:
+      summary: Export products as CSV (one row per variant)
+      x-permission: catalog:read
+      description: |
+        Streams every product matching the list filters (no pagination), one
+        row per variant; a product without variants yields one row with empty
+        variant columns. Format: UTF-8 **with BOM** (Excel with Indonesian
+        regional settings garbles BOM-less UTF-8), comma delimiter, CRLF line
+        endings, RFC 4180 quoting. Text cells starting with `=`, `+`, `-`, `@`,
+        TAB or CR are prefixed with `'` (formula-injection safety); numeric
+        columns are never prefixed. Timestamps are RFC3339 UTC. Money in minor
+        units. Columns, in order:
+        `sku, product_id, variant_id, title, slug, status, price, compare_at,
+        variant_price, stock, stock_baseline, low_stock_threshold, in_stock,
+        stock_status, category_slug, brand_slug, description, attributes,
+        created_at, updated_at`. `stock_baseline` repeats the stock at export
+        time; keep it unchanged so a later import can detect sales made since
+        the export (see import). `attributes` is a JSON object.
+        Errors before streaming starts return JSON; a database failure after
+        the first rows were sent truncates the file (the status is already
+        200), so clients should compare the row count with the list total.
+        Download with fetch + blob (the endpoint needs the bearer token).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string }, description: Category slug }
+        - { name: brand, in: query, schema: { type: string }, description: Brand slug }
+        - { name: inStock, in: query, schema: { type: boolean } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published, archived] } }
+        - { name: stockStatus, in: query, schema: { type: string, enum: [in, low, out] } }
+      responses:
+        '200':
+          description: CSV file
+          headers:
+            Content-Disposition:
+              schema: { type: string, example: 'attachment; filename="products-20261025-101500.csv"' }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { description: Invalid filter }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+  /api/v1/admin/products/import:
+    post:
+      summary: Import products or stock from CSV (dry run by default)
+      x-permission: [catalog:write, inventory:write]
+      description: |
+        Multipart upload (field `file`, at most 5 MiB, at most 5000 data rows,
+        CSV only; .xlsx is rejected). This route is exempt from the global
+        request-body cap (`SECURITY_BODY_LIMIT_BYTES`, 1 MiB by default); the
+        handler enforces the 5 MiB file cap (5 MiB + 64 KiB for the whole
+        multipart body) and answers 413 `PAYLOAD_TOO_LARGE` as JSON. The file is held in memory only and its
+        contents are never logged. `dryRun` defaults to `true`; send
+        `dryRun=false` to apply. Both modes plan the whole file inside one
+        transaction against locked current values and return the planned
+        writes; nothing is written when any row is rejected (422), and a dry
+        run always rolls back.
+
+        **File format**: optional UTF-8 BOM, `,` or `;` delimiter (detected on
+        the header line), lower-case headers in any order. Unknown, duplicate
+        or missing required headers fail the whole file with 400
+        `INVALID_HEADER | DUPLICATE_HEADER | MISSING_HEADER` (`details.header`).
+        A leading `'` before a formula trigger is removed, so exported files
+        round-trip (consequence: text that literally starts with `'` followed
+        by `=`, `+`, `-`, `@`, TAB or CR cannot be stored through an import).
+        `title` and `description` are compared ignoring CR characters, since
+        a CSV round trip turns CRLF into LF and drops a lone CR; an unchanged
+        export therefore re-imports as `unchanged`. Rows consisting only of empty cells are skipped; `row` in
+        the response is the spreadsheet row (header = row 1).
+
+        **type=products** requires `sku`; optional `variant_id, product_id,
+        title, slug, status, price, compare_at, variant_price, stock,
+        stock_baseline, low_stock_threshold, category_slug, brand_slug,
+        description, attributes`; ignored (accepted for round trip):
+        `in_stock, stock_status, created_at, updated_at`.
+        **type=stock** requires `sku, stock`; optional `variant_id,
+        stock_baseline`. It never creates products or variants.
+
+        **Row identity**: `variant_id` wins (a non-empty `sku` that differs
+        from the stored one is `SKU_MISMATCH`, which catches SKUs mangled by a
+        spreadsheet app; a variant without SKU gets the row's `sku`
+        assigned). Otherwise `sku` is looked up in the store (`update`).
+        Unknown `sku`: with `product_id` it adds a variant (`create_variant`);
+        without, rows sharing the same `slug` (or slugified `title`) create one
+        new product (`create`), unless that slug already names a product of
+        this store (`create_variant`). Slugs and SKUs are unique per store, so
+        other stores' products never matter. A derived slug that another group
+        of the same file claims explicitly gets `-2`..`-20` (skipping slugs
+        this store already uses); an explicit slug used twice in the file, or a
+        slug change onto another product of this store, is `SLUG_TAKEN`;
+        assigning a SKU that another variant of this store already has is
+        `SKU_TAKEN`. A row with
+        empty `sku` and `variant_id` but a `product_id` updates only the
+        product-level columns (products without variants export this way);
+        variant columns on such a row are `NO_VARIANT`.
+
+        **Prices**: `price` is the product (listing) price only;
+        `variant_price` is what the cart charges for that variant. Editing
+        `price` alone leaves the variant prices unchanged, so listing and cart
+        disagree; edit `variant_price` on every row of the product as well
+        (bulk price `applyTo=both` does this in one call).
+
+        **Empty cells**: for `compare_at`, `low_stock_threshold`,
+        `description`, `category_slug`, `brand_slug` an empty cell clears the
+        value; for every other column it leaves the value unchanged (or uses
+        the default on create: status `published`, stock 0, variant price =
+        product price, attributes `{}`). `0` is a value, not empty. Rows of
+        the same product must carry identical product-level cells
+        (`CONFLICTING_PRODUCT_VALUES`); product-level changes are reported on
+        the product's first row.
+
+        **Stock and sales since the export**: with `stock_baseline` (as
+        exported), a stock cell equal to the baseline is treated as untouched
+        (no write, whatever the live stock is now); an edited cell is applied
+        only while the live stock still equals the baseline, otherwise the row
+        is `STALE_STOCK` (export again, or use bulk stock deltas). Without a
+        baseline, `type=stock` sets absolute counts, and `type=products`
+        refuses to change the stock of an existing variant
+        (`STOCK_BASELINE_REQUIRED`); stock always applies on create.
+
+        Re-importing an unchanged file reports every row `unchanged`, writes
+        nothing, emits no events and writes no audit row. A committed import
+        writes one `catalog.import.commit` audit row with per-row from/to (in
+        the same transaction); a rejected run (either mode) writes
+        `catalog.import.rejected`. Price, stock and status changes emit
+        `product.*` events after commit.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: type, in: query, required: true, schema: { type: string, enum: [products, stock] } }
+        - { name: dryRun, in: query, schema: { type: boolean, default: true } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Planned (dry run) or applied (dryRun=false); also a no-op commit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ImportResult' }
+        '400':
+          description: |
+            Bad type/dryRun, missing file, unreadable file (`UNSUPPORTED_FILE`,
+            `INVALID_ENCODING`, `EMPTY_FILE`, `INVALID_CSV` with `details.row`),
+            `TOO_MANY_ROWS`, or a header error (`details.header`). Nothing written.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '409': { $ref: '#/components/responses/CatalogConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422':
+          description: One or more rows rejected; nothing written. `error.details` is the ImportResult.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code: { type: string, enum: [VALIDATION_FAILED] }
+                      message: { type: string }
+                      details: { $ref: '#/components/schemas/ImportResult' }
   /api/v1/admin/products/{id}:
     get:
+      x-permission: catalog:read
       summary: Get product detail (admin)
       description: Accepts either a product UUID or a product slug.
       security:
@@ -2547,6 +3584,7 @@ paths:
         '404': { description: Product not found }
         '500': { description: Server error }
     patch:
+      x-permission: catalog:write
       summary: Update product (admin)
       description: |
         Partial update. Only keys present in the request body are changed;
@@ -2567,13 +3605,14 @@ paths:
               $ref: '#/components/schemas/AdminProductUpdateRequest'
       responses:
         '204': { description: Product updated }
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or brandId/categoryId unknown or owned by another tenant (BAD_REQUEST, 'unknown brand or category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Product not found }
-        '409': { description: Slug already exists }
+        '409': { description: "This tenant already has another product with this slug, or a variant with one of the given SKUs (CONFLICT). Slugs and SKUs are unique per tenant; another tenant's values never conflict." }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete product (admin)
       security:
         - bearerAuth: []
@@ -2592,6 +3631,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/products/{id}/stock:
     patch:
+      x-permission: inventory:write
       summary: Update product stock (admin)
       description: |
         Writes the primary variant stock, creating a variant when the product has
@@ -2636,6 +3676,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/categories:
     get:
+      x-permission: catalog:read
       summary: List categories (admin)
       security:
         - bearerAuth: []
@@ -2656,6 +3697,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create category (admin)
       security:
         - bearerAuth: []
@@ -2676,13 +3718,14 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
-        '409': { description: Slug already exists }
+        '409': { description: This tenant already has a category with this slug (CONFLICT); slugs are unique per tenant }
         '500': { description: Server error }
   /api/v1/admin/categories/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update category (admin)
       security:
         - bearerAuth: []
@@ -2708,13 +3751,14 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/AdminTaxonomy'
-        '400': { description: Invalid request }
+        '400': { description: "Invalid request, or parentId unknown or owned by another tenant (BAD_REQUEST, 'unknown parent category')" }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Category not found }
-        '409': { description: Slug already exists }
+        '409': { description: This tenant already has a category with this slug (CONFLICT); slugs are unique per tenant }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete category (admin)
       description: Child categories and products have their reference set to null.
       security:
@@ -2732,6 +3776,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/brands:
     get:
+      x-permission: catalog:read
       summary: List brands (admin)
       security:
         - bearerAuth: []
@@ -2752,6 +3797,7 @@ paths:
         '403': { description: Forbidden }
         '500': { description: Server error }
     post:
+      x-permission: catalog:write
       summary: Create brand (admin)
       security:
         - bearerAuth: []
@@ -2775,10 +3821,11 @@ paths:
         '400': { description: Invalid request }
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
-        '409': { description: Brand name or slug already exists }
+        '409': { description: This tenant already has a brand with this name or slug (CONFLICT); both are unique per tenant }
         '500': { description: Server error }
   /api/v1/admin/brands/{id}:
     patch:
+      x-permission: catalog:write
       summary: Update brand (admin)
       security:
         - bearerAuth: []
@@ -2808,9 +3855,10 @@ paths:
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '404': { description: Brand not found }
-        '409': { description: Brand name or slug already exists }
+        '409': { description: This tenant already has a brand with this name or slug (CONFLICT); both are unique per tenant }
         '500': { description: Server error }
     delete:
+      x-permission: catalog:write
       summary: Delete brand (admin)
       description: Products referencing the brand have their reference set to null.
       security:
@@ -2828,6 +3876,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders:
     get:
+      x-permission: orders:read
       summary: List orders (admin)
       description: Cross-user order list with customer, payment, and shipment summary fields.
       security:
@@ -2844,7 +3893,7 @@ paths:
           description: Order status filter. Omit or pass "all" for no filter.
           schema:
             type: string
-            enum: [all, PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED]
+            enum: [all, PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, EXPIRED]
         - name: search
           in: query
           description: Match on order number, customer name, or customer email
@@ -2874,17 +3923,59 @@ paths:
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '500': { description: Server error }
+  /api/v1/admin/orders/export:
+    get:
+      summary: Export orders as CSV (one row per order)
+      x-permission: [orders:read, customers:read]
+      description: |
+        Streams every order matching the list filters (no pagination), newest
+        first. Same CSV conventions as the products export (UTF-8 BOM, comma,
+        CRLF, formula-injection escaping of text cells, RFC3339 UTC). Dates are
+        UTC day boundaries exactly like `GET /admin/orders`: `startDate`
+        inclusive, `endDate` exclusive (`endDate=2026-03-03` ends at
+        2026-03-03T00:00:00Z). Columns, in order: `order_number, order_id,
+        status, payment_status, customer_name, customer_email, currency,
+        subtotal, discount, tax, shipping, total, voucher_code, items_count,
+        courier, tracking_number, created_at, updated_at`. The file contains
+        customer personal data (name, email).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, description: Order status enum, case-insensitive; ALL or empty for every status } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: startDate, in: query, schema: { type: string, description: 'RFC3339 timestamp or YYYY-MM-DD (UTC)' } }
+        - { name: endDate, in: query, schema: { type: string, description: 'RFC3339 timestamp or YYYY-MM-DD (UTC), exclusive' } }
+      responses:
+        '200':
+          description: CSV file
+          headers:
+            Content-Disposition:
+              schema: { type: string, example: 'attachment; filename="orders-20261025-101500.csv"' }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { description: Invalid status or date }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
   /api/v1/admin/orders/stats:
     get:
+      x-permission: orders:read
       summary: Order statistics (admin)
+      description: >-
+        Order counters for the tenant in [startDate, endDate). totalRevenue, revenueOrders and
+        averageOrderValue follow the revenue rule; totalOrders and the status counters count every
+        order. Note: a date-only startDate/endDate is UTC midnight here (unlike the
+        /admin/reports endpoints, which use tenant-local midnight), so pass RFC3339 bounds with the
+        tenant offset to get tenant-day totals. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
         - name: startDate
           in: query
+          description: Inclusive lower bound, RFC3339 or YYYY-MM-DD (UTC midnight)
           schema: { type: string }
         - name: endDate
           in: query
+          description: Exclusive upper bound, RFC3339 or YYYY-MM-DD (UTC midnight)
           schema: { type: string }
       responses:
         '200':
@@ -2903,6 +3994,7 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/orders/{id}:
     get:
+      x-permission: orders:read
       summary: Get order detail (admin)
       security:
         - bearerAuth: []
@@ -2927,8 +4019,48 @@ paths:
         '403': { description: Forbidden }
         '404': { description: Order not found }
         '500': { description: Server error }
+  /api/v1/admin/orders/{id}/invoice:
+    get:
+      x-permission: orders:read
+      summary: Download invoice PDF for an order (admin)
+      description: Same document and numbering as GET /api/v1/orders/{orderId}/invoice, for any order in the active tenant. Requires `orders:read`; audited.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Invoice PDF (attachment)
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="INV-YYYY-NNNNNN.pdf"'
+            Cache-Control:
+              schema: { type: string }
+              description: private, no-store
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid order id (BAD_REQUEST)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '404':
+          description: Order not in this tenant (NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Order not paid yet / cancelled and no invoice issued (INVOICE_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
   /api/v1/admin/vouchers/stats:
     get:
+      x-permission: promotions:read
       summary: Voucher statistics (admin)
       security:
         - bearerAuth: []
@@ -2953,8 +4085,12 @@ paths:
         '500': { description: Server error }
   /api/v1/admin/analytics/overview:
     get:
+      x-permission: analytics:read
       summary: Dashboard overview (admin)
-      description: Revenue, order, customer, and product counters plus top products by revenue.
+      description: >-
+        Revenue, order, customer, and product counters plus top products by revenue (item-level gross
+        of revenue-rule orders). totalRevenue, revenueOrders and averageOrderValue follow the revenue
+        rule. Tenant-scoped (tenant from X-Tenant-ID/subdomain; 400 TENANT_REQUIRED without one). Revenue rule: an order counts iff status is PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY or DELIVERED and it is not fully refunded; order-level revenue is net (pricing_total minus PENDING and SUCCEEDED refunds; FAILED refunds ignored). See docs/contracts/analytics.md.
       security:
         - bearerAuth: []
       parameters:
@@ -2979,6 +4115,170 @@ paths:
         '401': { description: Unauthorized }
         '403': { description: Forbidden }
         '500': { description: Server error }
+  /api/v1/admin/reports/sales-by-category:
+    get:
+      x-permission: analytics:read
+      summary: Sales by category (admin report)
+      description: >-
+        Item-level sales per category for the tenant in [from, to): units, distinct orders and gross item revenue (order_items.subtotal) of orders matching the revenue rule. Partially refunded orders keep their full item value; fully refunded orders are excluded, so totals can differ from order-level revenue. Products without a category are grouped as Uncategorized (categoryId null). Sorted by revenue desc.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"sales-by-category_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportSalesByCategory'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  Columns: category_id,category,category_slug,units_sold,orders,revenue,share. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/sales-by-product:
+    get:
+      x-permission: analytics:read
+      summary: Sales by product (admin report, paginated)
+      description: >-
+        Item-level sales per product for the tenant in [from, to), same rule and amount basis as sales-by-category, sorted by revenue desc. format=csv ignores page/limit and streams up to 100,000 rows.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - name: categoryId
+          in: query
+          description: Only products in this category (400 BAD_REQUEST if not a UUID)
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"sales-by-product_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination, range]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminReportProductRow'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  range:
+                    $ref: '#/components/schemas/AdminReportRange'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  Columns: product_id,title,slug,category_id,category,units_sold,orders,revenue. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/conversion:
+    get:
+      x-permission: analytics:read
+      summary: Checkout conversion funnel (admin report)
+      description: >-
+        Carts created -> checkouts started (orders created) -> paid orders for the tenant in [from, to). checkoutsStarted = paidOrders + pendingOrders + cancelledOrders + refundedOrders. Rates are 4-decimal fractions, 0 when the denominator is 0, and can exceed 1 (a cart can be checked out several times). Approximation: anonymous carts that never reach checkout are included.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"conversion_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportConversion'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  One data row. Columns: from,to,timezone,carts_created,checkouts_started,paid_orders,pending_orders,cancelled_orders,refunded_orders,paid_revenue,refunded_amount,checkout_rate,payment_rate,conversion_rate. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
+        '500': { description: INTERNAL }
+  /api/v1/admin/reports/customers:
+    get:
+      x-permission: analytics:read
+      summary: New vs returning customers (admin report)
+      description: >-
+        Customers (signed-in users with at least one revenue-rule order in [from, to)) split into new (first revenue-rule order at this tenant is at or after from) and returning; each user counted once. revenueFromNew + revenueFromReturning + guestRevenue equals the range's net revenue. daily is per tenant-local day over customer orders only; daily rows do not sum to the summary.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportFormat'
+      responses:
+        '200':
+          description: Report (JSON), or a CSV attachment when format=csv
+          headers:
+            Content-Disposition:
+              description: "Only for format=csv: attachment; filename=\"customers_<from>_<to>.csv\" (tenant-local dates)"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AdminReportCustomers'
+            text/csv:
+              schema:
+                type: string
+                description: >-
+                  The daily series only. Columns: day,new_customers,returning_customers,orders,revenue. UTF-8 with BOM, RFC 4180 quoting; text cells starting with = + - @ TAB or CR
+                  are prefixed with a single quote.
+        '400': { description: "BAD_REQUEST (invalid from/to/format/categoryId, from >= to, range > 366 days) or TENANT_REQUIRED" }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden (not staff or missing the x-permission) }
+        '500': { description: INTERNAL }
   /api/v1/tenant:
     get:
       summary: Get the current tenant context
@@ -3009,6 +4309,7 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -3016,7 +4317,13 @@ paths:
             schema: { $ref: '#/components/schemas/ReturnRequest' }
       responses:
         '201': { description: Return request created }
-        '409': { description: Order is not eligible or has an active return }
+        '409':
+          description: >
+            `RETURN_NOT_ALLOWED` (order is not eligible), `RETURN_EXISTS` (an active return
+            already exists) or `IDEMPOTENT_REPLAY` (same `Idempotency-Key` within the TTL).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/returns:
     get:
       summary: List the current customer's returns
@@ -3028,7 +4335,15 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
-      responses: { '200': { description: Return request detail } }
+      responses:
+        '200':
+          description: Return request detail, including its refund (null when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ReturnDetail' }
   /api/v1/support/tickets:
     get:
       summary: List customer support tickets
@@ -3073,17 +4388,51 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/customers:
     get:
+      x-permission: customers:read
       summary: List customers for the current tenant
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Customer list } }
   /api/v1/admin/inventory:
     get:
+      x-permission: inventory:read
       summary: List variant inventory
+      description: |
+        Every variant of the tenant with its stock status against the effective
+        low-stock threshold (product `lowStockThreshold`, else the tenant
+        default `settings.inventory.lowStockThreshold`, else 5): `out` at 0,
+        `low` at 1..threshold, `in` above. A threshold of 0 never reports `low`.
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Inventory list } }
+      parameters:
+        - { name: stockStatus, in: query, schema: { type: string, enum: [in, low, out] } }
+        - { name: lowStock, in: query, description: 'true is an alias for stockStatus=low', schema: { type: boolean } }
+      responses:
+        '200':
+          description: Inventory list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [variantId, productId, sku, productTitle, price, stock, stockStatus, lowStockThreshold]
+                      properties:
+                        variantId: { type: string, format: uuid }
+                        productId: { type: string, format: uuid }
+                        sku: { type: [string, "null"] }
+                        productTitle: { type: string }
+                        price: { type: integer }
+                        stock: { type: integer }
+                        stockStatus: { type: string, enum: [in, low, out] }
+                        lowStockThreshold: { type: integer, description: Effective threshold for this variant's product }
+        '400': { description: Invalid stockStatus or lowStock }
   /api/v1/admin/inventory/{variantId}:
     patch:
+      x-permission: inventory:write
       summary: Set or adjust variant stock
+      description: Emits `product.stock_changed` (source `single`) when the stock changes.
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: variantId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -3099,11 +4448,23 @@ paths:
       responses: { '200': { description: Inventory updated } }
   /api/v1/admin/returns:
     get:
+      x-permission: returns:read
       summary: List tenant return requests
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Return requests } }
+      responses:
+        '200':
+          description: Return requests, each with its refund (null when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminReturn' }
   /api/v1/admin/returns/{returnId}:
     patch:
+      x-permission: returns:write
       summary: Update return workflow status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3113,21 +4474,110 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/StatusRequest' }
-      responses: { '200': { description: Return status updated } }
+      description: >
+        `status` must be one of `APPROVED`, `REJECTED`, `RECEIVED`, `CANCELLED`. Refused while
+        the return has a refund that is in flight, has an unknown gateway outcome, or was accepted
+        by the gateway but not yet recorded, and once the return is `REFUNDED`.
+      responses:
+        '200': { description: Return status updated }
+        '400': { description: Invalid return id, payload or status }
+        '404': { description: Return not found in this tenant }
+        '409':
+          description: >
+            `RETURN_REFUND_PENDING`: the return has an unsettled refund; retry the refund first
+            (details `{refundId, refundStatus}`). `REFUND_ALREADY_ISSUED`: the return is
+            `REFUNDED`; its status can no longer change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/returns/{returnId}/refund:
     post:
-      summary: Issue a provider-backed refund for a return
+      x-permission: refunds:write
+      summary: Issue (or complete) a provider-backed refund for a return
+      description: >
+        Refunds `amount` (default: the whole remaining refundable amount of the order's payment)
+        through the payment's gateway (Midtrans or Xendit). One refund per return; an order with
+        several returns over time can be refunded in parts (partial refunds), and the payment
+        becomes `PARTIALLY_REFUNDED` until the paid amount is fully refunded (`REFUNDED`).
+        Safe to retry: every attempt uses a stable gateway key, an unknown gateway outcome is
+        checked with the gateway before the same key is sent again, and a refund the gateway
+        accepted but that could not be recorded (500 `REFUND_RECORD_FAILED`) is completed by
+        retrying the same request without calling the gateway again.
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: returnId, in: path, required: true, schema: { type: string, format: uuid } }
-      responses: { '200': { description: Refund issued } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundRequest' }
+      responses:
+        '200':
+          description: Refund accepted by the gateway and recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/RefundResponse' }
+        '400':
+          description: '`BAD_REQUEST`: invalid return id, malformed body, `amount <= 0`, or `reason` longer than 500 characters.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: '`NOT_FOUND`: return not found in this tenant.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: >
+            `REFUND_NOT_ALLOWED` (return is not `APPROVED`/`RECEIVED`);
+            `REFUND_ALREADY_ISSUED` (this return already has a recorded refund);
+            `PAYMENT_NOT_REFUNDABLE` (no `PAID`/`PARTIALLY_REFUNDED` payment for the order);
+            `REFUND_EXCEEDS_REFUNDABLE` (`amount` larger than what is left, or nothing left; details `{requested, refundable}`);
+            `REFUND_IN_PROGRESS` (another request for this return is calling the gateway, retry in about 60 s;
+            or the previous attempt has an unknown outcome and the body `amount` differs from it: details
+            `{refundId, pendingAmount}`, retry with that amount or without a body; or, with message
+            "refund state requires reconciliation by an operator" and details `{refundId}`, the refunds
+            row is in a state the API cannot resolve on its own (e.g. the payment provider changed
+            since the unknown-outcome attempt, or no payment exists for an accepted refund): retrying
+            does not help, an operator must reconcile it with the gateway);
+            `REFUND_UNSUPPORTED` (the payment provider has no refund support);
+            `IDEMPOTENT_REPLAY` (same `Idempotency-Key` within the TTL after a 2xx/4xx response).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500':
+          description: >
+            `REFUND_RECORD_FAILED`: the gateway accepted the refund but local records could not be
+            finalised. Details `{refundId, providerRef}`. Retry the same request (same or new
+            `Idempotency-Key`; a 5xx releases the key) to complete it; the gateway is not called again.
+            `INTERNAL`: nothing was sent to the gateway.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '502':
+          description: >
+            `REFUND_FAILED`: the gateway rejected the refund or did not answer; `message` carries the
+            gateway error. Details `{refundId, retryable}`. `retryable: false` means the gateway
+            definitively rejected it (e.g. Midtrans `412`, Xendit `INSUFFICIENT_BALANCE`): fix the cause,
+            then retry (a new gateway key is used). `retryable: true` means the outcome is unknown
+            (timeout, 5xx, duplicate/in-progress answer): retry as is; the same gateway key is checked and
+            re-sent, so money cannot move twice. No money moved unless a later retry reports success.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/admin/support/tickets:
     get:
+      x-permission: support:read
       summary: List tenant support tickets
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Support tickets } }
   /api/v1/admin/support/tickets/{ticketId}:
     patch:
+      x-permission: support:write
       summary: Update support ticket status
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3140,6 +4590,7 @@ paths:
       responses: { '200': { description: Ticket status updated } }
   /api/v1/admin/support/tickets/{ticketId}/messages:
     get:
+      x-permission: support:read
       summary: List messages for a tenant support ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3156,6 +4607,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/SupportMessage' }
     post:
+      x-permission: support:write
       summary: Add an agent message to a ticket
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3168,11 +4620,21 @@ paths:
       responses: { '201': { description: Message created } }
   /api/v1/admin/settings:
     get:
+      x-permission: settings:read
       summary: Read tenant store configuration
+      description: |
+        Free-form per-key settings. Key `inventory` holds
+        `{"lowStockThreshold": n}`, the tenant default low-stock threshold
+        (absent means 5).
       security: [{ bearerAuth: [] }]
       responses: { '200': { description: Store configuration } }
     patch:
+      x-permission: settings:write
       summary: Update tenant store configuration
+      description: |
+        Upserts each top-level key. `inventory.lowStockThreshold` must be an
+        integer 0..1000000 (0 disables "low"); anything else is 400.
+        Example: `{"inventory": {"lowStockThreshold": 10}}`.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -3182,6 +4644,7 @@ paths:
       responses: { '200': { description: Store configuration updated } }
   /api/v1/admin/onboarding:
     post:
+      x-permission: settings:write
       summary: Complete tenant onboarding
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -3189,14 +4652,447 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: true }
       responses: { '200': { description: Tenant onboarding saved } }
+  /api/v1/admin/roles:
+    get:
+      x-permission: staff:read
+      summary: List staff roles and their permissions
+      description: >
+        The seven staff roles in rank order (owner first) with the permissions
+        each grants. `owner` can only be granted by an owner; every other role
+        can be granted by any holder of `staff:manage`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Role matrix
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RoleDefinition' }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /api/v1/admin/staff:
+    get:
+      x-permission: staff:read
+      summary: List staff of the current tenant
+      description: >
+        Memberships of the current tenant whose role is not `customer`, ordered
+        by role rank (owner, admin, manager, then the rest) and then email.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 }, description: Values above 100 are clamped to 100 }
+      responses:
+        '200':
+          description: Staff page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/StaffMember' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { description: Missing tenant (`MISSING_TENANT`) }
+        '401': { description: Unauthorized }
+        '403':
+          description: Missing permission (`FORBIDDEN`, `details.required`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    post:
+      x-permission: staff:manage
+      summary: Grant a staff role to an existing member
+      description: >
+        Looks the user up by email (case-insensitive) among the members of the
+        current tenant only: a person must first have an account on this
+        tenant's storefront. An unknown email and a user who is not a member of
+        this tenant both return `404 USER_NOT_FOUND`. A SUSPENDED membership is
+        reactivated. Runs in a transaction serialized per tenant; the actor's
+        role is re-read inside it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffAssignRequest' }
+      responses:
+        '201':
+          description: Role granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid payload, missing email, unknown role or role `customer` (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`, `details.required = "staff:manage"`),
+            `OWNER_REQUIRED` (role `owner` requested by a non-owner) or
+            `TENANT_FORBIDDEN` (actor's membership is no longer ACTIVE)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No member of this tenant has that email (`USER_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The user is already staff; use PATCH (`STAFF_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+  /api/v1/admin/staff/{userId}:
+    patch:
+      x-permission: staff:manage
+      summary: Change a staff member's role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffRoleUpdateRequest' }
+      responses:
+        '200':
+          description: Role changed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          description: Invalid user id, unknown role or role `customer` (use DELETE) (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: >
+            `FORBIDDEN` (no `staff:manage`), `OWNER_REQUIRED` (target is an owner
+            or the new role is `owner`, and the actor is not an owner) or
+            `TENANT_FORBIDDEN`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
+    delete:
+      x-permission: staff:manage
+      summary: Revoke a staff role
+      description: Sets the membership role back to `customer`; the membership itself is kept.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Role revoked }
+        '400':
+          description: Invalid user id (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { description: Unauthorized }
+        '403':
+          description: "`FORBIDDEN`, `OWNER_REQUIRED` or `TENANT_FORBIDDEN` (see PATCH)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: No staff membership for that user in this tenant (`STAFF_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: The target is the only ACTIVE owner (`LAST_OWNER`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { description: Server error }
 
 components:
+  parameters:
+    ReportFrom:
+      name: from
+      in: query
+      description: >-
+        Inclusive start. RFC3339 is used as-is; YYYY-MM-DD is midnight in the tenant timezone.
+        Default: 30 days before `to`.
+      schema: { type: string }
+      example: '2026-10-01'
+    ReportTo:
+      name: to
+      in: query
+      description: >-
+        Exclusive end. RFC3339 is used as-is; YYYY-MM-DD is midnight in the tenant timezone.
+        Default: the next tenant-local midnight. Must be after `from`; at most 366 days after it.
+      schema: { type: string }
+      example: '2026-11-01'
+    ReportFormat:
+      name: format
+      in: query
+      schema: { type: string, enum: [json, csv], default: json }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: >
+        Optional client-generated key (e.g. a UUID) that makes a write safe to resend. Without
+        the header the request is processed normally. Within `IDEMPOTENCY_TTL_SEC` (default 600 s)
+        a request repeating a key gets `409 IDEMPOTENT_REPLAY` without being processed, **except**
+        that a 5xx response releases the key immediately, so the same key may be reused to retry a
+        failed request (a handler panic, which ends as a 500, also releases it). Keys are global (not scoped per user or route): generate a fresh one per
+        logical operation.
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  responses:
+    BulkBadRequest:
+      description: Malformed JSON, unknown field, empty items, or more than 500 items (`TOO_MANY_ROWS`). Nothing written.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    BulkValidationFailed:
+      description: One or more items are invalid or not found in this store; nothing was changed.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code: { type: string, enum: [VALIDATION_FAILED] }
+                  message: { type: string }
+                  details:
+                    type: object
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: '#/components/schemas/BulkRowError' }
+    CatalogConflict:
+      description: A concurrent change held a row lock longer than 5 s, a deadlock was detected, or a unique slug/SKU was taken concurrently. Nothing was changed; retry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    PayloadTooLarge:
+      description: |
+        Request body over the limit; code PAYLOAD_TOO_LARGE in the standard
+        JSON error envelope. Every route is capped by the global
+        `SECURITY_BODY_LIMIT_BYTES` (1 MiB by default), which bulk endpoints
+        also enforce themselves (1 MiB); the CSV import is exempt from the
+        global cap and allows a 5 MiB file.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
   schemas:
+    AlertSubscribeRequest:
+      type: object
+      required: [productId, type]
+      properties:
+        productId: { type: string, format: uuid }
+        variantId: { type: [string, 'null'], format: uuid, description: Omit or null for a product-level subscription }
+        type: { type: string, enum: [BACK_IN_STOCK, PRICE_DROP], description: Case-insensitive on input }
+    AlertSubscription:
+      type: object
+      required: [id, productId, variantId, type, priceAtSubscribe, status, notifiedAt, createdAt, product]
+      properties:
+        id: { type: string, format: uuid }
+        productId: { type: string, format: uuid }
+        variantId: { type: [string, 'null'], format: uuid }
+        type: { type: string, enum: [BACK_IN_STOCK, PRICE_DROP] }
+        priceAtSubscribe: { type: [integer, 'null'], format: int64, description: 'Whole currency units; null for BACK_IN_STOCK' }
+        status: { type: string, enum: [active, notified] }
+        notifiedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        product:
+          type: object
+          required: [title, slug, thumbnail, price, inStock]
+          properties:
+            title: { type: string }
+            slug: { type: string }
+            thumbnail: { type: [string, 'null'] }
+            price: { type: integer, format: int64 }
+            inStock: { type: boolean }
+        variant:
+          type: object
+          description: Omitted when variantId is null
+          required: [id, sku, price, stock]
+          properties:
+            id: { type: string, format: uuid }
+            sku: { type: [string, 'null'] }
+            price: { type: integer, format: int64 }
+            stock: { type: integer }
+    AlertSubscriptionResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AlertSubscription' }
+    AlertListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AlertSubscription' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    BulkRowError:
+      type: object
+      required: [index, field, code, message]
+      properties:
+        index: { type: integer, description: Zero-based position in items }
+        field: { type: string }
+        code:
+          type: string
+          enum: [MISSING, AMBIGUOUS, INVALID_UUID, NEGATIVE, NOT_FOUND, DUPLICATE, INVALID_STATUS, INVALID_APPLY_TO, NEGATIVE_RESULT, OUT_OF_RANGE, NOT_ALLOWED]
+        message: { type: string }
+    BulkPriceItem:
+      oneOf:
+        - type: object
+          required: [productId, price]
+          additionalProperties: false
+          properties:
+            productId: { type: string, format: uuid }
+            price: { type: integer, minimum: 0 }
+            compareAt: { type: [integer, "null"], minimum: 0, description: 'Omit to keep, null to clear; not allowed with applyTo=variants' }
+            applyTo: { type: string, enum: [both, product, variants], default: both }
+        - type: object
+          required: [variantId, price]
+          additionalProperties: false
+          properties:
+            variantId: { type: string, format: uuid }
+            price: { type: integer, minimum: 0 }
+    BulkPriceRequest:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/BulkPriceItem' }
+    BulkStockRequest:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            oneOf:
+              - type: object
+                required: [variantId, stock]
+                additionalProperties: false
+                properties:
+                  variantId: { type: string, format: uuid }
+                  stock: { type: integer, minimum: 0 }
+              - type: object
+                required: [variantId, delta]
+                additionalProperties: false
+                properties:
+                  variantId: { type: string, format: uuid }
+                  delta: { type: integer }
+    BulkStatusRequest:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [productId, status]
+            additionalProperties: false
+            properties:
+              productId: { type: string, format: uuid }
+              status: { type: string, enum: [draft, published, archived] }
+    ImportRow:
+      type: object
+      required: [row, sku, action, changes, errors]
+      properties:
+        row: { type: integer, description: Spreadsheet row (header is row 1) }
+        sku: { type: string }
+        variantId: { type: string, format: uuid }
+        productId: { type: string, format: uuid }
+        slug: { type: string, description: Product slug; for create rows the slug that will be (or was) used }
+        action: { type: string, enum: [create, create_variant, update, unchanged, reject] }
+        changes:
+          type: object
+          description: 'field -> {from, to}; fields: title, slug, status, price, compare_at, low_stock_threshold, category_slug, brand_slug, description, sku, variant_price, stock, attributes'
+          additionalProperties:
+            type: object
+            properties:
+              from: {}
+              to: {}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, code, message]
+            properties:
+              field: { type: string }
+              code:
+                type: string
+                enum: [MISSING, INVALID_ROW, INVALID_NUMBER, INVALID_UUID, NEGATIVE, OUT_OF_RANGE, INVALID_STATUS, INVALID_JSON, INVALID_SLUG, DUPLICATE_SKU, DUPLICATE_VARIANT, SKU_TAKEN, SKU_MISMATCH, PRODUCT_MISMATCH, SLUG_TAKEN, UNKNOWN_SKU, UNKNOWN_VARIANT, UNKNOWN_PRODUCT, MISSING_FOR_CREATE, UNKNOWN_CATEGORY, UNKNOWN_BRAND, CONFLICTING_PRODUCT_VALUES, NO_VARIANT, STALE_STOCK, STOCK_BASELINE_REQUIRED]
+              message: { type: string }
+    ImportResult:
+      type: object
+      required: [dryRun, type, summary, rows]
+      properties:
+        dryRun: { type: boolean }
+        type: { type: string, enum: [products, stock] }
+        summary:
+          type: object
+          required: [total, create, createVariant, update, unchanged, rejected]
+          properties:
+            total: { type: integer }
+            create: { type: integer, description: Rows creating a new product (several rows may create one product) }
+            createVariant: { type: integer }
+            update: { type: integer }
+            unchanged: { type: integer }
+            rejected: { type: integer }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ImportRow' }
     ReturnRequest:
       type: object
       required: [reason]
@@ -3215,7 +5111,9 @@ components:
         items missing from the list are removed. At least one item is required (`items: []` is
         rejected). `salePrice` must be lower than the product's current price. An item with
         sales (`soldCount > 0`) cannot be removed (409) or moved to another product (400), and its
-        `stockLimit` cannot drop below `soldCount`. Removing an item without sales also discards
+        `stockLimit` cannot drop below `soldCount`. `stockLimit` is tri-state: `null` means
+        unlimited; for an entry with `id`, an absent key keeps the item's current limit; for a new
+        entry, absent means unlimited. `0` is rejected with 400. Removing an item without sales also discards
         its released reservation history (`RELEASED` order rows).
       properties:
         name: { type: string, minLength: 1 }
@@ -3233,7 +5131,7 @@ components:
               id: { type: string, format: uuid, description: 'Existing item id; omit to add a new item' }
               productId: { type: string, format: uuid }
               salePrice: { type: integer, minimum: 0, description: Must be lower than the product price }
-              stockLimit: { type: [integer, 'null'], minimum: 1, description: 'null or absent means unlimited' }
+              stockLimit: { type: [integer, 'null'], minimum: 1, description: "`null` = unlimited; for an entry with `id`, an absent key keeps the item's current limit; for a new entry absent = unlimited; integer must be >= 1 and >= `soldCount`; `0` is rejected with 400" }
     FlashSaleItem:
       type: object
       required: [id, productId, title, slug, originalPrice, salePrice, discountBps, stock, soldCount]
@@ -3269,6 +5167,92 @@ components:
       required: [status]
       properties:
         status: { type: string }
+    RefundRequest:
+      type: object
+      description: Optional body; omit it (or send `{}`) to refund the whole remaining amount.
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: >
+            Amount to refund in IDR (same unit as order totals). Defaults to the remaining
+            refundable amount; must be `<= refundableAmount`. When retrying an attempt whose
+            outcome is unknown, it must equal the pending amount (or be omitted).
+        reason:
+          type: string
+          maxLength: 500
+          description: >
+            Free-text note, default `customer return`. Sent to the gateway (Midtrans `reason`,
+            Xendit `metadata.note`). Ignored when retrying an attempt whose outcome is unknown
+            (the original request is re-sent unchanged).
+    RefundResponse:
+      type: object
+      required: [id, returnId, orderId, provider, providerRef, amount, status, refundedAmount, refundableAmount, paymentStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        returnId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        provider: { type: string, example: xendit }
+        providerRef: { type: string, description: Gateway refund reference (Xendit refund id, Midtrans refund key). }
+        amount: { type: integer, description: Amount of this refund. }
+        status:
+          type: string
+          enum: [SUCCEEDED, PENDING]
+          description: '`PENDING` = accepted by the gateway, settles asynchronously (money is committed; local records are final).'
+        refundedAmount: { type: integer, description: Cumulative refunded amount of the order's payment. }
+        refundableAmount: { type: integer, description: What can still be refunded after this refund. }
+        paymentStatus: { type: string, enum: [PARTIALLY_REFUNDED, REFUNDED] }
+        createdAt: { type: string, format: date-time }
+    ReturnRefundSummary:
+      type: object
+      description: >
+        The return's refund. Only `settled: true` means local records were finalised (money moved);
+        `amount` may be less than the order total (partial refund).
+      required: [id, status, amount, providerRef, settled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, SUCCEEDED, FAILED]
+          description: >
+            `PENDING` with `settled: false`: gateway call in flight or outcome unknown (retry the refund).
+            `FAILED`: the gateway rejected the last attempt (a retry uses a new gateway key).
+        amount: { type: integer }
+        providerRef: { type: string, description: Empty until the gateway accepted the refund. }
+        settled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        providerStatus:
+          type: [string, 'null']
+          description: Admin endpoints only. `UNKNOWN` when the last gateway call had no definite outcome; otherwise the gateway status or rejection code.
+        attempt:
+          type: integer
+          description: Admin endpoints only. Number of gateway keys used before the current one (starts at 0).
+    ReturnDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        status: { type: string, enum: [REQUESTED, APPROVED, REJECTED, RECEIVED, REFUNDED, CANCELLED] }
+        reason: { type: string }
+        notes: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        refund:
+          description: Null when the return has no refund. Customer view (no `providerStatus`/`attempt`).
+          oneOf:
+            - $ref: '#/components/schemas/ReturnRefundSummary'
+            - type: 'null'
+    AdminReturn:
+      allOf:
+        - $ref: '#/components/schemas/ReturnDetail'
+        - type: object
+          properties:
+            userId: { type: string, format: uuid }
+            refund:
+              description: Null when the return has no refund. Includes `providerStatus` and `attempt`.
+              oneOf:
+                - $ref: '#/components/schemas/ReturnRefundSummary'
+                - type: 'null'
     SupportTicketRequest:
       type: object
       required: [subject, message]
@@ -3313,6 +5297,9 @@ components:
         brandName: { type: [string, "null"] }
         variantCount: { type: integer }
         sku: { type: [string, "null"], description: Primary variant SKU }
+        status: { type: string, enum: [draft, published, archived], description: Only published products are visible and purchasable on the storefront }
+        stockStatus: { type: string, enum: [in, low, out], description: 'Summed variant stock vs the effective threshold; products without variants follow inStock' }
+        lowStockThreshold: { type: [integer, "null"], description: Product override; null means the tenant default }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AdminProductDetail:
@@ -3366,6 +5353,8 @@ components:
       properties:
         title: { type: string }
         slug: { type: string, description: Derived from title when omitted }
+        status: { type: string, enum: [draft, published, archived], default: published }
+        lowStockThreshold: { type: [integer, "null"], minimum: 0, maximum: 1000000 }
         price: { type: integer, minimum: 0 }
         compareAt: { type: [integer, "null"] }
         inStock: { type: boolean, default: true }
@@ -3392,10 +5381,13 @@ components:
       description: |
         All properties are optional. Absent keys are left unchanged; an explicit
         null clears the corresponding nullable column. Supplying images or specs
-        replaces the whole collection.
+        replaces the whole collection. Price and status changes emit
+        product.price_changed / product.status_changed (source `single`).
       properties:
         title: { type: string }
         slug: { type: string }
+        status: { type: string, enum: [draft, published, archived] }
+        lowStockThreshold: { type: [integer, "null"], minimum: 0, maximum: 1000000, description: null clears the override }
         price: { type: integer, minimum: 0 }
         compareAt: { type: [integer, "null"] }
         inStock: { type: boolean }
@@ -3445,7 +5437,8 @@ components:
         customerEmail: { type: [string, "null"] }
         status:
           type: string
-          enum: [PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED]
+          enum: [PENDING_PAYMENT, PAID, PACKED, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, EXPIRED]
+          description: EXPIRED is a system-only terminal status (payment deadline passed); an EXPIRED order with paymentStatus PAID received a late payment that needs a manual refund.
         paymentStatus: { type: string, description: "Latest payment status; empty string when no payment row exists" }
         currency: { type: string }
         total: { type: integer }
@@ -3484,16 +5477,18 @@ components:
                   subtotal: { type: integer }
     AdminOrderStats:
       type: object
-      required: [totalOrders, totalRevenue, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, averageOrderValue]
+      required: [totalOrders, totalRevenue, revenueOrders, pendingOrders, paidOrders, shippedOrders, deliveredOrders, cancelledOrders, expiredOrders, averageOrderValue]
       properties:
-        totalOrders: { type: integer }
-        totalRevenue: { type: integer, description: Excludes cancelled orders }
+        totalOrders: { type: integer, description: "All orders in range, any status" }
+        totalRevenue: { type: integer, description: Net revenue (IDR) of orders matching the revenue rule }
+        revenueOrders: { type: integer, description: Orders matching the revenue rule }
         pendingOrders: { type: integer }
         paidOrders: { type: integer }
         shippedOrders: { type: integer }
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
-        averageOrderValue: { type: integer }
+        expiredOrders: { type: integer, description: Orders in EXPIRED (payment deadline passed) }
+        averageOrderValue: { type: integer, description: "totalRevenue / revenueOrders (rounded), 0 when none" }
     AdminVoucher:
       type: object
       required: [id, code, kind, value, minSpend, usedCount, combinable, priority, productIds, categoryIds, brandIds, createdAt, updatedAt]
@@ -3526,19 +5521,23 @@ components:
         updatedAt: { type: string, format: date-time }
     AdminAnalyticsOverview:
       type: object
-      required: [range, totalRevenue, totalOrders, totalCustomers, totalProducts, averageOrderValue, topProducts]
+      required: [range, totalRevenue, revenueOrders, totalOrders, totalCustomers, totalProducts, averageOrderValue, topProducts]
       properties:
         range: { type: string, enum: [7d, 30d, 90d, all] }
-        totalRevenue: { type: integer }
-        totalOrders: { type: integer }
+        totalRevenue: { type: integer, description: Net revenue (IDR) of orders matching the revenue rule }
+        revenueOrders: { type: integer, description: Orders matching the revenue rule }
+        totalOrders: { type: integer, description: "All orders in range, any status" }
         totalCustomers: { type: integer }
         totalProducts: { type: integer }
-        averageOrderValue: { type: integer }
+        averageOrderValue: { type: integer, description: "totalRevenue / revenueOrders (rounded), 0 when none" }
         pendingOrders: { type: integer }
         paidOrders: { type: integer }
         shippedOrders: { type: integer }
         deliveredOrders: { type: integer }
         cancelledOrders: { type: integer }
+        expiredOrders: { type: integer, description: Orders in EXPIRED (payment deadline passed) }
+        lowStockProducts: { type: integer, description: Products whose stockStatus is low }
+        outOfStockProducts: { type: integer, description: Products whose stockStatus is out }
         topProducts:
           type: array
           items:
@@ -3550,6 +5549,92 @@ components:
               slug: { type: string }
               unitsSold: { type: integer }
               revenue: { type: integer }
+    AdminReportRange:
+      type: object
+      required: [from, to, timezone]
+      properties:
+        from: { type: string, format: date-time, description: "Resolved start, RFC3339 with the tenant offset" }
+        to: { type: string, format: date-time, description: "Resolved exclusive end, RFC3339 with the tenant offset" }
+        timezone: { type: string, description: IANA timezone used (UTC when the tenant value is empty or invalid) }
+    AdminReportCategoryRow:
+      type: object
+      required: [categoryId, categoryName, categorySlug, unitsSold, orders, revenue, share]
+      properties:
+        categoryId: { type: [string, "null"], format: uuid, description: null for Uncategorized }
+        categoryName: { type: string }
+        categorySlug: { type: [string, "null"] }
+        unitsSold: { type: integer }
+        orders: { type: integer, description: Distinct orders containing the category }
+        revenue: { type: integer, description: Gross item revenue (IDR) }
+        share: { type: number, description: "revenue / totalRevenue, 4 decimals" }
+    AdminReportSalesByCategory:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [totalRevenue, totalUnits, rows]
+          properties:
+            totalRevenue: { type: integer }
+            totalUnits: { type: integer }
+            rows:
+              type: array
+              items: { $ref: '#/components/schemas/AdminReportCategoryRow' }
+    AdminReportProductRow:
+      type: object
+      required: [productId, title, slug, categoryId, categoryName, unitsSold, orders, revenue]
+      properties:
+        productId: { type: [string, "null"], format: uuid }
+        title: { type: string, description: Title as recorded on the order items }
+        slug: { type: string }
+        categoryId: { type: [string, "null"], format: uuid }
+        categoryName: { type: string, description: Uncategorized when the product has no category }
+        unitsSold: { type: integer }
+        orders: { type: integer }
+        revenue: { type: integer, description: Gross item revenue (IDR) }
+    AdminReportConversion:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [cartsCreated, checkoutsStarted, paidOrders, pendingOrders, cancelledOrders, refundedOrders, paidRevenue, refundedAmount, checkoutRate, paymentRate, conversionRate]
+          properties:
+            cartsCreated: { type: integer, description: Carts (incl. anonymous) created in range }
+            checkoutsStarted: { type: integer, description: Orders created in range (one per checkout) }
+            paidOrders: { type: integer, description: Orders matching the revenue rule (includes partially refunded) }
+            pendingOrders: { type: integer, description: PENDING_PAYMENT }
+            cancelledOrders: { type: integer, description: CANCELLED }
+            refundedOrders: { type: integer, description: Revenue-status orders fully refunded (PENDING+SUCCEEDED refunds >= total) }
+            paidRevenue: { type: integer, description: Net revenue (IDR) of paidOrders }
+            refundedAmount: { type: integer, description: PENDING+SUCCEEDED refunds recorded against orders created in range }
+            checkoutRate: { type: number, description: checkoutsStarted / cartsCreated }
+            paymentRate: { type: number, description: paidOrders / checkoutsStarted }
+            conversionRate: { type: number, description: paidOrders / cartsCreated }
+    AdminReportCustomersDay:
+      type: object
+      required: [day, newCustomers, returningCustomers, orders, revenue]
+      properties:
+        day: { type: string, format: date, description: Tenant-local date }
+        newCustomers: { type: integer, description: Users whose first revenue-rule order at this tenant is on this day }
+        returningCustomers: { type: integer, description: Users ordering this day whose first order was on an earlier day }
+        orders: { type: integer, description: Customer (non-guest) revenue-rule orders }
+        revenue: { type: integer, description: Net revenue (IDR) of those orders }
+    AdminReportCustomers:
+      allOf:
+        - $ref: '#/components/schemas/AdminReportRange'
+        - type: object
+          required: [newCustomers, returningCustomers, totalCustomers, repeatRate, ordersFromNew, ordersFromReturning, revenueFromNew, revenueFromReturning, guestOrders, guestRevenue, daily]
+          properties:
+            newCustomers: { type: integer }
+            returningCustomers: { type: integer }
+            totalCustomers: { type: integer }
+            repeatRate: { type: number, description: "returningCustomers / totalCustomers, 4 decimals" }
+            ordersFromNew: { type: integer }
+            ordersFromReturning: { type: integer }
+            revenueFromNew: { type: integer }
+            revenueFromReturning: { type: integer }
+            guestOrders: { type: integer }
+            guestRevenue: { type: integer }
+            daily:
+              type: array
+              items: { $ref: '#/components/schemas/AdminReportCustomersDay' }
     CheckoutRequest:
       type: object
       required:
@@ -3666,8 +5751,12 @@ components:
             - PAID
             - FAILED
             - EXPIRED
+            - PARTIALLY_REFUNDED
             - REFUNDED
-          description: Consolidated payment status (uppercase)
+          description: >
+            Consolidated payment status (uppercase). `PARTIALLY_REFUNDED`: part of the paid amount
+            was refunded; `REFUNDED`: all of it. Only the admin refund flow sets these; refund
+            webhooks are recorded as payment events and do not change the status.
     AnalyticsSalesDay:
       type: object
       required:
@@ -3679,16 +5768,17 @@ components:
         day:
           type: string
           format: date-time
-          description: Aggregation day
+          description: Tenant-local midnight of the aggregation day, with the tenant offset (e.g. 2026-10-01T00:00:00+07:00)
+          example: '2026-10-01T00:00:00+07:00'
         paid_orders:
           type: integer
-          description: Paid orders in the period
+          description: Orders matching the revenue rule (PAID through DELIVERED, not fully refunded)
         all_orders:
           type: integer
-          description: Total orders in the period
+          description: Total orders in the period (any status)
         revenue:
           type: integer
-          description: Gross revenue from paid orders in IDR
+          description: Net revenue in IDR (pricing_total minus PENDING/SUCCEEDED refunds) of revenue-rule orders
     AnalyticsTopProduct:
       type: object
       required:
@@ -3702,10 +5792,10 @@ components:
           description: Product ID
         qty_sold:
           type: integer
-          description: Total units sold
+          description: Total units sold in revenue-rule orders
         gross:
           type: integer
-          description: Gross revenue for the product in IDR
+          description: Sum of order_items.subtotal (gross item value, IDR) in revenue-rule orders
     Review:
       type: object
       required:
@@ -3947,6 +6037,42 @@ components:
               type: boolean
             stock_updates:
               type: boolean
+    PushVapidKeyResponse:
+      type: object
+      required:
+        - public_key
+        - publicKey
+      properties:
+        public_key:
+          type: string
+          description: VAPID public key (base64url). Same value as `publicKey`.
+        publicKey:
+          type: string
+          description: VAPID public key (base64url). Preferred field.
+    PushSendTestResponse:
+      type: object
+      required:
+        - success
+        - message
+        - sent
+        - failed
+        - pruned
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Test notification sent
+        sent:
+          type: integer
+          description: Subscriptions accepted by their push service.
+        failed:
+          type: integer
+          description: Subscriptions rejected by their push service, unreachable, or not sendable because of a server-side error (e.g. misconfigured VAPID keys, or the push host resolving to an address the server's outbound guard refuses). Never deleted.
+        pruned:
+          type: integer
+          description: Subscriptions deleted because they can never receive a push (push service answered 404/410, endpoint not https, or unusable p256dh/auth keys). Never caused by server-side problems.
     Favorite:
       type: object
       required:
@@ -4005,6 +6131,20 @@ components:
           type: array
           items:
             type: string
+          description: Legacy global roles. Containing `admin` grants the platform-admin routes.
+        role:
+          type: string
+          enum: [owner, admin, manager, catalog, fulfillment, support, analyst, customer]
+          description: >
+            Caller's role in the resolved tenant. Present on GET /auth/me only
+            (absent from login/register responses); `customer` for non-staff.
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+          description: >
+            Permissions of `role` (empty for `customer`). Present on GET /auth/me
+            only. Gate tenant-scoped UI on this list. `roles` (legacy, global)
+            containing `admin` is still what grants the platform-admin routes.
         emailVerified:
           type: boolean
         createdAt:
@@ -4153,6 +6293,103 @@ components:
           type: string
         slug:
           type: string
+    ProductSearchMeta:
+      type: object
+      description: Present only when `q` is non-empty.
+      required: [searchMode]
+      properties:
+        searchMode:
+          type: string
+          enum: [fts, fuzzy]
+          description: >-
+            `fts` = full-text matches (or nothing matched); `fuzzy` = full-text
+            found nothing and `data` holds typo-tolerant title matches (show
+            "results for similar products").
+        suggestions:
+          type: array
+          maxItems: 5
+          description: >-
+            Closest titles; present only when `pagination.totalItems` is 0, `q`
+            has 3-64 characters and suggestions exist.
+          items:
+            $ref: '#/components/schemas/Suggestion'
+    Suggestion:
+      type: object
+      required: [title, slug]
+      properties:
+        title:
+          type: string
+        slug:
+          type: string
+    ProductFacets:
+      type: object
+      description: >-
+        Present only when `include=facets`. Each dimension honours `q` (in the
+        same `searchMode` as `data`) and every other active filter, but ignores
+        its own filter.
+      required: [categories, brands, price, inStock]
+      properties:
+        categories:
+          type: array
+          description: Top 50 by count desc, then name. Ignores `category`.
+          items:
+            $ref: '#/components/schemas/FacetTerm'
+        brands:
+          type: array
+          description: Top 50 by count desc, then name. Ignores `brand`.
+          items:
+            $ref: '#/components/schemas/FacetTerm'
+        price:
+          type: object
+          required: [buckets]
+          properties:
+            buckets:
+              type: array
+              description: >-
+                Always all 9 buckets in ascending order, zero counts included.
+                Edges (IDR): 50000, 100000, 250000, 500000, 1000000, 2500000,
+                5000000, 10000000. Ignores `minPrice`/`maxPrice`.
+              items:
+                $ref: '#/components/schemas/PriceBucket'
+        inStock:
+          type: object
+          description: Ignores `inStock`.
+          required: ['true', 'false']
+          properties:
+            'true':
+              type: integer
+              format: int64
+            'false':
+              type: integer
+              format: int64
+    FacetTerm:
+      type: object
+      required: [id, name, slug, count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        count:
+          type: integer
+          format: int64
+    PriceBucket:
+      type: object
+      description: Covers `min <= price < max`; `max` is null for the last, open-ended bucket.
+      required: [min, max, count]
+      properties:
+        min:
+          type: integer
+          format: int64
+        max:
+          type: [integer, 'null']
+          format: int64
+        count:
+          type: integer
+          format: int64
     ProductListItem:
       type: object
       description: >-
@@ -4452,6 +6689,44 @@ components:
               type: string
             details:
               description: Free-form additional context.
+    Role:
+      type: string
+      description: Tenant staff role slug.
+      enum: [owner, admin, manager, catalog, fulfillment, support, analyst]
+    Permission:
+      type: string
+      description: Stable permission identifier. Gate UI on these, not on the role.
+      enum: [catalog:read, catalog:write, inventory:read, inventory:write, orders:read, orders:write, returns:read, returns:write, refunds:write, customers:read, support:read, support:write, promotions:read, promotions:write, analytics:read, settings:read, settings:write, staff:read, staff:manage]
+    RoleDefinition:
+      type: object
+      required: [role, permissions]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+    StaffMember:
+      type: object
+      required: [userId, name, email, role, status, createdAt, updatedAt]
+      properties:
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [INVITED, ACTIVE, SUSPENDED], description: Membership status }
+        createdAt: { type: string, format: date-time, description: Membership creation time }
+        updatedAt: { type: string, format: date-time }
+    StaffAssignRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, description: Email of an existing member of this tenant (case-insensitive) }
+        role: { $ref: '#/components/schemas/Role' }
+    StaffRoleUpdateRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
     Pagination:
       type: object
       required: [page, perPage, totalItems]
@@ -4482,6 +6757,7 @@ components:
             - out_for_delivery
             - delivered
             - cancelled
+            - expired
         statusLabel:
           type: string
           description: Indonesian human-readable status label
@@ -4837,6 +7113,21 @@ components:
           type: integer
         code:
           type: string
+    AdminConfirmPaymentRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: Optional verification note stored on the payment event
+    AdminConfirmPaymentResponse:
+      type: object
+      required: [orderId, orderStatus, paymentId, paymentStatus]
+      properties:
+        orderId: { type: string, format: uuid }
+        orderStatus: { type: string, enum: [PAID] }
+        paymentId: { type: string, format: uuid }
+        paymentStatus: { type: string, enum: [PAID] }
     AdminOrderStatusPatchRequest:
       type: object
       required:

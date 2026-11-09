@@ -39,3 +39,15 @@ ON CONFLICT (user_id) DO UPDATE SET
     stock_updates = EXCLUDED.stock_updates,
     updated_at = NOW()
 RETURNING user_id, enabled, order_updates, promo_updates, stock_updates, updated_at;
+
+-- name: TrimPushSubscriptions :exec
+-- Keeps the $2 most recently (re)subscribed subscriptions of a user and
+-- deletes the rest. updated_at is bumped by the CreatePushSubscription upsert.
+DELETE FROM push_subscriptions
+WHERE push_subscriptions.user_id = $1
+  AND push_subscriptions.id IN (
+    SELECT ps.id FROM push_subscriptions ps
+    WHERE ps.user_id = $1
+    ORDER BY ps.updated_at DESC, ps.id
+    OFFSET $2
+  );

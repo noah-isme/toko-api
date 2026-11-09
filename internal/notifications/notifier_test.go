@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -164,5 +165,59 @@ func TestNotifierSwallowsOrderLookupError(t *testing.T) {
 	}
 	if reported == nil {
 		t.Fatal("expected error to be reported via OnError")
+	}
+}
+
+func TestNotifyPassesEventID(t *testing.T) {
+	orderID := newUUID()
+	store := &stubStore{}
+	n := &Notifier{
+		Svc:    &Service{Q: store},
+		Orders: stubOrders{order: dbgen.Order{ID: orderID, UserID: newUUID(), TenantID: newUUID()}},
+	}
+	ev := dbgen.DomainEvent{ID: newUUID(), Topic: events.TopicOrderPaid, AggregateID: orderID, Payload: []byte("{}")}
+	if err := n.Notify(context.Background(), ev); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if len(store.created) != 1 || store.created[0].EventID != ev.ID {
+		t.Fatalf("expected event id %v to be passed, got %+v", ev.ID, store.created)
+	}
+}
+
+func TestNotifyReturnsTransientCreateError(t *testing.T) {
+	orderID := newUUID()
+	store := &stubStore{createErr: errors.New("connection reset")}
+	n := &Notifier{
+		Svc:    &Service{Q: store},
+		Orders: stubOrders{order: dbgen.Order{ID: orderID, UserID: newUUID(), TenantID: newUUID()}},
+	}
+	ev := dbgen.DomainEvent{ID: newUUID(), Topic: events.TopicOrderPaid, AggregateID: orderID, Payload: []byte("{}")}
+	if err := n.Notify(context.Background(), ev); err == nil {
+		t.Fatal("expected the transient error to be returned so the outbox relay retries")
+	}
+}
+
+func TestNotifyReturnsTransientOrderLookupError(t *testing.T) {
+	n := &Notifier{Svc: &Service{Q: &stubStore{}}, Orders: stubOrders{err: errors.New("timeout")}}
+	ev := dbgen.DomainEvent{ID: newUUID(), Topic: events.TopicOrderPaid, AggregateID: newUUID(), Payload: []byte("{}")}
+	if err := n.Notify(context.Background(), ev); err == nil {
+		t.Fatal("expected the transient lookup error to be returned")
+	}
+}
+
+func TestCreateTreatsConflictAsDuplicate(t *testing.T) {
+	store := &stubStore{createErr: pgx.ErrNoRows}
+	svc := &Service{Q: store}
+	got, err := svc.Create(context.Background(), newUUID(), newUUID(), newUUID(), "order_paid", "t", "b", nil)
+	if err != nil {
+		t.Fatalf("duplicate must not be an error: %v", err)
+	}
+	if got.ID.Valid {
+		t.Fatal("expected a zero notification for a duplicate")
+	}
+
+	// Without an event id there is no ON CONFLICT target, so ErrNoRows is real.
+	if _, err := svc.Create(context.Background(), newUUID(), newUUID(), pgtype.UUID{}, "order_paid", "t", "b", nil); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expected ErrNoRows without event id, got %v", err)
 	}
 }

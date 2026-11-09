@@ -12,40 +12,48 @@ import (
 )
 
 const insertDomainEvent = `-- name: InsertDomainEvent :one
-INSERT INTO domain_events (topic, aggregate_id, payload)
-VALUES ($1, $2, $3)
-RETURNING id, topic, aggregate_id, payload, occurred_at
+INSERT INTO domain_events (topic, aggregate_id, payload, dispatched_at, tenant_id)
+VALUES ($1, $2, $3, NULL, $4)
+RETURNING id, topic, aggregate_id, payload, occurred_at, tenant_id, dispatched_at, dispatch_attempts, last_dispatch_error
 `
 
 type InsertDomainEventParams struct {
 	Topic       string      `json:"topic"`
 	AggregateID pgtype.UUID `json:"aggregate_id"`
 	Payload     []byte      `json:"payload"`
+	TenantID    pgtype.UUID `json:"tenant_id"`
 }
 
-type InsertDomainEventRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	Topic       string             `json:"topic"`
-	AggregateID pgtype.UUID        `json:"aggregate_id"`
-	Payload     []byte             `json:"payload"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-}
-
-func (q *Queries) InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (InsertDomainEventRow, error) {
-	row := q.db.QueryRow(ctx, insertDomainEvent, arg.Topic, arg.AggregateID, arg.Payload)
-	var i InsertDomainEventRow
+// dispatched_at is written as NULL explicitly: that is what makes the row
+// "pending" for the outbox relay. The column default (now()) exists only for
+// binaries that predate migration 000047 and still fan out inline.
+// tenant_id is the emitting request's tenant (NULL when it has none); the
+// outbox relay restores it so a re-dispatch reaches only that tenant's
+// webhook endpoints.
+func (q *Queries) InsertDomainEvent(ctx context.Context, arg InsertDomainEventParams) (DomainEvent, error) {
+	row := q.db.QueryRow(ctx, insertDomainEvent,
+		arg.Topic,
+		arg.AggregateID,
+		arg.Payload,
+		arg.TenantID,
+	)
+	var i DomainEvent
 	err := row.Scan(
 		&i.ID,
 		&i.Topic,
 		&i.AggregateID,
 		&i.Payload,
 		&i.OccurredAt,
+		&i.TenantID,
+		&i.DispatchedAt,
+		&i.DispatchAttempts,
+		&i.LastDispatchError,
 	)
 	return i, err
 }
 
 const listDomainEventsByTopic = `-- name: ListDomainEventsByTopic :many
-SELECT id, topic, aggregate_id, payload, occurred_at
+SELECT id, topic, aggregate_id, payload, occurred_at, tenant_id, dispatched_at, dispatch_attempts, last_dispatch_error
 FROM domain_events
 WHERE topic = $1
 ORDER BY occurred_at DESC
@@ -58,29 +66,27 @@ type ListDomainEventsByTopicParams struct {
 	Offset int32  `json:"offset"`
 }
 
-type ListDomainEventsByTopicRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	Topic       string             `json:"topic"`
-	AggregateID pgtype.UUID        `json:"aggregate_id"`
-	Payload     []byte             `json:"payload"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-}
-
-func (q *Queries) ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]ListDomainEventsByTopicRow, error) {
+// Like every query here, it lists all domain_events columns in table order so
+// sqlc maps rows onto dbgen.DomainEvent.
+func (q *Queries) ListDomainEventsByTopic(ctx context.Context, arg ListDomainEventsByTopicParams) ([]DomainEvent, error) {
 	rows, err := q.db.Query(ctx, listDomainEventsByTopic, arg.Topic, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListDomainEventsByTopicRow
+	var items []DomainEvent
 	for rows.Next() {
-		var i ListDomainEventsByTopicRow
+		var i DomainEvent
 		if err := rows.Scan(
 			&i.ID,
 			&i.Topic,
 			&i.AggregateID,
 			&i.Payload,
 			&i.OccurredAt,
+			&i.TenantID,
+			&i.DispatchedAt,
+			&i.DispatchAttempts,
+			&i.LastDispatchError,
 		); err != nil {
 			return nil, err
 		}
@@ -90,4 +96,90 @@ func (q *Queries) ListDomainEventsByTopic(ctx context.Context, arg ListDomainEve
 		return nil, err
 	}
 	return items, nil
+}
+
+const listUndispatchedDomainEvents = `-- name: ListUndispatchedDomainEvents :many
+SELECT id, topic, aggregate_id, payload, occurred_at, tenant_id, dispatched_at, dispatch_attempts, last_dispatch_error
+FROM domain_events
+WHERE topic = ANY($1::text[])
+  AND occurred_at >= $2
+  AND occurred_at < $3
+  AND dispatched_at IS NULL
+  AND dispatch_attempts < $4
+ORDER BY occurred_at ASC
+LIMIT $5
+`
+
+type ListUndispatchedDomainEventsParams struct {
+	Topics      []string           `json:"topics"`
+	NotBefore   pgtype.Timestamptz `json:"not_before"`
+	OlderThan   pgtype.Timestamptz `json:"older_than"`
+	MaxAttempts int32              `json:"max_attempts"`
+	BatchSize   int32              `json:"batch_size"`
+}
+
+// Used by the outbox relay. The topic list plus the [not_before, older_than)
+// window let the planner use idx_domain_events_topic_time (topic, occurred_at)
+// as a bounded range scan per topic instead of scanning the append-only table.
+func (q *Queries) ListUndispatchedDomainEvents(ctx context.Context, arg ListUndispatchedDomainEventsParams) ([]DomainEvent, error) {
+	rows, err := q.db.Query(ctx, listUndispatchedDomainEvents,
+		arg.Topics,
+		arg.NotBefore,
+		arg.OlderThan,
+		arg.MaxAttempts,
+		arg.BatchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DomainEvent
+	for rows.Next() {
+		var i DomainEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.Topic,
+			&i.AggregateID,
+			&i.Payload,
+			&i.OccurredAt,
+			&i.TenantID,
+			&i.DispatchedAt,
+			&i.DispatchAttempts,
+			&i.LastDispatchError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markDomainEventDispatched = `-- name: MarkDomainEventDispatched :exec
+UPDATE domain_events
+SET dispatched_at = now(), last_dispatch_error = NULL
+WHERE id = $1
+`
+
+func (q *Queries) MarkDomainEventDispatched(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markDomainEventDispatched, id)
+	return err
+}
+
+const recordDomainEventDispatchFailure = `-- name: RecordDomainEventDispatchFailure :exec
+UPDATE domain_events
+SET dispatch_attempts = dispatch_attempts + 1, last_dispatch_error = $2
+WHERE id = $1
+`
+
+type RecordDomainEventDispatchFailureParams struct {
+	ID                pgtype.UUID `json:"id"`
+	LastDispatchError pgtype.Text `json:"last_dispatch_error"`
+}
+
+func (q *Queries) RecordDomainEventDispatchFailure(ctx context.Context, arg RecordDomainEventDispatchFailureParams) error {
+	_, err := q.db.Exec(ctx, recordDomainEventDispatchFailure, arg.ID, arg.LastDispatchError)
+	return err
 }

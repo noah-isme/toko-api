@@ -84,6 +84,12 @@ GET {{baseUrl}}/api/v1/products?category=smartphones&minPrice=5000000&maxPrice=1
 ### Search Products
 GET {{baseUrl}}/api/v1/products?q=samsung+galaxy
 
+### Search Products (typo-tolerant fallback + facets)
+GET {{baseUrl}}/api/v1/products?q=spatu&include=facets
+
+### List Products (Best Sellers)
+GET {{baseUrl}}/api/v1/products?sort=popularity:desc
+
 ### Get Product Detail
 GET {{baseUrl}}/api/v1/products/samsung-galaxy-s24
 

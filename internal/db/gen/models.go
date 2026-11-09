@@ -195,6 +195,7 @@ const (
 	OrderStatusOUTFORDELIVERY OrderStatus = "OUT_FOR_DELIVERY"
 	OrderStatusDELIVERED      OrderStatus = "DELIVERED"
 	OrderStatusCANCELLED      OrderStatus = "CANCELLED"
+	OrderStatusEXPIRED        OrderStatus = "EXPIRED"
 )
 
 func (e *OrderStatus) Scan(src interface{}) error {
@@ -235,11 +236,12 @@ func (ns NullOrderStatus) Value() (driver.Value, error) {
 type PaymentStatus string
 
 const (
-	PaymentStatusPENDING  PaymentStatus = "PENDING"
-	PaymentStatusPAID     PaymentStatus = "PAID"
-	PaymentStatusFAILED   PaymentStatus = "FAILED"
-	PaymentStatusEXPIRED  PaymentStatus = "EXPIRED"
-	PaymentStatusREFUNDED PaymentStatus = "REFUNDED"
+	PaymentStatusPENDING           PaymentStatus = "PENDING"
+	PaymentStatusPAID              PaymentStatus = "PAID"
+	PaymentStatusFAILED            PaymentStatus = "FAILED"
+	PaymentStatusEXPIRED           PaymentStatus = "EXPIRED"
+	PaymentStatusREFUNDED          PaymentStatus = "REFUNDED"
+	PaymentStatusPARTIALLYREFUNDED PaymentStatus = "PARTIALLY_REFUNDED"
 )
 
 func (e *PaymentStatus) Scan(src interface{}) error {
@@ -407,12 +409,15 @@ type Category struct {
 }
 
 type DomainEvent struct {
-	ID          pgtype.UUID        `json:"id"`
-	Topic       string             `json:"topic"`
-	AggregateID pgtype.UUID        `json:"aggregate_id"`
-	Payload     []byte             `json:"payload"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	TenantID    pgtype.UUID        `json:"tenant_id"`
+	ID                pgtype.UUID        `json:"id"`
+	Topic             string             `json:"topic"`
+	AggregateID       pgtype.UUID        `json:"aggregate_id"`
+	Payload           []byte             `json:"payload"`
+	OccurredAt        pgtype.Timestamptz `json:"occurred_at"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	DispatchedAt      pgtype.Timestamptz `json:"dispatched_at"`
+	DispatchAttempts  int32              `json:"dispatch_attempts"`
+	LastDispatchError pgtype.Text        `json:"last_dispatch_error"`
 }
 
 type EmailVerification struct {
@@ -476,6 +481,12 @@ type InventoryReservation struct {
 	UpdatedAt pgtype.Timestamptz         `json:"updated_at"`
 }
 
+type InvoiceCounter struct {
+	TenantID   pgtype.UUID        `json:"tenant_id"`
+	LastNumber int64              `json:"last_number"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type LoyaltyProfile struct {
 	UserID            pgtype.UUID        `json:"user_id"`
 	Points            int32              `json:"points"`
@@ -509,19 +520,6 @@ type LoyaltyTransaction struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
-type MvSalesDaily struct {
-	Day        pgtype.Interval `json:"day"`
-	PaidOrders int64           `json:"paid_orders"`
-	Revenue    int64           `json:"revenue"`
-	AllOrders  int64           `json:"all_orders"`
-}
-
-type MvTopProduct struct {
-	ProductID pgtype.UUID `json:"product_id"`
-	QtySold   int64       `json:"qty_sold"`
-	Gross     int64       `json:"gross"`
-}
-
 type NewsletterSubscriber struct {
 	ID        pgtype.UUID        `json:"id"`
 	TenantID  pgtype.UUID        `json:"tenant_id"`
@@ -541,6 +539,7 @@ type Notification struct {
 	Data      []byte             `json:"data"`
 	ReadAt    pgtype.Timestamptz `json:"read_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	EventID   pgtype.UUID        `json:"event_id"`
 }
 
 type Order struct {
@@ -562,6 +561,14 @@ type Order struct {
 	AppliedVoucherCode pgtype.Text        `json:"applied_voucher_code"`
 	TenantID           pgtype.UUID        `json:"tenant_id"`
 	OrderNumber        pgtype.Text        `json:"order_number"`
+}
+
+type OrderInvoice struct {
+	OrderID       pgtype.UUID        `json:"order_id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	InvoiceNumber string             `json:"invoice_number"`
+	IssuedAt      pgtype.Timestamptz `json:"issued_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type OrderItem struct {
@@ -609,6 +616,7 @@ type Payment struct {
 	Amount          pgtype.Int8        `json:"amount"`
 	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
 	TenantID        pgtype.UUID        `json:"tenant_id"`
+	RefundedAmount  int64              `json:"refunded_amount"`
 }
 
 type PaymentEvent struct {
@@ -645,21 +653,59 @@ type Plan struct {
 }
 
 type Product struct {
-	ID           pgtype.UUID        `json:"id"`
-	Title        string             `json:"title"`
-	Slug         string             `json:"slug"`
-	BrandID      pgtype.UUID        `json:"brand_id"`
-	CategoryID   pgtype.UUID        `json:"category_id"`
-	Price        int64              `json:"price"`
-	CompareAt    pgtype.Int8        `json:"compare_at"`
-	InStock      bool               `json:"in_stock"`
-	Thumbnail    pgtype.Text        `json:"thumbnail"`
-	Badges       []string           `json:"badges"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	TenantID     pgtype.UUID        `json:"tenant_id"`
-	Description  pgtype.Text        `json:"description"`
-	SearchVector interface{}        `json:"search_vector"`
+	ID                 pgtype.UUID        `json:"id"`
+	Title              string             `json:"title"`
+	Slug               string             `json:"slug"`
+	BrandID            pgtype.UUID        `json:"brand_id"`
+	CategoryID         pgtype.UUID        `json:"category_id"`
+	Price              int64              `json:"price"`
+	CompareAt          pgtype.Int8        `json:"compare_at"`
+	InStock            bool               `json:"in_stock"`
+	Thumbnail          pgtype.Text        `json:"thumbnail"`
+	Badges             []string           `json:"badges"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	TenantID           pgtype.UUID        `json:"tenant_id"`
+	Description        pgtype.Text        `json:"description"`
+	SearchVector       interface{}        `json:"search_vector"`
+	Status             string             `json:"status"`
+	LowStockThreshold  pgtype.Int4        `json:"low_stock_threshold"`
+	SearchVectorSimple interface{}        `json:"search_vector_simple"`
+}
+
+type ProductAlertDelivery struct {
+	EventID       pgtype.UUID        `json:"event_id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	FailedAt      pgtype.Timestamptz `json:"failed_at"`
+	LastError     pgtype.Text        `json:"last_error"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type ProductAlertEvent struct {
+	ID            int64              `json:"id"`
+	TenantID      pgtype.UUID        `json:"tenant_id"`
+	ProductID     pgtype.UUID        `json:"product_id"`
+	VariantID     pgtype.UUID        `json:"variant_id"`
+	AlertType     string             `json:"alert_type"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ProcessedAt   pgtype.Timestamptz `json:"processed_at"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+}
+
+type ProductAlertSubscription struct {
+	ID               pgtype.UUID        `json:"id"`
+	TenantID         pgtype.UUID        `json:"tenant_id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	ProductID        pgtype.UUID        `json:"product_id"`
+	VariantID        pgtype.UUID        `json:"variant_id"`
+	AlertType        string             `json:"alert_type"`
+	PriceAtSubscribe pgtype.Int8        `json:"price_at_subscribe"`
+	NotifiedAt       pgtype.Timestamptz `json:"notified_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ProductImage struct {
@@ -683,6 +729,13 @@ type ProductQuestion struct {
 	TenantID     pgtype.UUID        `json:"tenant_id"`
 }
 
+type ProductSale struct {
+	ProductID pgtype.UUID        `json:"product_id"`
+	TenantID  pgtype.UUID        `json:"tenant_id"`
+	UnitsSold int64              `json:"units_sold"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ProductSpec struct {
 	ID        pgtype.UUID `json:"id"`
 	ProductID pgtype.UUID `json:"product_id"`
@@ -697,6 +750,7 @@ type ProductVariant struct {
 	Price      int64       `json:"price"`
 	Stock      int32       `json:"stock"`
 	Attributes []byte      `json:"attributes"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
 }
 
 type PushPreference struct {
@@ -747,16 +801,22 @@ type QuotaCounter struct {
 }
 
 type Refund struct {
-	ID          pgtype.UUID        `json:"id"`
-	TenantID    pgtype.UUID        `json:"tenant_id"`
-	ReturnID    pgtype.UUID        `json:"return_id"`
-	OrderID     pgtype.UUID        `json:"order_id"`
-	Provider    string             `json:"provider"`
-	ProviderRef string             `json:"provider_ref"`
-	Amount      int64              `json:"amount"`
-	Status      string             `json:"status"`
-	Reason      pgtype.Text        `json:"reason"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID             pgtype.UUID        `json:"id"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	ReturnID       pgtype.UUID        `json:"return_id"`
+	OrderID        pgtype.UUID        `json:"order_id"`
+	Provider       string             `json:"provider"`
+	ProviderRef    string             `json:"provider_ref"`
+	Amount         int64              `json:"amount"`
+	Status         string             `json:"status"`
+	Reason         pgtype.Text        `json:"reason"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ProviderStatus pgtype.Text        `json:"provider_status"`
+	FailureReason  pgtype.Text        `json:"failure_reason"`
+	SettledAt      pgtype.Timestamptz `json:"settled_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Attempt        int32              `json:"attempt"`
+	PaymentID      pgtype.UUID        `json:"payment_id"`
 }
 
 type Return struct {
@@ -793,15 +853,19 @@ type Session struct {
 }
 
 type Shipment struct {
-	ID             pgtype.UUID        `json:"id"`
-	OrderID        pgtype.UUID        `json:"order_id"`
-	Status         ShipmentStatus     `json:"status"`
-	Courier        pgtype.Text        `json:"courier"`
-	TrackingNumber pgtype.Text        `json:"tracking_number"`
-	History        []byte             `json:"history"`
-	LastStatus     NullShipmentStatus `json:"last_status"`
-	LastEventAt    pgtype.Timestamptz `json:"last_event_at"`
-	TenantID       pgtype.UUID        `json:"tenant_id"`
+	ID                pgtype.UUID        `json:"id"`
+	OrderID           pgtype.UUID        `json:"order_id"`
+	Status            ShipmentStatus     `json:"status"`
+	Courier           pgtype.Text        `json:"courier"`
+	TrackingNumber    pgtype.Text        `json:"tracking_number"`
+	History           []byte             `json:"history"`
+	LastStatus        NullShipmentStatus `json:"last_status"`
+	LastEventAt       pgtype.Timestamptz `json:"last_event_at"`
+	TenantID          pgtype.UUID        `json:"tenant_id"`
+	TrackNextPollAt   pgtype.Timestamptz `json:"track_next_poll_at"`
+	TrackAttempts     int32              `json:"track_attempts"`
+	TrackLastPolledAt pgtype.Timestamptz `json:"track_last_polled_at"`
+	TrackLastError    pgtype.Text        `json:"track_last_error"`
 }
 
 type ShipmentEvent struct {

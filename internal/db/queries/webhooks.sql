@@ -1,6 +1,10 @@
+-- Endpoints are tenant-owned (webhook_endpoints.tenant_id): the admin API
+-- creates them in the request's tenant and only ever reads, changes or deletes
+-- the endpoints of that tenant.
+
 -- name: CreateWebhookEndpoint :one
-INSERT INTO webhook_endpoints (name, url, secret, active, topics)
-VALUES (sqlc.arg(name), sqlc.arg(url), sqlc.arg(secret), sqlc.arg(active), sqlc.arg(topics))
+INSERT INTO webhook_endpoints (name, url, secret, active, topics, tenant_id)
+VALUES (sqlc.arg(name), sqlc.arg(url), sqlc.arg(secret), sqlc.arg(active), sqlc.arg(topics), sqlc.arg(tenant_id))
 RETURNING *;
 
 -- name: UpdateWebhookEndpoint :one
@@ -12,6 +16,7 @@ SET name = sqlc.arg(name),
     topics = sqlc.arg(topics),
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
 RETURNING *;
 
 -- name: GetWebhookEndpoint :one
@@ -22,17 +27,22 @@ WHERE id = sqlc.arg(id);
 -- name: ListWebhookEndpoints :many
 SELECT *
 FROM webhook_endpoints
+WHERE tenant_id = sqlc.arg(tenant_id)
 ORDER BY created_at DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
--- name: DeleteWebhookEndpoint :exec
+-- name: DeleteWebhookEndpoint :execrows
 DELETE FROM webhook_endpoints
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id);
 
--- name: ListActiveEndpointsForTopic :many
+-- Endpoints are tenant-owned: an event is only delivered to the endpoints of
+-- the tenant that produced it.
+-- name: ListActiveEndpointsForTopicAndTenant :many
 SELECT *
 FROM webhook_endpoints
-WHERE active = true
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND active = true
   AND (coalesce(array_length(topics, 1), 0) = 0 OR sqlc.arg(topic)::text = ANY(topics))
 ORDER BY created_at ASC;
 
@@ -40,6 +50,11 @@ ORDER BY created_at ASC;
 INSERT INTO webhook_deliveries (endpoint_id, event_id, status, max_attempt, next_attempt_at)
 VALUES (sqlc.arg(endpoint_id), sqlc.arg(event_id), 'PENDING', sqlc.arg(max_attempt), now())
 RETURNING *;
+
+-- name: GetDeliveryByEndpointEvent :one
+SELECT *
+FROM webhook_deliveries
+WHERE endpoint_id = sqlc.arg(endpoint_id) AND event_id = sqlc.arg(event_id);
 
 -- name: DequeueDueDeliveries :many
 SELECT *

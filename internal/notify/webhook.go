@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -29,6 +30,7 @@ import (
 	"github.com/noah-isme/backend-toko/internal/obs"
 	"github.com/noah-isme/backend-toko/internal/queue"
 	"github.com/noah-isme/backend-toko/internal/resilience"
+	"github.com/noah-isme/backend-toko/internal/tenant"
 )
 
 // Dispatcher coordinates webhook scheduling and delivery.
@@ -41,9 +43,15 @@ type Dispatcher struct {
 	Enabled            bool
 	Replay             ReplayProtector
 	ReplayTTL          time.Duration
+	// Logger is optional; it reports events that could not be routed to a
+	// tenant.
+	Logger *zerolog.Logger
 }
 
-// Schedule enqueues deliveries for active endpoints subscribed to the topic.
+// Schedule enqueues deliveries for the active endpoints of the event's tenant
+// that subscribe to the topic. The tenant is event.TenantID, or the ctx tenant
+// (tenant.WithTenant) for an event stored without one; with neither nothing is
+// scheduled, so an event can never reach another tenant's endpoints.
 func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) error {
 	if d == nil || !d.Enabled || d.Store == nil {
 		return nil
@@ -51,7 +59,25 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 	if strings.TrimSpace(event.Topic) == "" {
 		return nil
 	}
-	endpoints, err := d.Store.ListActiveEndpointsForTopic(ctx, event.Topic)
+	// The event's own tenant (stamped by events.Bus) wins; ctx is the fallback
+	// for events persisted without one.
+	tenantUUID, ok := event.TenantID, event.TenantID.Valid
+	if !ok {
+		tenantUUID, ok = tenantFromContext(ctx)
+	}
+	if !ok {
+		if d.Logger != nil {
+			d.Logger.Warn().
+				Str("topic", event.Topic).
+				Str("event_id", uuidFrom(event.ID)).
+				Msg("webhook dispatch skipped: event has no tenant")
+		}
+		return nil
+	}
+	endpoints, err := d.Store.ListActiveEndpointsForTopicAndTenant(ctx, dbgen.ListActiveEndpointsForTopicAndTenantParams{
+		TenantID: tenantUUID,
+		Topic:    event.Topic,
+	})
 	if err != nil {
 		return err
 	}
@@ -68,17 +94,46 @@ func (d *Dispatcher) Schedule(ctx context.Context, event dbgen.DomainEvent) erro
 		})
 		if err != nil {
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+				joined = errors.Join(joined, fmt.Errorf("enqueue delivery for %s: %w", uuidFrom(ep.ID), err))
 				continue
 			}
-			joined = errors.Join(joined, fmt.Errorf("enqueue delivery for %s: %w", uuidFrom(ep.ID), err))
-			continue
+			// The delivery row already exists: this is a re-dispatch (outbox
+			// relay). If the earlier attempt inserted the row but failed to
+			// enqueue it, the row is still PENDING and nothing else will pick
+			// it up, so enqueue it again. Duplicates are bounded by the queue
+			// dedup on the delivery id, and DeliveryWorker skips deliveries
+			// that are already DELIVERED or in the DLQ.
+			existing, getErr := d.Store.GetDeliveryByEndpointEvent(ctx, dbgen.GetDeliveryByEndpointEventParams{
+				EndpointID: ep.ID,
+				EventID:    event.ID,
+			})
+			if getErr != nil {
+				joined = errors.Join(joined, fmt.Errorf("load existing delivery for %s: %w", uuidFrom(ep.ID), getErr))
+				continue
+			}
+			if existing.Status != dbgen.DeliveryStatusPENDING {
+				continue
+			}
+			delivery = existing
 		}
 		if err := d.EnqueueDelivery(ctx, uuidFrom(delivery.ID), 0, int(delivery.MaxAttempt)); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("queue delivery %s: %w", uuidFrom(delivery.ID), err))
 		}
 	}
 	return joined
+}
+
+func tenantFromContext(ctx context.Context) (pgtype.UUID, bool) {
+	raw, ok := tenant.FromContext(ctx)
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return pgtype.UUID{Bytes: parsed, Valid: true}, true
 }
 
 // WorkOnce dequeues eligible deliveries and attempts delivery.

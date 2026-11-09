@@ -15,7 +15,7 @@ INSERT INTO payments (
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), $9, $10)
 RETURNING id, order_id, provider, status, provider_payload, created_at, updated_at, channel, intent_token, redirect_url, amount,
-          expires_at, tenant_id;
+          expires_at, tenant_id, refunded_amount;
 
 -- name: UpdatePaymentStatus :exec
 UPDATE payments
@@ -26,7 +26,7 @@ WHERE id = $1;
 
 -- name: GetLatestPaymentByOrder :one
 SELECT id, order_id, provider, status, provider_payload, created_at, updated_at, channel, intent_token, redirect_url, amount,
-       expires_at, tenant_id
+       expires_at, tenant_id, refunded_amount
 FROM payments
 WHERE order_id = $1
 ORDER BY created_at DESC
@@ -35,3 +35,13 @@ LIMIT 1;
 -- name: InsertPaymentEvent :exec
 INSERT INTO payment_events (payment_id, status, payload)
 VALUES ($1, $2, $3);
+
+-- Expires every still-pending intent of an order (superseded intents
+-- included). Callers hold the order row lock.
+-- name: ExpirePendingPaymentsByOrder :many
+UPDATE payments
+SET status = 'EXPIRED',
+    updated_at = now()
+WHERE order_id = $1
+  AND status = 'PENDING'
+RETURNING id;

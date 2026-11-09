@@ -6,9 +6,12 @@ package platform
 // tenant-scoped at every boundary.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/noah-isme/backend-toko/internal/cart"
+	"github.com/noah-isme/backend-toko/internal/catalog"
 	"github.com/noah-isme/backend-toko/internal/common"
+	"github.com/noah-isme/backend-toko/internal/events"
 	"github.com/noah-isme/backend-toko/internal/payment"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
@@ -26,6 +31,18 @@ import (
 type Handler struct {
 	Pool      *pgxpool.Pool
 	Providers map[string]payment.Provider
+	// Cache, when set, is invalidated after inventory writes.
+	Cache *catalog.Cache
+	// Events, when set, receives product.stock_changed events from InventoryUpdate.
+	Events *events.Bus
+	// Alerts, when set, is kicked after inventory writes so the alerts runner
+	// drains the outbox promptly. Kick never blocks.
+	Alerts AlertKicker
+}
+
+// AlertKicker wakes the background alerts runner (alerts.Runner).
+type AlertKicker interface {
+	Kick()
 }
 
 type returnInput struct {
@@ -305,7 +322,10 @@ func (h *Handler) ReturnGet(w http.ResponseWriter, r *http.Request) {
 	var status, reason string
 	var notes pgtype.Text
 	var created, updated time.Time
-	err = h.Pool.QueryRow(r.Context(), `SELECT order_id,status,reason,notes,created_at,updated_at FROM returns WHERE id=$1 AND tenant_id=$2 AND user_id=$3`, id, tenantID, userID).Scan(&orderID, &status, &reason, &notes, &created, &updated)
+	var refund refundSummaryRow
+	err = h.Pool.QueryRow(r.Context(), `SELECT r.order_id,r.status,r.reason,r.notes,r.created_at,r.updated_at,`+refundSummaryColumns+`
+	    FROM returns r LEFT JOIN refunds f ON f.return_id=r.id AND f.tenant_id=r.tenant_id
+	   WHERE r.id=$1 AND r.tenant_id=$2 AND r.user_id=$3`, id, tenantID, userID).Scan(append([]any{&orderID, &status, &reason, &notes, &created, &updated}, refund.dest()...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
@@ -314,7 +334,7 @@ func (h *Handler) ReturnGet(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated}})
+	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated, "refund": refund.customerView()}})
 }
 
 func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +342,9 @@ func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Pool.Query(r.Context(), `SELECT id,order_id,user_id,status,reason,notes,created_at,updated_at FROM returns WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	rows, err := h.Pool.Query(r.Context(), `SELECT r.id,r.order_id,r.user_id,r.status,r.reason,r.notes,r.created_at,r.updated_at,`+refundSummaryColumns+`
+	    FROM returns r LEFT JOIN refunds f ON f.return_id=r.id AND f.tenant_id=r.tenant_id
+	   WHERE r.tenant_id=$1 ORDER BY r.created_at DESC`, tenantID)
 	if err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to list returns", nil)
 		return
@@ -334,93 +356,14 @@ func (h *Handler) AdminReturnList(w http.ResponseWriter, r *http.Request) {
 		var status, reason string
 		var notes pgtype.Text
 		var created, updated time.Time
-		if err := rows.Scan(&id, &orderID, &userID, &status, &reason, &notes, &created, &updated); err != nil {
+		var refund refundSummaryRow
+		if err := rows.Scan(append([]any{&id, &orderID, &userID, &status, &reason, &notes, &created, &updated}, refund.dest()...)...); err != nil {
 			common.JSONError(w, 500, "INTERNAL", "failed to read returns", nil)
 			return
 		}
-		items = append(items, map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "userId": cart.UUIDString(userID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated})
+		items = append(items, map[string]any{"id": cart.UUIDString(id), "orderId": cart.UUIDString(orderID), "userId": cart.UUIDString(userID), "status": status, "reason": reason, "notes": nullableText(notes), "createdAt": created, "updatedAt": updated, "refund": refund.adminView()})
 	}
 	common.JSON(w, 200, map[string]any{"data": items})
-}
-
-func (h *Handler) AdminReturnStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID, _, ok := h.identity(w, r)
-	if !ok {
-		return
-	}
-	id, err := cart.ToUUID(chi.URLParam(r, "returnId"))
-	if err != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid return id", nil)
-		return
-	}
-	var input statusInput
-	if json.NewDecoder(r.Body).Decode(&input) != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid payload", nil)
-		return
-	}
-	status := strings.ToUpper(strings.TrimSpace(input.Status))
-	allowed := map[string]bool{"APPROVED": true, "REJECTED": true, "RECEIVED": true, "CANCELLED": true}
-	if !allowed[status] {
-		common.JSONError(w, 400, "BAD_REQUEST", "unsupported return status", nil)
-		return
-	}
-	var updated time.Time
-	if err := h.Pool.QueryRow(r.Context(), `UPDATE returns SET status=$1,updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING updated_at`, status, id, tenantID).Scan(&updated); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
-		} else {
-			common.JSONError(w, 500, "INTERNAL", "failed to update return", nil)
-		}
-		return
-	}
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(id), "status": status, "updatedAt": updated}})
-}
-
-func (h *Handler) AdminRefund(w http.ResponseWriter, r *http.Request) {
-	tenantID, _, ok := h.identity(w, r)
-	if !ok {
-		return
-	}
-	returnID, err := cart.ToUUID(chi.URLParam(r, "returnId"))
-	if err != nil {
-		common.JSONError(w, 400, "BAD_REQUEST", "invalid return id", nil)
-		return
-	}
-	var orderID pgtype.UUID
-	var status, provider string
-	var amount int64
-	err = h.Pool.QueryRow(r.Context(), `SELECT r.order_id,r.status::text,COALESCE(p.provider,'midtrans'),o.pricing_total FROM returns r JOIN orders o ON o.id=r.order_id LEFT JOIN payments p ON p.order_id=o.id AND p.status='PAID' WHERE r.id=$1 AND r.tenant_id=$2 ORDER BY p.created_at DESC LIMIT 1`, returnID, tenantID).Scan(&orderID, &status, &provider, &amount)
-	if err != nil {
-		common.JSONError(w, 404, "NOT_FOUND", "return not found", nil)
-		return
-	}
-	if status != "APPROVED" && status != "RECEIVED" {
-		common.JSONError(w, 409, "REFUND_NOT_ALLOWED", "return must be approved or received", nil)
-		return
-	}
-	gateway, exists := h.Providers[strings.ToLower(provider)]
-	if !exists {
-		common.JSONError(w, 409, "REFUND_UNSUPPORTED", "payment provider does not support refunds", nil)
-		return
-	}
-	refundGateway, ok := gateway.(payment.RefundProvider)
-	if !ok {
-		common.JSONError(w, 409, "REFUND_UNSUPPORTED", "payment provider does not support refunds", nil)
-		return
-	}
-	providerRef, err := refundGateway.Refund(r.Context(), cart.UUIDString(orderID), amount, "customer return")
-	if err != nil {
-		common.JSONError(w, 502, "REFUND_FAILED", err.Error(), nil)
-		return
-	}
-	var refundID pgtype.UUID
-	if err := h.Pool.QueryRow(r.Context(), `INSERT INTO refunds(tenant_id,return_id,order_id,provider,provider_ref,amount,reason) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(return_id) DO UPDATE SET provider_ref=EXCLUDED.provider_ref RETURNING id`, tenantID, returnID, orderID, provider, providerRef, amount, "customer return").Scan(&refundID); err != nil {
-		common.JSONError(w, 500, "INTERNAL", "failed to record refund", nil)
-		return
-	}
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE returns SET status='REFUNDED',updated_at=now() WHERE id=$1 AND tenant_id=$2`, returnID, tenantID)
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE payments SET status='REFUNDED',updated_at=now() WHERE order_id=$1 AND status='PAID'`, orderID)
-	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(refundID), "returnId": cart.UUIDString(returnID), "orderId": cart.UUIDString(orderID), "provider": provider, "providerRef": providerRef, "amount": amount, "status": "SUCCEEDED"}})
 }
 
 func (h *Handler) TicketCreate(w http.ResponseWriter, r *http.Request) {
@@ -627,12 +570,46 @@ func (h *Handler) AdminTicketStatus(w http.ResponseWriter, r *http.Request) {
 	common.JSON(w, 200, map[string]any{"data": map[string]any{"id": cart.UUIDString(ticketID), "status": status}})
 }
 
+// InventoryList handles GET /admin/inventory. Each variant carries its
+// stockStatus (in|low|out) against the effective low-stock threshold (product
+// override, else the tenant default from settings "inventory", else 5).
+// Filters: stockStatus=in|low|out, lowStock=true (alias for stockStatus=low).
 func (h *Handler) InventoryList(w http.ResponseWriter, r *http.Request) {
 	tenantID, _, ok := h.identity(w, r)
 	if !ok {
 		return
 	}
-	rows, err := h.Pool.Query(r.Context(), `SELECT v.id,v.product_id,v.sku,v.price,v.stock,p.title FROM product_variants v JOIN products p ON p.id=v.product_id WHERE p.tenant_id=$1 ORDER BY p.title,v.sku`, tenantID)
+	filter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stockStatus")))
+	if filter != "" && !catalog.ValidStockStatus(filter) {
+		common.JSONError(w, 400, "BAD_REQUEST", "stockStatus must be in, low or out", nil)
+		return
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("lowStock")); raw != "" {
+		lowStock, err := strconv.ParseBool(raw)
+		if err != nil {
+			common.JSONError(w, 400, "BAD_REQUEST", "lowStock must be true or false", nil)
+			return
+		}
+		if lowStock {
+			if filter != "" && filter != catalog.StockStatusLow {
+				common.JSONError(w, 400, "BAD_REQUEST", "lowStock=true conflicts with stockStatus", nil)
+				return
+			}
+			filter = catalog.StockStatusLow
+		}
+	}
+	ctx := r.Context()
+	tenantDefault := catalog.DefaultLowStockThreshold
+	var rawSetting []byte
+	switch err := h.Pool.QueryRow(ctx, `SELECT value FROM tenant_settings WHERE tenant_id=$1 AND key=$2`, tenantID, catalog.InventorySettingsKey).Scan(&rawSetting); {
+	case err == nil:
+		tenantDefault = catalog.ParseLowStockThreshold(rawSetting)
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		common.JSONError(w, 500, "INTERNAL", "failed to load inventory settings", nil)
+		return
+	}
+	rows, err := h.Pool.Query(ctx, `SELECT v.id,v.product_id,v.sku,v.price,v.stock,p.title,p.low_stock_threshold FROM product_variants v JOIN products p ON p.id=v.product_id WHERE p.tenant_id=$1 ORDER BY p.title,v.sku`, tenantID)
 	if err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to list inventory", nil)
 		return
@@ -645,11 +622,21 @@ func (h *Handler) InventoryList(w http.ResponseWriter, r *http.Request) {
 		var price int64
 		var stock int32
 		var title string
-		if err := rows.Scan(&id, &pid, &sku, &price, &stock, &title); err != nil {
+		var override pgtype.Int4
+		if err := rows.Scan(&id, &pid, &sku, &price, &stock, &title, &override); err != nil {
 			common.JSONError(w, 500, "INTERNAL", "failed to read inventory", nil)
 			return
 		}
-		items = append(items, map[string]any{"variantId": cart.UUIDString(id), "productId": cart.UUIDString(pid), "sku": nullableText(sku), "productTitle": title, "price": price, "stock": stock})
+		threshold := catalog.EffectiveThreshold(override, tenantDefault)
+		status := catalog.StockStatus(1, stock, threshold, true)
+		if filter != "" && status != filter {
+			continue
+		}
+		items = append(items, map[string]any{"variantId": cart.UUIDString(id), "productId": cart.UUIDString(pid), "sku": nullableText(sku), "productTitle": title, "price": price, "stock": stock, "stockStatus": status, "lowStockThreshold": threshold})
+	}
+	if err := rows.Err(); err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to read inventory", nil)
+		return
 	}
 	common.JSON(w, 200, map[string]any{"data": items})
 }
@@ -671,19 +658,24 @@ func (h *Handler) InventoryUpdate(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 400, "BAD_REQUEST", "stock or delta is required", nil)
 		return
 	}
-	var stock int32
-	var query string
-	if input.Stock != nil {
-		if *input.Stock < 0 {
-			common.JSONError(w, 400, "BAD_REQUEST", "stock cannot be negative", nil)
-			return
-		}
-		query = `UPDATE product_variants v SET stock=$1 FROM products p WHERE v.id=$2 AND p.id=v.product_id AND p.tenant_id=$3 RETURNING v.stock`
-		err = h.Pool.QueryRow(r.Context(), query, *input.Stock, id, tenantID).Scan(&stock)
-	} else {
-		query = `UPDATE product_variants v SET stock=GREATEST(0,v.stock+$1) FROM products p WHERE v.id=$2 AND p.id=v.product_id AND p.tenant_id=$3 RETURNING v.stock`
-		err = h.Pool.QueryRow(r.Context(), query, *input.Delta, id, tenantID).Scan(&stock)
+	if input.Stock != nil && *input.Stock < 0 {
+		common.JSONError(w, 400, "BAD_REQUEST", "stock cannot be negative", nil)
+		return
 	}
+	ctx := r.Context()
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to update inventory", nil)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Lock the variant first so the old value reported in the
+	// product.stock_changed event is the one this update replaced.
+	var oldStock int32
+	var productID pgtype.UUID
+	var sku pgtype.Text
+	var slug string
+	err = tx.QueryRow(ctx, `SELECT v.stock,v.product_id,v.sku,p.slug FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=$1 AND p.tenant_id=$2 FOR UPDATE OF v`, id, tenantID).Scan(&oldStock, &productID, &sku, &slug)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.JSONError(w, 404, "NOT_FOUND", "variant not found", nil)
@@ -692,7 +684,36 @@ func (h *Handler) InventoryUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE products SET in_stock=EXISTS(SELECT 1 FROM product_variants WHERE product_id=products.id AND stock>0),updated_at=now() WHERE id=(SELECT product_id FROM product_variants WHERE id=$1)`, id)
+	var stock int32
+	if input.Stock != nil {
+		err = tx.QueryRow(ctx, `UPDATE product_variants v SET stock=$1 FROM products p WHERE v.id=$2 AND p.id=v.product_id AND p.tenant_id=$3 RETURNING v.stock`, *input.Stock, id, tenantID).Scan(&stock)
+	} else {
+		err = tx.QueryRow(ctx, `UPDATE product_variants v SET stock=GREATEST(0,v.stock+$1) FROM products p WHERE v.id=$2 AND p.id=v.product_id AND p.tenant_id=$3 RETURNING v.stock`, *input.Delta, id, tenantID).Scan(&stock)
+	}
+	if err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to update inventory", nil)
+		return
+	}
+	if _, err := tx.Exec(ctx, `UPDATE products SET in_stock=EXISTS(SELECT 1 FROM product_variants WHERE product_id=products.id AND stock>0),updated_at=now() WHERE id=$1 AND tenant_id=$2`, productID, tenantID); err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to update inventory", nil)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		common.JSONError(w, 500, "INTERNAL", "failed to update inventory", nil)
+		return
+	}
+	if h.Cache != nil {
+		h.Cache.InvalidateProduct(context.WithoutCancel(ctx), slug)
+	}
+	if h.Events != nil {
+		catalog.EmitProductChanges(ctx, h.Events, tenantID, catalog.ChangeSourceSingle, []catalog.ProductChange{{
+			ProductID: productID, VariantID: id, Slug: slug, SKU: sku.String,
+			Field: catalog.FieldStock, Old: oldStock, New: stock,
+		}})
+	}
+	if h.Alerts != nil {
+		h.Alerts.Kick()
+	}
 	common.JSON(w, 200, map[string]any{"data": map[string]any{"variantId": cart.UUIDString(id), "stock": stock}})
 }
 
@@ -773,6 +794,12 @@ func (h *Handler) SettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		common.JSONError(w, 400, "BAD_REQUEST", "settings must be an object", nil)
 		return
 	}
+	if raw, ok := settings[catalog.InventorySettingsKey]; ok {
+		if err := validateInventorySettings(raw); err != nil {
+			common.JSONError(w, 400, "BAD_REQUEST", err.Error(), nil)
+			return
+		}
+	}
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
 		common.JSONError(w, 500, "INTERNAL", "failed to begin settings update", nil)
@@ -843,6 +870,24 @@ func (h *Handler) identity(w http.ResponseWriter, r *http.Request) (pgtype.UUID,
 func nullableText(value pgtype.Text) any {
 	if value.Valid {
 		return value.String
+	}
+	return nil
+}
+
+// validateInventorySettings checks the "inventory" settings document:
+// {"lowStockThreshold": integer 0..1000000}. Other keys are kept as sent.
+func validateInventorySettings(raw json.RawMessage) error {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+		return errors.New("inventory must be an object")
+	}
+	value, ok := doc["lowStockThreshold"]
+	if !ok {
+		return nil
+	}
+	var threshold float64
+	if err := json.Unmarshal(value, &threshold); err != nil || threshold != float64(int64(threshold)) || !catalog.ValidLowStockThreshold(int64(threshold)) {
+		return fmt.Errorf("inventory.lowStockThreshold must be an integer between 0 and %d", catalog.MaxLowStockThreshold)
 	}
 	return nil
 }

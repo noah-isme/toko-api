@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/noah-isme/backend-toko/internal/common"
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 	"github.com/noah-isme/backend-toko/internal/tenant"
 )
@@ -237,6 +239,12 @@ func (s *Service) addItem(ctx context.Context, cartID string, productID string, 
 	product, err := s.Q.GetProductForCart(ctx, dbgen.GetProductForCartParams{ID: pID, TenantID: s.resolveTenant(ctx)})
 	if err != nil {
 		return err
+	}
+	// Draft and archived products cannot be bought. GetProductForCart stays
+	// unfiltered because existing lines (qty updates, voucher eligibility) must
+	// still resolve; checkout re-checks the status of every line.
+	if product.Status != "published" {
+		return fmt.Errorf("product is not available: %w", ErrInvalidInput)
 	}
 	unitPrice := product.Price
 	if campaignID.Valid {
@@ -541,6 +549,10 @@ func (s *Service) itemEligible(ctx context.Context, productID pgtype.UUID, vouch
 	return false, nil
 }
 
+// errVoucherNotFound is returned for unknown codes and for codes owned by
+// another tenant alike, so the two cases are indistinguishable to callers.
+var errVoucherNotFound = common.NewAppError("NOT_FOUND", "voucher not found", http.StatusNotFound, nil)
+
 func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code string) (int64, dbgen.Voucher, error) {
 	if code == "" {
 		return 0, dbgen.Voucher{}, fmt.Errorf("voucher code required: %w", ErrInvalidInput)
@@ -549,8 +561,14 @@ func (s *Service) evaluateVoucher(ctx context.Context, cart dbgen.Cart, code str
 	if err != nil {
 		return 0, dbgen.Voucher{}, err
 	}
-	voucher, err := s.Q.GetVoucherByCode(ctx, code)
+	// Voucher codes are unique per tenant, so the code is resolved within this
+	// tenant only: another tenant's voucher with the same code reads exactly
+	// like an unknown code and never discounts this tenant's goods.
+	voucher, err := s.Q.GetVoucherByCode(ctx, dbgen.GetVoucherByCodeParams{TenantID: s.resolveTenant(ctx), Code: code})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, dbgen.Voucher{}, errVoucherNotFound
+		}
 		return 0, dbgen.Voucher{}, err
 	}
 	now := s.now()

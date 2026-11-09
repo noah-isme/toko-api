@@ -74,18 +74,21 @@ Returns all brands sorted by name.
 ## 2.3 List Products
 
 ```http
-GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&page=1&limit=20
+GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&include=&page=1&limit=20
 ```
 
 **Query Parameters:**
 
-- `q` (string): Search query
+- `q` (string): Search query (websearch syntax: words are ANDed, `"phrase"`, `-exclude`). Matches title and description with the `simple` text-search config (case-insensitive, no English stemming, so Indonesian words match as typed). Leading/trailing whitespace is trimmed; at most **200 characters** (Unicode code points) after trimming, longer values return `400 BAD_REQUEST` with `error.details.field = "q"`. If nothing matches and `q` has **3 to 64 characters**, the API retries with typo-tolerant trigram matching on the title (for example `spatu` finds `Sepatu Lari`); see `meta.searchMode`. Queries of 65-200 characters get full-text matching only (no fuzzy fallback, no suggestions). The fuzzy pass and suggestions run under a short server-side time limit (500 ms per statement); if it is exceeded the API returns the empty full-text result (`searchMode: "fts"`, no `suggestions`) instead of an error.
 - `category` (string): Category slug filter
 - `brand` (string): Brand slug filter
 - `minPrice` (integer): Minimum price filter
 - `maxPrice` (integer): Maximum price filter
 - `inStock` (boolean): Filter by stock availability
-- `sort` (string): Sort order: `price:asc`, `price:desc`, `title:asc`, `title:desc`
+- `sort` (string): Sort order: `price:asc`, `price:desc`, `title:asc`, `title:desc`, `popularity:desc`, `rating:desc` (`popularity` and `rating` are accepted as aliases of the `:desc` forms). Unknown values fall back to the default order: relevance when `q` is set, otherwise newest first.
+  - `popularity:desc`: units sold in this tenant's paid orders (statuses `PAID`, `PACKED`, `SHIPPED`, `OUT_FOR_DELIVERY`, `DELIVERED`; cancelled orders do not count). The worker recomputes it every `PRODUCT_SALES_REFRESH_SEC` (default 300 s), so a fresh sale can take a few minutes to affect the order. Products with no sales come last, newest first.
+  - `rating:desc`: average review rating, ties broken by review count; unrated products come last.
+- `include` (string): Comma-separated extras. Only `facets` is recognised; any other token returns `400 BAD_REQUEST` with `error.details.field = "include"`. Empty tokens (`include=facets,`) are ignored.
 - `page` (integer): Page number (default: 1)
 - `limit` (integer): Items per page (default: 20, max: 100)
 
@@ -120,9 +123,52 @@ GET /api/v1/products?q=&category=&brand=&minPrice=&maxPrice=&inStock=&sort=&page
 }
 ```
 
+**Additive search fields.** `meta` is present only when `q` is non-empty, and `facets` only when `include=facets` is sent. Clients that send neither get exactly the response above.
+
+```json
+{
+  "data": [ ... ],
+  "pagination": { "page": 1, "perPage": 20, "totalItems": 0 },
+  "meta": {
+    "searchMode": "fts",
+    "suggestions": [
+      { "title": "Sepatu Lari Nike Pegasus", "slug": "sepatu-lari-nike-pegasus" }
+    ]
+  },
+  "facets": {
+    "categories": [ { "id": "uuid", "name": "Sepatu", "slug": "sepatu", "count": 12 } ],
+    "brands": [ { "id": "uuid", "name": "Nike", "slug": "nike", "count": 7 } ],
+    "price": {
+      "buckets": [
+        { "min": 0, "max": 50000, "count": 1 },
+        { "min": 50000, "max": 100000, "count": 4 },
+        { "min": 100000, "max": 250000, "count": 3 },
+        { "min": 250000, "max": 500000, "count": 2 },
+        { "min": 500000, "max": 1000000, "count": 2 },
+        { "min": 1000000, "max": 2500000, "count": 0 },
+        { "min": 2500000, "max": 5000000, "count": 0 },
+        { "min": 5000000, "max": 10000000, "count": 0 },
+        { "min": 10000000, "max": null, "count": 0 }
+      ]
+    },
+    "inStock": { "true": 10, "false": 2 }
+  }
+}
+```
+
+- `meta.searchMode`: `"fts"` when full-text search matched, or when nothing matched at all. `"fuzzy"` when full-text search found nothing and `data` holds typo-tolerant title matches; show a hint such as "showing results for similar products".
+- `meta.suggestions`: up to 5 `{title, slug}` closest titles. Present only when `pagination.totalItems` is 0, `q` has 3 to 64 characters, and at least one title is similar enough. Omitted otherwise (never an empty array).
+- `facets.categories` / `facets.brands`: top 50 terms by count desc, then name; empty arrays when nothing matches (never `null`).
+- `facets.price.buckets`: always all 9 buckets in ascending order with zero counts included. A bucket covers `min <= price < max`, and the last bucket has `max: null`. Edges (IDR): 50 000, 100 000, 250 000, 500 000, 1 000 000, 2 500 000, 5 000 000, 10 000 000.
+- `facets.inStock`: counts keyed `"true"` / `"false"`.
+- Facet semantics: each dimension honours `q` (in the same `searchMode` as `data`) and every other active filter, but ignores its own filter. For example, with `category=pakaian` the category facet still lists every category's count for the other filters, while the brand, price and inStock facets count only `pakaian` products.
+- Requests with `include=facets` are not served from the list cache.
+
 **Headers:**
 
-- `X-Total-Count`: Total number of items
+- `X-Total-Count`: Total number of items (same as `pagination.totalItems`)
+
+**Errors:** `400 BAD_REQUEST` for a `q` longer than 200 characters, or an invalid `page`, `limit`, `minPrice`, `maxPrice`, price range, `inStock` or `include`; `error.details.field` names the parameter.
 
 Returns filtered product list with pagination metadata.
 

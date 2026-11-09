@@ -21,3 +21,7 @@ sqlc:
 
 tenant-guard:
 	go run ./cmd/tools/tenant_guard
+
+# Prints a fresh VAPID key pair (PUSH_VAPID_PUBLIC_KEY / PUSH_VAPID_PRIVATE_KEY).
+vapid-keys:
+	go run ./cmd/tools/vapid_keygen

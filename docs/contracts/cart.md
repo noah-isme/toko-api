@@ -157,6 +157,7 @@ Content-Type: application/json
 - `VOUCHER_INVALID`: Voucher tidak ditemukan, expired, atau sudah habis
 - `VOUCHER_MIN_SPEND`: Subtotal tidak memenuhi minimum pembelian
 - `VOUCHER_ALREADY_USED`: User sudah menggunakan voucher (jika ada limit per user)
+- `404 NOT_FOUND` (`voucher not found`): kode tidak dikenal atau milik tenant lain. Voucher bersifat per tenant; kode dari tenant lain diperlakukan sama dengan kode yang tidak ada, dan checkout mengabaikannya (diskon 0).
 
 ---
 

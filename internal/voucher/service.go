@@ -10,13 +10,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 
 	dbgen "github.com/noah-isme/backend-toko/internal/db/gen"
 )
 
 // Querier captures the database methods required by the voucher service.
 type Querier interface {
-	GetVoucherByCodeForUpdate(ctx context.Context, code string) (dbgen.Voucher, error)
+	GetVoucherByCodeForUpdate(ctx context.Context, arg dbgen.GetVoucherByCodeForUpdateParams) (dbgen.Voucher, error)
 	CountVoucherUsageByUser(ctx context.Context, arg dbgen.CountVoucherUsageByUserParams) (int64, error)
 	GetVoucherUsageByOrder(ctx context.Context, arg dbgen.GetVoucherUsageByOrderParams) (dbgen.VoucherUsage, error)
 	InsertVoucherUsage(ctx context.Context, arg dbgen.InsertVoucherUsageParams) error
@@ -37,8 +38,9 @@ type Service struct {
 	DefaultPerUserLimit int
 }
 
-// Preview performs a dry-run evaluation for the given cart context.
-func (s *Service) Preview(ctx context.Context, code string, userID *string, cartTotal int64, items []Item) (PreviewResult, error) {
+// Preview performs a dry-run evaluation for the given cart context. Voucher
+// codes are unique per tenant, so the code is resolved within tenantID only.
+func (s *Service) Preview(ctx context.Context, tenantID pgtype.UUID, code string, userID *string, cartTotal int64, items []Item) (PreviewResult, error) {
 	if s == nil || s.Q == nil {
 		return PreviewResult{}, errors.New("voucher service not configured")
 	}
@@ -46,7 +48,10 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 	if trimmed == "" {
 		return PreviewResult{}, fmt.Errorf("code is required: %w", ErrNotEligible)
 	}
-	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, trimmed)
+	if !tenantID.Valid {
+		return PreviewResult{}, ErrNotEligible
+	}
+	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, dbgen.GetVoucherByCodeForUpdateParams{TenantID: tenantID, Code: trimmed})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PreviewResult{}, ErrNotEligible
@@ -88,16 +93,27 @@ func (s *Service) Preview(ctx context.Context, code string, userID *string, cart
 }
 
 // Settle records voucher usage at order payment time ensuring idempotency.
-func (s *Service) Settle(ctx context.Context, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
+// tenantID is the order's tenant and the code is resolved within it only
+// (codes are unique per tenant), so another tenant's voucher with the same code
+// is never settled against the order.
+func (s *Service) Settle(ctx context.Context, tenantID pgtype.UUID, code string, orderID pgtype.UUID, userID pgtype.UUID, amount int64) error {
 	if s == nil || s.Q == nil {
 		return errors.New("voucher service not configured")
 	}
 	if strings.TrimSpace(code) == "" || !orderID.Valid || amount < 0 {
 		return nil
 	}
-	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, code)
+	if !tenantID.Valid {
+		zerolog.Ctx(ctx).Warn().
+			Str("order_id", uuidText(orderID)).
+			Msg("voucher settlement skipped: order has no tenant")
+		return nil
+	}
+	voucher, err := s.Q.GetVoucherByCodeForUpdate(ctx, dbgen.GetVoucherByCodeForUpdateParams{TenantID: tenantID, Code: code})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Unknown in the order's tenant (deleted, or a code that only
+			// exists in another tenant): checkout gave no discount for it.
 			return nil
 		}
 		return err
@@ -196,4 +212,11 @@ func parseUUID(value string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
+}
+
+func uuidText(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	return uuid.UUID(id.Bytes).String()
 }

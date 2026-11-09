@@ -33,19 +33,24 @@ func (q *Queries) CountWebhookDeliveries(ctx context.Context, arg CountWebhookDe
 }
 
 const createWebhookEndpoint = `-- name: CreateWebhookEndpoint :one
-INSERT INTO webhook_endpoints (name, url, secret, active, topics)
-VALUES ($1, $2, $3, $4, $5)
+
+INSERT INTO webhook_endpoints (name, url, secret, active, topics, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 `
 
 type CreateWebhookEndpointParams struct {
-	Name   string   `json:"name"`
-	Url    string   `json:"url"`
-	Secret string   `json:"secret"`
-	Active bool     `json:"active"`
-	Topics []string `json:"topics"`
+	Name     string      `json:"name"`
+	Url      string      `json:"url"`
+	Secret   string      `json:"secret"`
+	Active   bool        `json:"active"`
+	Topics   []string    `json:"topics"`
+	TenantID pgtype.UUID `json:"tenant_id"`
 }
 
+// Endpoints are tenant-owned (webhook_endpoints.tenant_id): the admin API
+// creates them in the request's tenant and only ever reads, changes or deletes
+// the endpoints of that tenant.
 func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error) {
 	row := q.db.QueryRow(ctx, createWebhookEndpoint,
 		arg.Name,
@@ -53,6 +58,7 @@ func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEn
 		arg.Secret,
 		arg.Active,
 		arg.Topics,
+		arg.TenantID,
 	)
 	var i WebhookEndpoint
 	err := row.Scan(
@@ -79,14 +85,23 @@ func (q *Queries) DeleteDlqByDelivery(ctx context.Context, deliveryID pgtype.UUI
 	return err
 }
 
-const deleteWebhookEndpoint = `-- name: DeleteWebhookEndpoint :exec
+const deleteWebhookEndpoint = `-- name: DeleteWebhookEndpoint :execrows
 DELETE FROM webhook_endpoints
 WHERE id = $1
+  AND tenant_id = $2
 `
 
-func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteWebhookEndpoint, id)
-	return err
+type DeleteWebhookEndpointParams struct {
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
+}
+
+func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, arg DeleteWebhookEndpointParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWebhookEndpoint, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const dequeueDueDeliveries = `-- name: DequeueDueDeliveries :many
@@ -146,6 +161,38 @@ type EnqueueDeliveryParams struct {
 
 func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams) (WebhookDelivery, error) {
 	row := q.db.QueryRow(ctx, enqueueDelivery, arg.EndpointID, arg.EventID, arg.MaxAttempt)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.EndpointID,
+		&i.EventID,
+		&i.Status,
+		&i.Attempt,
+		&i.MaxAttempt,
+		&i.NextAttemptAt,
+		&i.LastError,
+		&i.ResponseStatus,
+		&i.ResponseBody,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TenantID,
+	)
+	return i, err
+}
+
+const getDeliveryByEndpointEvent = `-- name: GetDeliveryByEndpointEvent :one
+SELECT id, endpoint_id, event_id, status, attempt, max_attempt, next_attempt_at, last_error, response_status, response_body, created_at, updated_at, tenant_id
+FROM webhook_deliveries
+WHERE endpoint_id = $1 AND event_id = $2
+`
+
+type GetDeliveryByEndpointEventParams struct {
+	EndpointID pgtype.UUID `json:"endpoint_id"`
+	EventID    pgtype.UUID `json:"event_id"`
+}
+
+func (q *Queries) GetDeliveryByEndpointEvent(ctx context.Context, arg GetDeliveryByEndpointEventParams) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, getDeliveryByEndpointEvent, arg.EndpointID, arg.EventID)
 	var i WebhookDelivery
 	err := row.Scan(
 		&i.ID,
@@ -238,16 +285,24 @@ func (q *Queries) InsertWebhookDlq(ctx context.Context, arg InsertWebhookDlqPara
 	return i, err
 }
 
-const listActiveEndpointsForTopic = `-- name: ListActiveEndpointsForTopic :many
+const listActiveEndpointsForTopicAndTenant = `-- name: ListActiveEndpointsForTopicAndTenant :many
 SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
-WHERE active = true
-  AND (coalesce(array_length(topics, 1), 0) = 0 OR $1::text = ANY(topics))
+WHERE tenant_id = $1
+  AND active = true
+  AND (coalesce(array_length(topics, 1), 0) = 0 OR $2::text = ANY(topics))
 ORDER BY created_at ASC
 `
 
-func (q *Queries) ListActiveEndpointsForTopic(ctx context.Context, topic string) ([]WebhookEndpoint, error) {
-	rows, err := q.db.Query(ctx, listActiveEndpointsForTopic, topic)
+type ListActiveEndpointsForTopicAndTenantParams struct {
+	TenantID pgtype.UUID `json:"tenant_id"`
+	Topic    string      `json:"topic"`
+}
+
+// Endpoints are tenant-owned: an event is only delivered to the endpoints of
+// the tenant that produced it.
+func (q *Queries) ListActiveEndpointsForTopicAndTenant(ctx context.Context, arg ListActiveEndpointsForTopicAndTenantParams) ([]WebhookEndpoint, error) {
+	rows, err := q.db.Query(ctx, listActiveEndpointsForTopicAndTenant, arg.TenantID, arg.Topic)
 	if err != nil {
 		return nil, err
 	}
@@ -360,17 +415,19 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeli
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
 SELECT id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 FROM webhook_endpoints
+WHERE tenant_id = $1
 ORDER BY created_at DESC
-LIMIT $2 OFFSET $1
+LIMIT $3 OFFSET $2
 `
 
 type ListWebhookEndpointsParams struct {
-	PageOffset int32 `json:"page_offset"`
-	PageLimit  int32 `json:"page_limit"`
+	TenantID   pgtype.UUID `json:"tenant_id"`
+	PageOffset int32       `json:"page_offset"`
+	PageLimit  int32       `json:"page_limit"`
 }
 
 func (q *Queries) ListWebhookEndpoints(ctx context.Context, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error) {
-	rows, err := q.db.Query(ctx, listWebhookEndpoints, arg.PageOffset, arg.PageLimit)
+	rows, err := q.db.Query(ctx, listWebhookEndpoints, arg.TenantID, arg.PageOffset, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -515,16 +572,18 @@ SET name = $1,
     topics = $5,
     updated_at = now()
 WHERE id = $6
+  AND tenant_id = $7
 RETURNING id, name, url, secret, active, topics, created_at, updated_at, tenant_id
 `
 
 type UpdateWebhookEndpointParams struct {
-	Name   string      `json:"name"`
-	Url    string      `json:"url"`
-	Secret string      `json:"secret"`
-	Active bool        `json:"active"`
-	Topics []string    `json:"topics"`
-	ID     pgtype.UUID `json:"id"`
+	Name     string      `json:"name"`
+	Url      string      `json:"url"`
+	Secret   string      `json:"secret"`
+	Active   bool        `json:"active"`
+	Topics   []string    `json:"topics"`
+	ID       pgtype.UUID `json:"id"`
+	TenantID pgtype.UUID `json:"tenant_id"`
 }
 
 func (q *Queries) UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEndpointParams) (WebhookEndpoint, error) {
@@ -535,6 +594,7 @@ func (q *Queries) UpdateWebhookEndpoint(ctx context.Context, arg UpdateWebhookEn
 		arg.Active,
 		arg.Topics,
 		arg.ID,
+		arg.TenantID,
 	)
 	var i WebhookEndpoint
 	err := row.Scan(

@@ -20,6 +20,7 @@ type mockQueries struct {
 	shipmentsByID map[string]*dbgen.Shipment
 	users         map[string]dbgen.GetUserByIDRow
 	events        []dbgen.ShipmentEvent
+	statusUpdates []dbgen.OrderStatus
 }
 
 func newMockQueries() *mockQueries {
@@ -31,10 +32,17 @@ func newMockQueries() *mockQueries {
 	}
 }
 
+// testTenantID is the tenant that owns orders added via addOrder unless the
+// order sets its own TenantID.
+var testTenantID = pgtype.UUID{Bytes: uuid.MustParse("7d0f4c38-5d8e-4bd0-9a77-2f4b51c0b0aa"), Valid: true}
+
 func (m *mockQueries) addOrder(order dbgen.Order, email string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := uuidFromPG(order.ID).String()
+	if !order.TenantID.Valid {
+		order.TenantID = testTenantID
+	}
 	copyOrder := order
 	m.orders[key] = &copyOrder
 	if email != "" {
@@ -58,6 +66,18 @@ func (m *mockQueries) GetOrderByID(ctx context.Context, id pgtype.UUID) (dbgen.O
 		return copyOrder, nil
 	}
 	return dbgen.Order{}, pgx.ErrNoRows
+}
+
+// GetOrderByTenant mimics the tenant-filtered query: an order owned by another
+// tenant is invisible.
+func (m *mockQueries) GetOrderByTenant(ctx context.Context, arg dbgen.GetOrderByTenantParams) (dbgen.GetOrderByTenantRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.orders[uuidFromPG(arg.ID).String()]
+	if !ok || order.TenantID != arg.TenantID {
+		return dbgen.GetOrderByTenantRow{}, pgx.ErrNoRows
+	}
+	return dbgen.GetOrderByTenantRow{ID: order.ID, UserID: order.UserID, Status: order.Status, CreatedAt: order.CreatedAt}, nil
 }
 
 func (m *mockQueries) GetShipmentByOrder(ctx context.Context, orderID pgtype.UUID) (dbgen.GetShipmentByOrderRow, error) {
@@ -112,6 +132,7 @@ func (m *mockQueries) UpdateOrderStatusIfAllowed(ctx context.Context, arg dbgen.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := uuidFromPG(arg.ID).String()
+	m.statusUpdates = append(m.statusUpdates, arg.Status)
 	order, ok := m.orders[key]
 	if !ok {
 		return pgtype.UUID{}, pgx.ErrNoRows
